@@ -24,3 +24,8 @@ lxml==5.2.1
 python-dotenv==1.0.1
 pydantic==2.7.1
 aiofiles==23.2.1
+
+# Dependencies pulled in by smartapi-python
+logzero==1.7.0
+requests==2.31.0
+websocket-client==1.6.4
