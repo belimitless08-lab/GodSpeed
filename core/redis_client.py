@@ -26,12 +26,12 @@ async def get_redis() -> aioredis.Redis:
             url,
             encoding="utf-8",
             decode_responses=True,
-            max_connections=5,      # strict limit per service
+            max_connections=20,     # increased from 5 to handle concurrent traffic
             socket_keepalive=True,
             socket_connect_timeout=5,
             retry_on_timeout=True,
         )
-        log.info(f"[redis] Connection pool created (max_connections=5)")
+        log.info(f"[redis] Connection pool created (max_connections=20)")
     return _pool
 
 
