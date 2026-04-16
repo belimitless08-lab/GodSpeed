@@ -1,0 +1,841 @@
+"""
+scripts/morning_seeder.py
+=========================
+Market Pulse Pro v2 — Morning Seeder
+Runs every morning at 08:30 IST (before market open at 09:15).
+
+Two phases:
+  Phase A — Equity snapshots  (1m candles → indicators → Redis snapshot:{symbol})
+  Phase B — Options baseline   (daily OI/volume → Redis options:prev:{symbol})
+
+Run:
+    python -m scripts.morning_seeder
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+
+import httpx
+import numpy as np
+import pyotp
+
+from core.config import cfg, validate
+from core.redis_client import get_redis
+from core.universe_builder import (
+    build_universe,
+    get_lot_sizes,
+    get_symbols,
+    get_token_map,
+)
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+)
+logger = logging.getLogger("morning_seeder")
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+ANGELONE_CANDLE_URL = (
+    "https://apiconnect.angelbroking.com/rest/secure/angelbroking/historical/v1/getCandleData"
+)
+ANGELONE_LOGIN_URL = "https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword"
+
+LOG_EVERY = 20
+
+# Market-closed probe — NIFTY BEES NSE EQ token (stable large-cap liquid ETF).
+# Used as a single candle fetch to confirm AngelOne has data for yesterday.
+# If this returns zero candles the market was closed and we abort without
+# touching any Redis key.
+PROBE_TOKEN  = "1594"   # NIFTYBEES NSE EQ token in AngelOne instrument master
+PROBE_SYMBOL = "NIFTYBEES"
+
+
+# ---------------------------------------------------------------------------
+# AngelOne session
+# ---------------------------------------------------------------------------
+
+async def get_angel_session() -> dict:
+    """
+    Login to AngelOne SmartAPI using credentials from config.
+    Returns dict with jwt, feed_token, api_key, client_code.
+    """
+    totp = pyotp.TOTP(cfg.ANGELONE_TOTP_SECRET).now()
+
+    payload = {
+        "clientcode": cfg.ANGELONE_CLIENT_ID,
+        "password": cfg.ANGELONE_PASSWORD,
+        "totp": totp,
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "127.0.0.1",
+        "X-ClientPublicIP": "127.0.0.1",
+        "X-MACAddress": "00:00:00:00:00:00",
+        "X-PrivateKey": cfg.ANGELONE_API_KEY,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(ANGELONE_LOGIN_URL, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+    if data.get("status") is not True:
+        raise RuntimeError(f"AngelOne login failed: {data.get('message')}")
+
+    d = data["data"]
+    return {
+        "jwt": d["jwtToken"],
+        "feed_token": d["feedToken"],
+        "api_key": cfg.ANGELONE_API_KEY,
+        "client_code": cfg.ANGELONE_CLIENT_ID,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Historical candle fetch
+# ---------------------------------------------------------------------------
+
+async def fetch_candles(
+    session: dict,
+    exchange: str,
+    token: str,
+    interval: str,
+    from_dt: datetime,
+    to_dt: datetime,
+    http_client: httpx.AsyncClient,
+) -> list[list]:
+    """
+    Fetch candles from AngelOne historical API.
+    Returns list of [ts, o, h, l, c, v] (equity) or [ts, o, h, l, c, v, oi] (options daily).
+    """
+    headers = {
+        "Authorization": f"Bearer {session['jwt']}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "127.0.0.1",
+        "X-ClientPublicIP": "127.0.0.1",
+        "X-MACAddress": "00:00:00:00:00:00",
+        "X-PrivateKey": session["api_key"],
+    }
+
+    body = {
+        "exchange": exchange,
+        "symboltoken": token,
+        "interval": interval,
+        "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+        "todate": to_dt.strftime("%Y-%m-%d %H:%M"),
+    }
+
+    resp = await http_client.post(ANGELONE_CANDLE_URL, json=body, headers=headers)
+    resp.raise_for_status()
+    result = resp.json()
+
+    if result.get("status") is not True:
+        raise RuntimeError(f"Candle fetch failed for token {token}: {result.get('message')}")
+
+    return result.get("data") or []
+
+
+# ---------------------------------------------------------------------------
+# Market-closed probe
+# ---------------------------------------------------------------------------
+
+async def probe_market_open(session: dict, from_dt: datetime, to_dt: datetime) -> bool:
+    """
+    Fetch 1m candles for NIFTYBEES (a highly liquid NSE ETF) to confirm
+    AngelOne has trading data for yesterday.
+
+    Returns True  → market traded yesterday, proceed with full seeder.
+    Returns False → market was closed (holiday/weekend), abort without
+                    touching any existing Redis key.
+
+    Any HTTP/API error is treated conservatively as "closed" so we never
+    accidentally wipe good Redis data due to a transient auth issue.
+    """
+    logger.info(
+        "Market probe: fetching 1m candles for %s (token %s) …",
+        PROBE_SYMBOL, PROBE_TOKEN,
+    )
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http_client:
+            candles = await fetch_candles(
+                session, "NSE", PROBE_TOKEN, "ONE_MINUTE", from_dt, to_dt, http_client
+            )
+        if candles:
+            logger.info(
+                "Market probe OK — %d candles returned for %s. Proceeding with seeder.",
+                len(candles), PROBE_SYMBOL,
+            )
+            return True
+        else:
+            logger.warning(
+                "Market probe returned 0 candles for %s — market appears closed today.",
+                PROBE_SYMBOL,
+            )
+            return False
+    except Exception as exc:
+        logger.warning(
+            "Market probe failed for %s (%s) — treating as market closed to preserve Redis data.",
+            PROBE_SYMBOL, exc,
+        )
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Date helpers
+# ---------------------------------------------------------------------------
+
+def _get_date_range() -> tuple[datetime, datetime]:
+    """
+    Returns (from_dt, to_dt) as per spec:
+      from_dt = today - 7 calendar days at 09:15
+      to_dt   = yesterday at 23:59
+    AngelOne handles actual trading day filtering.
+    """
+    now = datetime.now(timezone.utc)
+    # Convert to IST (UTC+5:30) for date logic, but pass naive datetimes to API
+    ist_offset = timedelta(hours=5, minutes=30)
+    ist_now = now + ist_offset
+
+    today_ist = ist_now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+
+    from_dt = (today_ist - timedelta(days=7)).replace(hour=9, minute=15)
+    to_dt   = (today_ist - timedelta(days=1)).replace(hour=23, minute=59)
+
+    return from_dt, to_dt
+
+
+# ---------------------------------------------------------------------------
+# Technical indicator calculations (NumPy vectorized)
+# ---------------------------------------------------------------------------
+
+def ema_vectorized(closes: np.ndarray, period: int) -> np.ndarray:
+    k = 2 / (period + 1)
+    ema = np.zeros_like(closes, dtype=float)
+    ema[0] = closes[0]
+    for i in range(1, len(closes)):
+        ema[i] = closes[i] * k + ema[i - 1] * (1 - k)
+    return ema
+
+
+def compute_atr14(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> float:
+    tr = np.maximum(
+        highs[1:] - lows[1:],
+        np.maximum(
+            np.abs(highs[1:] - closes[:-1]),
+            np.abs(lows[1:] - closes[:-1]),
+        ),
+    )
+    return float(np.mean(tr[-14:])) if len(tr) >= 14 else float(np.mean(tr))
+
+
+def compute_choppiness(
+    highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, window: int = 14
+) -> float:
+    tr = np.maximum(
+        highs[1:] - lows[1:],
+        np.maximum(
+            np.abs(highs[1:] - closes[:-1]),
+            np.abs(lows[1:] - closes[:-1]),
+        ),
+    )
+    if len(tr) < window:
+        return float("nan")
+    atr_sum = np.sum(tr[-window:])
+    highest_high = np.max(highs[-window:])
+    lowest_low = np.min(lows[-window:])
+    rng = highest_high - lowest_low
+    if rng == 0:
+        return float("nan")
+    return float(100 * np.log10(atr_sum / rng) / np.log10(window))
+
+
+def compute_rsi14_wilder(closes: np.ndarray, period: int = 14) -> tuple[float, float, float]:
+    """
+    Compute RSI using Wilder's smoothing method.
+
+    Phase 1 — seed:  avg_gain / avg_loss = simple mean of the first `period`
+                     price changes (closes[1] - closes[0] … closes[period] - closes[period-1]).
+    Phase 2 — roll:  Wilder's EMA: avg = (prev_avg * (period-1) + current) / period
+                     applied to every subsequent bar.
+
+    Returns (rsi, avg_gain, avg_loss) where avg_gain / avg_loss are the
+    Wilder-smoothed running averages at the final bar — ready to hand off to
+    the candle builder so it can continue incrementally without warmup candles.
+
+    Edge cases:
+      • Fewer than period+1 bars   → returns (50.0, 0.0, 0.0)
+      • avg_loss == 0 at final bar → rsi = 100.0
+    """
+    n = len(closes)
+    if n < period + 1:
+        return 50.0, 0.0, 0.0
+
+    deltas = np.diff(closes)  # length = n - 1
+
+    # --- Phase 1: seed with simple mean of first `period` changes ---
+    seed_gains = np.where(deltas[:period] > 0, deltas[:period], 0.0)
+    seed_losses = np.where(deltas[:period] < 0, -deltas[:period], 0.0)
+    avg_gain = float(np.mean(seed_gains))
+    avg_loss = float(np.mean(seed_losses))
+
+    # --- Phase 2: Wilder's EMA over remaining bars ---
+    for delta in deltas[period:]:
+        gain = delta if delta > 0 else 0.0
+        loss = -delta if delta < 0 else 0.0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+
+    if avg_loss == 0.0:
+        rsi = 100.0
+    else:
+        rs = avg_gain / avg_loss
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+
+    return round(rsi, 4), round(avg_gain, 6), round(avg_loss, 6)
+
+
+def compute_supertrend(
+    highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 10, multiplier: float = 3.0
+) -> tuple[str, float]:
+    n = len(closes)
+    atr_st = np.zeros(n)
+    for i in range(1, n):
+        tr_val = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        atr_st[i] = (atr_st[i - 1] * (period - 1) + tr_val) / period
+
+    hl2 = (highs + lows) / 2
+    upper_band = hl2 + multiplier * atr_st
+    lower_band = hl2 - multiplier * atr_st
+
+    direction = 1
+    for i in range(1, n):
+        if closes[i] > upper_band[i - 1]:
+            direction = 1
+        elif closes[i] < lower_band[i - 1]:
+            direction = -1
+
+    band = float(lower_band[-1] if direction == 1 else upper_band[-1])
+    return ("BULL" if direction == 1 else "BEAR"), band
+
+
+def compute_pivots_classic(prev_high: float, prev_low: float, prev_close: float) -> dict:
+    pp = (prev_high + prev_low + prev_close) / 3
+    return {
+        "pp": round(pp, 2),
+        "r1": round(2 * pp - prev_low, 2),
+        "r2": round(pp + (prev_high - prev_low), 2),
+        "s1": round(2 * pp - prev_high, 2),
+        "s2": round(pp - (prev_high - prev_low), 2),
+    }
+
+
+def compute_pivots_camarilla(prev_high: float, prev_low: float, prev_close: float) -> dict:
+    rng = prev_high - prev_low
+    return {
+        "r1": round(prev_close + rng * 1.1 / 12, 2),
+        "r2": round(prev_close + rng * 1.1 / 6, 2),
+        "r3": round(prev_close + rng * 1.1 / 4, 2),
+        "r4": round(prev_close + rng * 1.1 / 2, 2),
+        "s1": round(prev_close - rng * 1.1 / 12, 2),
+        "s2": round(prev_close - rng * 1.1 / 6, 2),
+        "s3": round(prev_close - rng * 1.1 / 4, 2),
+        "s4": round(prev_close - rng * 1.1 / 2, 2),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Options helpers — instrument master parsing
+# ---------------------------------------------------------------------------
+
+async def _get_instrument_master() -> list[dict]:
+    """Fetch AngelOne instrument master JSON (cached in module scope)."""
+    url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.json()
+
+
+_instrument_master_cache: list[dict] | None = None
+
+
+async def get_instrument_master() -> list[dict]:
+    global _instrument_master_cache
+    if _instrument_master_cache is None:
+        _instrument_master_cache = await _get_instrument_master()
+        logger.info("Instrument master loaded: %d entries", len(_instrument_master_cache))
+    return _instrument_master_cache
+
+
+def _parse_expiry_str(s: str) -> datetime:
+    for fmt in ("%d%b%Y", "%Y-%m-%d", "%d-%b-%Y"):
+        try:
+            return datetime.strptime(s.strip().upper(), fmt)
+        except ValueError:
+            continue
+    return datetime.max
+
+
+def find_option_strikes(
+    instruments: list[dict],
+    symbol: str,
+    prev_close: float,
+) -> dict | None:
+    """
+    From the instrument master, find ATM, ATM-1, ATM+1 CE and PE tokens
+    for the nearest expiry of `symbol` in NFO OPTSTK.
+
+    Derives strike interval dynamically from available strikes.
+    Returns None if no options found.
+    """
+    # Collect all NFO OPTSTK entries for this symbol
+    opts = [
+        e for e in instruments
+        if e.get("exch_seg") == "NFO"
+        and e.get("instrumenttype") == "OPTSTK"
+        and e.get("name", "").upper() == symbol.upper()
+    ]
+    if not opts:
+        return None
+
+    # Find nearest expiry
+    expiries = sorted(set(e.get("expiry", "") for e in opts), key=_parse_expiry_str)
+    if not expiries:
+        return None
+    nearest_expiry_str = expiries[0]
+    nearest_expiry_dt = _parse_expiry_str(nearest_expiry_str)
+
+    # Filter to nearest expiry only
+    near_opts = [e for e in opts if e.get("expiry", "") == nearest_expiry_str]
+
+    # Collect all unique strikes to derive interval dynamically
+    strikes_available = sorted(set(int(float(e.get("strike", 0))) // 100 for e in near_opts))
+    # AngelOne stores strikes multiplied by 100 → divide by 100 to get actual strike
+    if len(strikes_available) < 2:
+        return None
+
+    # Derive strike gap: most common difference between consecutive strikes
+    diffs = [strikes_available[i + 1] - strikes_available[i] for i in range(len(strikes_available) - 1)]
+    strike_gap = int(sorted(diffs, key=diffs.count, reverse=True)[0])
+
+    # ATM = round prev_close to nearest strike_gap
+    atm_strike = int(round(prev_close / strike_gap) * strike_gap)
+
+    # Build CE/PE token maps: strike → token
+    ce_map: dict[int, str] = {}
+    pe_map: dict[int, str] = {}
+    for e in near_opts:
+        strike_val = int(float(e.get("strike", 0))) // 100
+        opt_type = e.get("symbol", "")[-2:].upper()  # CE or PE from symbol suffix
+        # More reliable: use the optiontype field if available
+        ot = e.get("optiontype", "").upper() or opt_type
+        tok = str(e.get("token", ""))
+        if ot == "CE":
+            ce_map[strike_val] = tok
+        elif ot == "PE":
+            pe_map[strike_val] = tok
+
+    atm_m1 = atm_strike - strike_gap
+    atm_p1 = atm_strike + strike_gap
+
+    # All three strikes must have both CE and PE tokens
+    for s in [atm_m1, atm_strike, atm_p1]:
+        if s not in ce_map or s not in pe_map:
+            logger.warning("%s: Missing CE/PE token for strike %d (expiry %s)", symbol, s, nearest_expiry_str)
+
+    expiry_formatted = nearest_expiry_dt.strftime("%Y-%m-%d") if nearest_expiry_dt != datetime.max else nearest_expiry_str
+
+    return {
+        "atm_strike": atm_strike,
+        "expiry": expiry_formatted,
+        "strikes": {
+            "atm_minus1": {
+                "strike": atm_m1,
+                "ce_token": ce_map.get(atm_m1, ""),
+                "pe_token": pe_map.get(atm_m1, ""),
+            },
+            "atm": {
+                "strike": atm_strike,
+                "ce_token": ce_map.get(atm_strike, ""),
+                "pe_token": pe_map.get(atm_strike, ""),
+            },
+            "atm_plus1": {
+                "strike": atm_p1,
+                "ce_token": ce_map.get(atm_p1, ""),
+                "pe_token": pe_map.get(atm_p1, ""),
+            },
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase A — Equity snapshot for one symbol
+# ---------------------------------------------------------------------------
+
+async def _seed_equity_symbol(
+    symbol: str,
+    token: str,
+    lot_size: int,
+    session: dict,
+    from_dt: datetime,
+    to_dt: datetime,
+    http_client: httpx.AsyncClient,
+) -> bool:
+    try:
+        candles = await fetch_candles(
+            session, "NSE", token, "ONE_MINUTE", from_dt, to_dt, http_client
+        )
+        if not candles or len(candles) < 20:
+            logger.warning("Phase A: %s — too few candles (%d), skipping.", symbol, len(candles))
+            return False
+
+        # Parse arrays
+        opens   = np.array([c[1] for c in candles], dtype=float)
+        highs   = np.array([c[2] for c in candles], dtype=float)
+        lows    = np.array([c[3] for c in candles], dtype=float)
+        closes  = np.array([c[4] for c in candles], dtype=float)
+        volumes = np.array([c[5] for c in candles], dtype=float)
+        timestamps = [c[0] for c in candles]
+
+        # --- Prev day candles ---
+        # Group by date prefix (YYYY-MM-DD) to find last completed day
+        day_map: dict[str, list[int]] = {}
+        for idx, ts in enumerate(timestamps):
+            day_key = ts[:10]  # "YYYY-MM-DD"
+            day_map.setdefault(day_key, []).append(idx)
+
+        sorted_days = sorted(day_map.keys())
+        if len(sorted_days) < 2:
+            # Only one day of data — use it as prev day
+            prev_day_indices = day_map[sorted_days[-1]]
+        else:
+            # Last completed day = second-to-last date (latest might be partial)
+            prev_day_indices = day_map[sorted_days[-2]]
+
+        pd_opens   = opens[prev_day_indices]
+        pd_highs   = highs[prev_day_indices]
+        pd_lows    = lows[prev_day_indices]
+        pd_closes  = closes[prev_day_indices]
+        pd_volumes = volumes[prev_day_indices]
+
+        prev_open   = float(pd_opens[0])
+        prev_high   = float(np.max(pd_highs))
+        prev_low    = float(np.min(pd_lows))
+        prev_close  = float(pd_closes[-1])
+        prev_volume = float(np.sum(pd_volumes))
+
+        # --- Indicators ---
+        ema9   = ema_vectorized(closes, 9)
+        ema16  = float(ema_vectorized(closes, 16)[-1])
+        ema200 = float(ema_vectorized(closes, 200)[-1]) if len(closes) >= 200 else float(ema_vectorized(closes, len(closes))[-1])
+        atr14  = compute_atr14(highs, lows, closes)
+
+        # avg_volume_5d: mean of per-day totals across all available days
+        daily_volumes = [float(np.sum(volumes[day_map[d]])) for d in sorted_days]
+        avg_volume_5d = float(np.mean(daily_volumes[-5:])) if daily_volumes else 0.0
+
+        choppiness14    = compute_choppiness(highs, lows, closes)
+        st_direction, st_band = compute_supertrend(highs, lows, closes)
+        rsi14, rsi_avg_gain, rsi_avg_loss = compute_rsi14_wilder(closes)
+
+        classic   = compute_pivots_classic(prev_high, prev_low, prev_close)
+        camarilla = compute_pivots_camarilla(prev_high, prev_low, prev_close)
+
+        snapshot = {
+            "ema9":          float(ema9[-1]),
+            "ema16":         round(ema16, 4),
+            "ema200":        round(ema200, 4),
+            "atr14":         round(atr14, 4),
+            "avg_volume_5d": round(avg_volume_5d, 2),
+            "rsi14":         rsi14,
+            "rsi_avg_gain":  rsi_avg_gain,
+            "rsi_avg_loss":  rsi_avg_loss,
+            "prev_day": {
+                "open":   round(prev_open, 2),
+                "high":   round(prev_high, 2),
+                "low":    round(prev_low, 2),
+                "close":  round(prev_close, 2),
+                "volume": round(prev_volume, 2),
+                "classic":   classic,
+                "camarilla": camarilla,
+            },
+            "choppiness14": round(choppiness14, 4) if choppiness14 == choppiness14 else None,
+            "supertrend": {
+                "direction": st_direction,
+                "band":      round(st_band, 4),
+            },
+            "lot_size":  lot_size,
+            "token":     token,
+            "seeded_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        redis = await get_redis()
+        # Store raw candles
+        raw_candles = [[c[0], c[1], c[2], c[3], c[4], c[5]] for c in candles]
+        await redis.set(f"candles:1m:{symbol}", json.dumps(raw_candles))
+        # Store snapshot key by key (never wipe — set each field)
+        await redis.set(f"snapshot:{symbol}", json.dumps(snapshot))
+
+        return True
+
+    except Exception as exc:
+        logger.error("Phase A: %s failed — %s", symbol, exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Phase B — Options baseline for one symbol
+# ---------------------------------------------------------------------------
+
+async def _seed_options_symbol(
+    symbol: str,
+    prev_close: float,
+    instruments: list[dict],
+    session: dict,
+    from_dt: datetime,
+    to_dt: datetime,
+    http_client: httpx.AsyncClient,
+) -> bool:
+    try:
+        strike_info = find_option_strikes(instruments, symbol, prev_close)
+        if not strike_info:
+            logger.warning("Phase B: %s — no option strikes found, skipping.", symbol)
+            return False
+
+        atm_info = strike_info["strikes"]["atm"]
+        ce_token = atm_info["ce_token"]
+        pe_token = atm_info["pe_token"]
+
+        if not ce_token or not pe_token:
+            logger.warning("Phase B: %s — missing ATM CE/PE token, skipping.", symbol)
+            return False
+
+        # Fetch 5-day daily candles for ATM CE and PE
+        ce_candles = await fetch_candles(
+            session, "NFO", ce_token, "ONE_DAY", from_dt, to_dt, http_client
+        )
+        pe_candles = await fetch_candles(
+            session, "NFO", pe_token, "ONE_DAY", from_dt, to_dt, http_client
+        )
+
+        def _parse_opt_candles(candles: list[list]) -> dict:
+            if not candles:
+                return {"volumes": [], "ois": [], "prev_close": 0.0, "prev_oi": 0}
+            vols = [c[5] for c in candles]
+            ois  = [c[6] if len(c) > 6 else 0 for c in candles]
+            return {
+                "volumes":    vols,
+                "ois":        ois,
+                "prev_close": float(candles[-1][4]),
+                "prev_oi":    int(candles[-1][6]) if len(candles[-1]) > 6 else 0,
+            }
+
+        ce = _parse_opt_candles(ce_candles)
+        pe = _parse_opt_candles(pe_candles)
+
+        ce_vols = ce["volumes"][-5:] if ce["volumes"] else []
+        pe_vols = pe["volumes"][-5:] if pe["volumes"] else []
+        ce_ois  = ce["ois"][-5:] if ce["ois"] else []
+        pe_ois  = pe["ois"][-5:] if pe["ois"] else []
+
+        result = {
+            "atm_strike":      strike_info["atm_strike"],
+            "expiry":          strike_info["expiry"],
+            "ce_avg_volume_5d": round(float(np.mean(ce_vols)) if ce_vols else 0.0, 2),
+            "pe_avg_volume_5d": round(float(np.mean(pe_vols)) if pe_vols else 0.0, 2),
+            "ce_avg_oi_5d":    round(float(np.mean(ce_ois)) if ce_ois else 0.0, 2),
+            "pe_avg_oi_5d":    round(float(np.mean(pe_ois)) if pe_ois else 0.0, 2),
+            "ce_prev_close":   round(ce["prev_close"], 4),
+            "pe_prev_close":   round(pe["prev_close"], 4),
+            "ce_prev_oi":      ce["prev_oi"],
+            "pe_prev_oi":      pe["prev_oi"],
+            "strikes":         strike_info["strikes"],
+            "seeded_at":       datetime.now(timezone.utc).isoformat(),
+        }
+
+        redis = await get_redis()
+        await redis.set(f"options:prev:{symbol}", json.dumps(result))
+        return True
+
+    except Exception as exc:
+        logger.error("Phase B: %s failed — %s", symbol, exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Main runner
+# ---------------------------------------------------------------------------
+
+async def run_seeder() -> None:
+    t_total_start = time.monotonic()
+
+    validate()
+    logger.info("=== Market Pulse Pro v2 — Morning Seeder ===")
+
+    # Step 1: Login
+    logger.info("Logging in to AngelOne…")
+    session = await get_angel_session()
+    logger.info("Login successful. Client: %s", session["client_code"])
+
+    # Step 2: Build universe (always refresh at 8:30 AM)
+    logger.info("Building universe from instrument master…")
+    await build_universe()
+
+    symbols   = await get_symbols()
+    token_map = await get_token_map()
+    lot_sizes = await get_lot_sizes()
+
+    logger.info("Universe: %d F&O symbols loaded.", len(symbols))
+
+    # Date range (same for both phases)
+    from_dt, to_dt = _get_date_range()
+    logger.info("Date range: %s → %s", from_dt.strftime("%Y-%m-%d %H:%M"), to_dt.strftime("%Y-%m-%d %H:%M"))
+
+    # -----------------------------------------------------------------------
+    # MARKET-CLOSED GUARD — probe before touching any Redis key
+    # -----------------------------------------------------------------------
+    market_open = await probe_market_open(session, from_dt, to_dt)
+    if not market_open:
+        logger.warning(
+            "Market appears closed today — seeder skipping, Redis data preserved."
+        )
+        return  # exit without writing anything to Redis
+
+    # -----------------------------------------------------------------------
+    # PHASE A — Equity Snapshots
+    # -----------------------------------------------------------------------
+    logger.info("--- PHASE A: Equity Snapshots ---")
+    t_a_start = time.monotonic()
+
+    equity_results: list[bool] = []
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        for i, sym in enumerate(symbols):
+            tok = token_map.get(sym)
+            if not tok:
+                logger.warning("Phase A: %s has no NSE EQ token, skipping.", sym)
+                equity_results.append(False)
+                continue
+            lot = lot_sizes.get(sym, 1)
+            try:
+                result = await _seed_equity_symbol(sym, tok, lot, session, from_dt, to_dt, http_client)
+            except Exception as e:
+                logger.error(f"Phase A failed for {sym}: {e}")
+                result = False
+            equity_results.append(result)
+            if (i + 1) % LOG_EVERY == 0:
+                ok = sum(equity_results)
+                logger.info("Phase A progress: %d/%d symbols processed (%d OK)", i + 1, len(symbols), ok)
+            await asyncio.sleep(0.35)  # 2.8 req/sec, under AngelOne 3/sec limit
+
+    t_a_end = time.monotonic()
+    phase_a_seconds = round(t_a_end - t_a_start, 2)
+    equity_ok = sum(equity_results)
+    logger.info(
+        "Phase A complete: %d/%d symbols seeded in %.1fs.",
+        equity_ok, len(symbols), phase_a_seconds,
+    )
+
+    # -----------------------------------------------------------------------
+    # PHASE B — Options Baseline
+    # -----------------------------------------------------------------------
+    logger.info("--- PHASE B: Options Baseline ---")
+    t_b_start = time.monotonic()
+
+    # Load instrument master once for all symbols
+    instruments = await get_instrument_master()
+
+    # Get prev_close from Phase A results (from Redis)
+    redis = await get_redis()
+
+    options_results: list[bool] = []
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        fno_symbols = []
+        fno_prev_closes = []
+        for sym in symbols:
+            snap_raw = await redis.get(f"snapshot:{sym}")
+            if not snap_raw:
+                logger.warning("Phase B: %s — no equity snapshot, skipping options.", sym)
+                options_results.append(False)
+                continue
+            snap = json.loads(snap_raw)
+            prev_close = snap.get("prev_day", {}).get("close", 0.0)
+            if not prev_close:
+                logger.warning("Phase B: %s — zero prev_close, skipping.", sym)
+                options_results.append(False)
+                continue
+            fno_symbols.append(sym)
+            fno_prev_closes.append(prev_close)
+
+        for i, (sym, prev_close) in enumerate(zip(fno_symbols, fno_prev_closes)):
+            try:
+                result = await _seed_options_symbol(
+                    sym, prev_close, instruments, session, from_dt, to_dt, http_client
+                )
+            except Exception as e:
+                logger.error(f"Phase B failed for {sym}: {e}")
+                result = False
+            options_results.append(result)
+            if (i + 1) % LOG_EVERY == 0:
+                ok = sum(r for r in options_results if r)
+                logger.info("Phase B progress: %d/%d symbols processed (%d OK)", i + 1, len(fno_symbols), ok)
+            await asyncio.sleep(0.35)  # Phase B makes 6 calls per symbol
+                                       # but each is sequential inside the function
+                                       # so outer 0.35s is sufficient
+
+    t_b_end = time.monotonic()
+    phase_b_seconds = round(t_b_end - t_b_start, 2)
+    options_ok = sum(options_results)
+    logger.info(
+        "Phase B complete: %d/%d symbols seeded in %.1fs.",
+        options_ok, len(symbols), phase_b_seconds,
+    )
+
+    # -----------------------------------------------------------------------
+    # Write completion status to Redis
+    # -----------------------------------------------------------------------
+    total_seconds = round(time.monotonic() - t_total_start, 2)
+    status = {
+        "status":           "complete",
+        "completed_at":     datetime.now(timezone.utc).isoformat(),
+        "equity_count":     equity_ok,
+        "options_count":    options_ok,
+        "phase_a_seconds":  phase_a_seconds,
+        "phase_b_seconds":  phase_b_seconds,
+    }
+    await redis.set("seeder:status", json.dumps(status))
+
+    logger.info(
+        "=== Morning Seeder DONE === total=%.1fs | equity=%d | options=%d",
+        total_seconds, equity_ok, options_ok,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    asyncio.run(run_seeder())

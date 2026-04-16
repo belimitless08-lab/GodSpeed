@@ -1,0 +1,403 @@
+"""
+strategy_brain/conviction_scorer.py
+=====================================
+ICI (Intraday Conviction Index) scorer — Node 3b.
+
+Runs after all macro gates pass.  Reads pre-calculated indicator
+snapshots from Redis and returns a scored, graded, time-bounded
+conviction payload.
+
+Snapshot field contract (written by candle builder, all guaranteed):
+    vwap              float  — current VWAP
+    vwap_slope        float  — % slope over last 5 candles
+    rsi14             float  — current RSI-14
+    choppiness_class  str    — "TRENDING" | "NEUTRAL" | "CHOPPY"
+
+Usage
+-----
+    from strategy_brain.conviction_scorer import calculate_ici_score
+
+    result = await calculate_ici_score(
+        symbol="RELIANCE",
+        signal_direction="LONG",
+        signal_type="ORB_BREAKOUT",
+        active_signals=["ORB_BREAKOUT", "VOLUME_SURGE_STRONG"],
+        vix=16.5,
+        market_time="09:45",
+    )
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timedelta, timezone, date
+from typing import Optional
+
+from core.redis_client import get_redis
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+_SCORE_EXPIRY_MINUTES = 10
+
+# Signal bonus table
+_SIGNAL_BONUSES: dict[str, int] = {
+    "OPENING_DRIVE":                    15,
+    "ORB_BREAKOUT":                     15,
+    "HOURLY_BREAKOUT":                  10,
+    "CHOPPINESS_BREAKOUT_CONFIRMED":    15,
+    "CHOPPINESS_BREAKOUT_UNCONFIRMED":   8,
+    "SUPERTREND_FLIP":                   8,
+    "VOLUME_SURGE_STRONG":              10,
+    "VOLUME_SURGE_MODERATE":             5,
+}
+
+# Grade / action thresholds
+_GRADE_TABLE = [
+    (90, "GOD",    "EXECUTE_MARKET"),
+    (75, "A",      "EXECUTE_LIMIT"),
+    (50, "B",      "WATCHLIST"),
+    (0,  "IGNORE", "IGNORE"),
+]
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _safe_float(value: Optional[str], default: float = 0.0) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_divide(num: float, den: float, default: float = 0.0) -> float:
+    if den == 0:
+        return default
+    return num / den
+
+
+# ---------------------------------------------------------------------------
+# Regime-aware weight calculator
+# ---------------------------------------------------------------------------
+
+def _get_weights(vix: float, market_time: str) -> dict[str, float]:
+    """
+    Return pillar weights that adapt to VIX regime and session time.
+
+    Pillars: rvol | rs | options | vwap | chop
+    """
+    try:
+        hour, minute = map(int, market_time.split(":"))
+    except (ValueError, AttributeError):
+        hour, minute = 10, 30  # safe default — mid-session
+
+    is_opening = hour == 9 or (hour == 10 and minute < 0)  # 9:15–9:59
+
+    if is_opening and vix > 18:
+        return {"rvol": 35, "rs": 25, "options": 25, "vwap":  5, "chop": 10}
+    elif vix > 20:
+        return {"rvol": 25, "rs": 20, "options": 35, "vwap": 10, "chop": 10}
+    else:
+        return {"rvol": 30, "rs": 25, "options": 20, "vwap": 15, "chop": 10}
+
+
+# ---------------------------------------------------------------------------
+# Pillar scorers
+# ---------------------------------------------------------------------------
+
+def _score_rvol(snap: dict, weight: float, direction: str) -> float:
+    """Pillar 1 — Time-weighted relative volume."""
+    rvol = _safe_float(snap.get("live_volume_ratio"), _safe_float(snap.get("rvol")))
+
+    if rvol >= 3.0:
+        return weight * 1.0
+    elif rvol >= 2.0:
+        return weight * 0.67
+    elif rvol >= 1.5:
+        return weight * 0.33
+    return 0.0
+
+
+def _score_relative_strength(
+    snap: dict,
+    weight: float,
+    direction: str,
+    nifty_change: float,
+    sector_avg_change: float,
+) -> float:
+    """Pillar 2 — Double relative strength vs Nifty + sector."""
+    prev_close = _safe_float(snap.get("prev_close"), 1.0)
+    ltp        = _safe_float(snap.get("ltp"), _safe_float(snap.get("last_close")))
+
+    if prev_close <= 0:
+        return 0.0
+
+    stock_change = _safe_divide(ltp - prev_close, prev_close) * 100
+
+    # For SHORT signals, invert the comparison
+    if direction == "SHORT":
+        stock_change = -stock_change
+        nifty_change = -nifty_change
+        sector_avg_change = -sector_avg_change
+
+    rs_vs_nifty  = stock_change - nifty_change
+    rs_vs_sector = stock_change - sector_avg_change
+
+    if rs_vs_nifty > 1.0 and rs_vs_sector > 0:
+        return weight * 1.0
+    elif rs_vs_nifty > 0.5:
+        return weight * 0.6
+    elif rs_vs_nifty > 0:
+        return weight * 0.2
+    return 0.0
+
+
+async def _score_options_flow(
+    symbol: str,
+    weight: float,
+    direction: str,
+) -> float:
+    """Pillar 3 — Options OI flow imbalance."""
+    redis = await get_redis()
+
+    prev_raw = await redis.get(f"options:prev:{symbol}")
+    if not prev_raw:
+        return 0.0
+
+    try:
+        prev = json.loads(prev_raw)
+    except json.JSONDecodeError:
+        return 0.0
+
+    atm = prev.get("atm_strike") or prev.get("atm")
+    if not atm:
+        return 0.0
+
+    live_ce = await redis.hgetall(f"options:tick:{symbol}:{atm}CE") or {}
+    live_pe = await redis.hgetall(f"options:tick:{symbol}:{atm}PE") or {}
+
+    prev_ce_oi = _safe_float(prev.get("ce_oi_prev"))
+    prev_pe_oi = _safe_float(prev.get("pe_oi_prev"))
+
+    live_ce_oi = _safe_float(live_ce.get("oi"))
+    live_pe_oi = _safe_float(live_pe.get("oi"))
+
+    ce_oi_change = live_ce_oi - prev_ce_oi
+    pe_oi_change = live_pe_oi - prev_pe_oi
+
+    # For LONG: PE writing (pe_oi_change > 0) + CE unwinding (ce_oi_change < 0) = bullish
+    # For SHORT: CE writing (ce_oi_change > 0) + PE unwinding (pe_oi_change < 0) = bearish
+    if direction == "LONG":
+        oi_flow = _safe_divide(
+            pe_oi_change - ce_oi_change,
+            max(abs(pe_oi_change + ce_oi_change), 1)
+        )
+    else:  # SHORT
+        oi_flow = _safe_divide(
+            ce_oi_change - pe_oi_change,
+            max(abs(pe_oi_change + ce_oi_change), 1)
+        )
+
+    if oi_flow >= 0.2:
+        return weight * 1.0
+    elif oi_flow >= 0.05:
+        return weight * 0.5
+    elif oi_flow < -0.2:
+        return weight * -1.0   # opposing flow penalty
+    return 0.0
+
+
+def _score_vwap_trend(snap: dict, weight: float, direction: str) -> float:
+    """
+    Pillar 4 — VWAP position and slope.
+
+    Keys consumed (guaranteed by candle builder):
+        vwap        float  — snap["vwap"]
+        vwap_slope  float  — snap["vwap_slope"]
+    """
+    ltp        = _safe_float(snap.get("ltp"))
+    vwap       = _safe_float(snap.get("vwap"), 1.0)       # guaranteed
+    vwap_slope = _safe_float(snap.get("vwap_slope"))       # guaranteed
+
+    if direction == "LONG":
+        above    = ltp > vwap
+        slope_ok = vwap_slope > 0.15
+    else:
+        above    = ltp < vwap
+        slope_ok = vwap_slope < -0.15
+
+    if above and slope_ok:
+        return weight * 1.0
+    elif above:
+        return weight * 0.33
+    return 0.0
+
+
+def _score_choppiness(snap: dict, weight: float) -> float:
+    """
+    Pillar 5 — Choppiness cleanliness.
+
+    Reads snapshot["choppiness_class"] (guaranteed by candle builder)
+    directly instead of re-deriving from raw chop values.
+    Falls back to inline computation only if the key is absent
+    (e.g. during local testing against old snapshots).
+    """
+    chop_class = snap.get("choppiness_class", "")          # guaranteed
+
+    if not chop_class:
+        # Fallback: re-derive from raw values (backward compat only)
+        chop14   = _safe_float(snap.get("choppiness14"),     50.0)
+        chop_avg = _safe_float(snap.get("choppiness_5d_avg"), 50.0)
+        chop_std = _safe_float(snap.get("choppiness_5d_std"),  5.0)
+        upper = chop_avg + 0.5 * chop_std
+        lower = chop_avg - 0.5 * chop_std
+        if chop14 < lower:
+            chop_class = "TRENDING"
+        elif chop14 > upper:
+            chop_class = "CHOPPY"
+        else:
+            chop_class = "NEUTRAL"
+
+    if chop_class == "TRENDING":
+        return weight * 1.0
+    elif chop_class == "NEUTRAL":
+        return weight * 0.5
+    return 0.0   # CHOPPY
+
+
+def _resolve_grade_action(total_score: float) -> tuple[str, str]:
+    for threshold, grade, action in _GRADE_TABLE:
+        if total_score >= threshold:
+            return grade, action
+    return "IGNORE", "IGNORE"
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+async def calculate_ici_score(
+    symbol: str,
+    signal_direction: str,
+    signal_type: str,
+    active_signals: list[str],
+    vix: float,
+    market_time: str,
+) -> dict:
+    """
+    Compute the Intraday Conviction Index score for a signal.
+
+    Parameters
+    ----------
+    symbol           : NSE underlying symbol
+    signal_direction : "LONG" | "SHORT"
+    signal_type      : Primary signal type (e.g. "ORB_BREAKOUT")
+    active_signals   : All detected signals for this symbol (for bonus calc)
+    vix              : Current India VIX value
+    market_time      : IST time string "HH:MM"
+
+    Returns
+    -------
+    {
+        "score":      float (0–100),
+        "grade":      str   (GOD | A | B | IGNORE),
+        "breakdown":  dict  (per-pillar raw scores),
+        "action":     str   (EXECUTE_MARKET | EXECUTE_LIMIT | WATCHLIST | IGNORE),
+        "scored_at":  str   (ISO-8601),
+        "expires_at": str   (ISO-8601, scored_at + 10 min),
+        "symbol":     str,
+        "signal_type": str,
+    }
+    """
+    redis = await get_redis()
+
+    # ── Load snapshot ───────────────────────────────────────────────────
+    snap_raw = await redis.hgetall(f"snapshot:{symbol}")
+    snap = snap_raw or {}
+
+    if not snap:
+        logger.warning("[scorer] No snapshot for %s — score=0", symbol)
+        _now = datetime.now(_IST)
+        return _zero_result(symbol, signal_type, _now)
+
+    # ── Load reference data ──────────────────────────────────────────────
+    nifty_snap_raw = await redis.hgetall("snapshot:NIFTY50")
+    nifty_snap = nifty_snap_raw or {}
+    nifty_prev  = _safe_float(nifty_snap.get("prev_close"), 1.0)
+    nifty_ltp   = _safe_float(nifty_snap.get("ltp"), nifty_prev)
+    nifty_change = _safe_divide(nifty_ltp - nifty_prev, nifty_prev) * 100
+
+    sector = snap.get("sector", "UNKNOWN")
+    sector_avg_raw = await redis.get(f"market:breadth:sector:{sector}")
+    sector_avg_change = float(sector_avg_raw) if sector_avg_raw else 0.0
+
+    # ── Regime-aware weights ────────────────────────────────────────────
+    weights = _get_weights(vix, market_time)
+
+    # ── Score each pillar ────────────────────────────────────────────────
+    p1 = _score_rvol(snap, weights["rvol"], signal_direction)
+    p2 = _score_relative_strength(snap, weights["rs"], signal_direction,
+                                   nifty_change, sector_avg_change)
+    p3 = await _score_options_flow(symbol, weights["options"], signal_direction)
+    p4 = _score_vwap_trend(snap, weights["vwap"], signal_direction)
+    p5 = _score_choppiness(snap, weights["chop"])
+
+    base_score = p1 + p2 + p3 + p4 + p5
+
+    # ── Signal bonuses ──────────────────────────────────────────────────
+    bonus = sum(_SIGNAL_BONUSES.get(sig, 0) for sig in active_signals)
+    total_score = min(base_score + bonus, 100.0)
+    total_score = max(total_score, 0.0)
+
+    grade, action = _resolve_grade_action(total_score)
+
+    now        = datetime.now(_IST)
+    expires_at = now + timedelta(minutes=_SCORE_EXPIRY_MINUTES)
+
+    result = {
+        "symbol":       symbol,
+        "signal_type":  signal_type,
+        "score":        round(total_score, 2),
+        "grade":        grade,
+        "action":       action,
+        "breakdown": {
+            "rvol":    round(p1, 2),
+            "rs":      round(p2, 2),
+            "options": round(p3, 2),
+            "vwap":    round(p4, 2),
+            "chop":    round(p5, 2),
+            "bonus":   bonus,
+        },
+        "weights":      weights,
+        "scored_at":    now.isoformat(),
+        "expires_at":   expires_at.isoformat(),
+    }
+
+    logger.info(
+        "[scorer] %s %s | score=%.1f grade=%s action=%s | "
+        "rvol=%.1f rs=%.1f opts=%.1f vwap=%.1f chop=%.1f bonus=%d",
+        symbol, signal_direction, total_score, grade, action,
+        p1, p2, p3, p4, p5, bonus,
+    )
+
+    return result
+
+
+def _zero_result(symbol: str, signal_type: str, now: datetime) -> dict:
+    return {
+        "symbol":      symbol,
+        "signal_type": signal_type,
+        "score":       0.0,
+        "grade":       "IGNORE",
+        "action":      "IGNORE",
+        "breakdown":   {"rvol": 0, "rs": 0, "options": 0, "vwap": 0, "chop": 0, "bonus": 0},
+        "weights":     {},
+        "scored_at":   now.isoformat(),
+        "expires_at":  (now + timedelta(minutes=_SCORE_EXPIRY_MINUTES)).isoformat(),
+    }
