@@ -216,12 +216,21 @@ class SignalData(BaseModel):
     detected_at: str
 
 
+_INDEX_DISPLAY_NAMES = {
+    "NIFTY":      "NIFTY 50",
+    "BANKNIFTY":  "BANK NIFTY",
+    "FINNIFTY":   "FIN NIFTY",
+    "MIDCPNIFTY": "MIDCAP NIFTY",
+    "SENSEX":     "SENSEX",
+}
+
 class IndexData(BaseModel):
     symbol: str
+    name: str = ""
     ltp: float
     change_pct: float
-    pcr: float
-    pcr_direction: str           # UP / DOWN / FLAT
+    pcr: float = 0.0
+    pcr_direction: str = "FLAT"  # UP / DOWN / FLAT
 
 
 class AIAlignment(BaseModel):
@@ -719,11 +728,12 @@ async def get_indices():
         # Fall back to snapshot for prev_close (written by cruncher/seeder).
         tick = await redis.hgetall(f"tick:{sym}")
         snap = await redis.hgetall(f"snapshot:{sym}")
-        if not tick and not snap:
-            continue
 
-        ltp        = _sf(tick, "ltp") or _sf(snap, "ltp")
-        prev_close = _sf(snap, "prev_close") or ltp or 1.0
+        ltp = _sf(tick, "ltp") or _sf(snap, "ltp")
+        if ltp <= 0:
+            continue  # No data yet — omit tile rather than show 0
+
+        prev_close = _sf(snap, "prev_close") or ltp
         change_pct = (ltp - prev_close) / max(prev_close, 1) * 100
 
         pcr_raw = await redis.get(f"options:pcr:{sym}")
@@ -741,6 +751,7 @@ async def get_indices():
 
         result.append(IndexData(
             symbol=sym,
+            name=_INDEX_DISPLAY_NAMES.get(sym, sym),
             ltp=ltp,
             change_pct=round(change_pct, 2),
             pcr=round(pcr, 3),
