@@ -782,21 +782,113 @@ async def _subscribe_ticks() -> None:
 
 async def _seed_indicators() -> None:
     """
-    Load snapshot:{symbol} hashes from Redis into the in-memory `indicators`
+    Load snapshot:{symbol} data from Redis into the in-memory `indicators`
     dict so the first candle close can do incremental updates.
+
+    The morning_seeder writes snapshot:{symbol} as a Redis STRING containing
+    a JSON-encoded dict. But this cruncher writes further updates via HSET
+    (Redis HASH). Redis doesn't allow mixing types on the same key, so on
+    startup we:
+      1. Read the string value
+      2. Parse the JSON
+      3. Delete the string key
+      4. Re-write the same data as a hash (flattened, all values as strings)
+    This converts seeder output to hash format so later hsets don't crash.
 
     Symbols without a snapshot are logged as warnings and skipped.
     """
     redis   = await get_redis()
     symbols = await get_symbols()
-    seeded, missing = 0, 0
+    seeded, missing, converted = 0, 0, 0
 
     for symbol in symbols:
-        raw = await redis.hgetall(f"snapshot:{symbol}")
-        if not raw:
+        key = f"snapshot:{symbol}"
+
+        # Detect the key type — seeder writes a string, cruncher writes a hash.
+        try:
+            key_type = await redis.type(key)
+        except Exception as exc:
+            logger.warning("[candle_builder] %s: redis.type failed: %s", symbol, exc)
+            missing += 1
+            continue
+
+        if isinstance(key_type, bytes):
+            key_type = key_type.decode("utf-8", errors="replace")
+
+        raw: dict = {}
+
+        if key_type == "none":
             logger.warning(
                 "[candle_builder] No snapshot for %s — skipping until seeder runs.",
                 symbol,
+            )
+            missing += 1
+            continue
+
+        elif key_type == "string":
+            # Seeder wrote a JSON-encoded string. Parse it and convert the key
+            # to a flat hash so cruncher's own HSET calls don't hit WRONGTYPE.
+            try:
+                raw_str = await redis.get(key)
+                if raw_str is None:
+                    missing += 1
+                    continue
+                parsed = json.loads(raw_str)
+            except Exception as exc:
+                logger.warning(
+                    "[candle_builder] %s: JSON parse of seeder snapshot failed: %s",
+                    symbol, exc,
+                )
+                missing += 1
+                continue
+
+            # Flatten nested objects (pivots, supertrend, prev_day, etc.) into
+            # top-level string fields so the later _f() reads still work.
+            flat: dict = {}
+            for k, v in parsed.items():
+                if isinstance(v, dict):
+                    # Nested objects — stringify them as JSON for later consumers
+                    # (signal_engines reads these back). Also, flatten commonly
+                    # accessed fields to top-level so _f() below can find them.
+                    flat[k] = json.dumps(v)
+                    if k == "supertrend":
+                        flat["supertrend_dir"]  = str(v.get("direction", "BULL"))
+                        flat["supertrend_band"] = str(v.get("band", 0.0))
+                    elif k == "prev_day":
+                        for subk in ("open", "high", "low", "close", "volume"):
+                            if subk in v:
+                                flat[f"last_{subk}"] = str(v[subk])
+                elif v is None:
+                    flat[k] = ""
+                else:
+                    flat[k] = str(v)
+
+            # Delete the string key and re-create as a hash
+            try:
+                await redis.delete(key)
+                if flat:
+                    await redis.hset(key, mapping=flat)
+                raw = flat
+                converted += 1
+            except Exception as exc:
+                logger.warning(
+                    "[candle_builder] %s: hash conversion failed: %s",
+                    symbol, exc,
+                )
+                missing += 1
+                continue
+
+        elif key_type == "hash":
+            # Already in the right format (from a previous cruncher run).
+            raw = await redis.hgetall(key)
+            if not raw:
+                missing += 1
+                continue
+
+        else:
+            logger.warning(
+                "[candle_builder] %s: unexpected snapshot type %r — skipping.",
+                symbol, key_type,
             )
             missing += 1
             continue
@@ -836,8 +928,9 @@ async def _seed_indicators() -> None:
         seeded += 1
 
     logger.info(
-        "[candle_builder] Seeded %d symbols from snapshots (%d missing).",
-        seeded, missing,
+        "[candle_builder] Seeded %d symbols from snapshots "
+        "(%d missing, %d converted from seeder JSON to hash).",
+        seeded, missing, converted,
     )
 
 
