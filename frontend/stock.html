@@ -952,7 +952,7 @@ const chart = LightweightCharts.createChart(chartEl, {
   grid:   { vertLines:{color:'#1e293b'}, horzLines:{color:'#1e293b'} },
   crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   rightPriceScale: { borderColor:'#334155' },
-  timeScale: { borderColor:'#334155', timeVisible:true, secondsVisible:false },
+  timeScale: { borderColor:'#334155', timeVisible:true, secondsVisible:false, offset:330 },
   handleScroll: true, handleScale: true
 });
 
@@ -1093,19 +1093,36 @@ async function fetchAndSetPivots() {
   if (d) setPivotLines(d);
 }
 
-// Chart live tick
+// Chart live tick — updates or creates the current 1m candle bar
 function updateChartLiveTick(ltp) {
   try {
     const data = candleSeries.data();
     if (!data || !data.length) return;
+
+    // Current minute bucket in UTC seconds (floored to minute)
+    const nowBucket = Math.floor(Date.now() / 60000) * 60;
     const last = data[data.length - 1];
-    candleSeries.update({
-      time: last.time,
-      open: last.open,
-      high: Math.max(last.high, ltp),
-      low:  Math.min(last.low,  ltp),
-      close: ltp
-    });
+
+    if (last.time === nowBucket) {
+      // Update the current live candle in place
+      candleSeries.update({
+        time: nowBucket,
+        open: last.open,
+        high: Math.max(last.high, ltp),
+        low:  Math.min(last.low,  ltp),
+        close: ltp
+      });
+    } else if (nowBucket > last.time) {
+      // New minute — open a fresh candle
+      candleSeries.update({
+        time: nowBucket,
+        open: ltp,
+        high: ltp,
+        low:  ltp,
+        close: ltp
+      });
+    }
+    // If nowBucket < last.time (seeded future candle), do nothing
   } catch(e) {}
 }
 
@@ -1502,7 +1519,7 @@ async function execOrder() {
     symbol: o.sym, direction: o.direction,
     instrument: o.inst, lots: o.lots,
     sl_pct: o.sl, tg_pct: o.tg,
-    trigger: o.trigger ? parseFloat(o.trigger) : null,
+    trigger_price: o.trigger ? parseFloat(o.trigger) : null,
     strike: o.strike ? parseFloat(o.strike) : null,
     expiry: o.expiry || null,
   };
@@ -1720,6 +1737,7 @@ function renderAccountBar(d) {
 apiFetch('/api/account').then(d => { if (d) renderAccountBar(d); });
 
 // ── 100ms render loop ─────────────────────────────────────────────────────────
+let _lastRenderedLTP = null;
 setInterval(() => {
   if (state.currentLTP) {
     const ltpEl = document.getElementById('header-ltp');
@@ -1733,7 +1751,12 @@ setInterval(() => {
     }
 
     ltpPriceLine.applyOptions({price: state.currentLTP});
-    updateChartLiveTick(state.currentLTP);
+
+    // Only update the candle when LTP changes — prevents "moves per second" effect
+    if (state.currentLTP !== _lastRenderedLTP) {
+      updateChartLiveTick(state.currentLTP);
+      _lastRenderedLTP = state.currentLTP;
+    }
   }
   updatePositionLTPs();
   updateMarginEstimate();
