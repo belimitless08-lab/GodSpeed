@@ -42,7 +42,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from core.config import cfg, validate
-from core.redis_client import get_redis, close_redis
+from core.redis_client import get_redis
 from core.universe_builder import get_symbols
 
 from strategy_brain.macro_gatekeeper  import check_macro_gates
