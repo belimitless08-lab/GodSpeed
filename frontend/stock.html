@@ -1520,8 +1520,8 @@ async function execOrder() {
     instrument: o.inst, lots: o.lots,
     sl_pct: o.sl, tg_pct: o.tg,
     trigger_price: o.trigger ? parseFloat(o.trigger) : null,
-    strike: o.strike ? parseFloat(o.strike) : null,
-    expiry: o.expiry || null,
+    atm_strike: o.strike ? parseFloat(o.strike) : null,
+    expiry_date: o.expiry || null,
   };
   const r = await fetch(API_BASE + '/api/orders', {
     method: 'POST',
