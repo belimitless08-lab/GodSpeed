@@ -105,6 +105,32 @@ def _safe_float(value, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
+async def _get_execution_ltp(symbol: str, instrument: str) -> float:
+    """
+    Returns the correct LTP for order execution and PnL calculation.
+
+    EQ  → tick:{symbol}.ltp            (underlying spot / equity price)
+    CE  → options:live:{symbol}.ce_ltp (ATM call premium from options feed)
+    PE  → options:live:{symbol}.pe_ltp (ATM put premium from options feed)
+
+    Falls back to tick:{symbol}.ltp if options feed has no data yet.
+    """
+    redis = await get_redis()
+    if instrument in ("CE", "PE"):
+        opts = await redis.hgetall(f"options:live:{symbol}")
+        key  = "ce_ltp" if instrument == "CE" else "pe_ltp"
+        ltp  = _safe_float(opts.get(key))
+        if ltp > 0:
+            return ltp
+        # Options feed offline or pre-market — fall back to spot (order will be
+        # rejected downstream by NO_LTP guard if spot is also unavailable)
+        logger.warning(
+            "[order_manager] options:live:%s missing %s — falling back to spot tick",
+            symbol, key,
+        )
+    tick = await redis.hgetall(f"tick:{symbol}")
+    return _safe_float(tick.get("ltp"))
+
 
 # ---------------------------------------------------------------------------
 # Paper account management
@@ -506,11 +532,9 @@ async def close_trade(trade_id: str, exit_price: float, reason: str) -> dict:
 # EOD forced close
 # ---------------------------------------------------------------------------
 
-async def get_best_exit_price(symbol: str, entry_price: float) -> float:
-    # 1. Live tick
-    redis = await get_redis()
-    tick = await redis.hgetall(f"tick:{symbol}")
-    ltp = float(tick.get("ltp", 0))
+async def get_best_exit_price(symbol: str, entry_price: float, instrument: str = "EQ") -> float:
+    # 1. Live price — use options feed for CE/PE, tick for EQ
+    ltp = await _get_execution_ltp(symbol, instrument)
     if ltp > 0:
         return ltp
 
@@ -546,7 +570,7 @@ async def eod_close_all() -> None:
         except json.JSONDecodeError:
             continue
 
-        ltp = await get_best_exit_price(trade["symbol"], trade["entry_price"])
+        ltp = await get_best_exit_price(trade["symbol"], trade["entry_price"], trade.get("instrument", "EQ"))
 
         await close_trade(trade_id, ltp, reason="EOD_CLOSE")
 
@@ -589,8 +613,9 @@ async def monitor_stop_losses() -> None:
                 if trade.get("status") != "OPEN":
                     continue
 
-                tick = await redis.hgetall(f"tick:{trade['symbol']}")
-                ltp  = _safe_float(tick.get("ltp"))
+                ltp = await _get_execution_ltp(
+                    trade["symbol"], trade.get("instrument", "EQ")
+                )
                 if ltp <= 0:
                     continue
 
@@ -649,8 +674,9 @@ async def update_unrealised_pnl() -> None:
                 except json.JSONDecodeError:
                     continue
 
-                tick = await redis.hgetall(f"tick:{trade['symbol']}")
-                ltp  = _safe_float(tick.get("ltp"), _safe_float(trade.get("entry_price")))
+                ltp = await _get_execution_ltp(
+                    trade["symbol"], trade.get("instrument", "EQ")
+                )
                 if ltp <= 0:
                     ltp = _safe_float(trade.get("entry_price"))
 
@@ -827,10 +853,10 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
     redis  = await get_redis()
     symbol = order["symbol"]
 
-    tick = await redis.hgetall(f"tick:{symbol}")
-    ltp  = _safe_float(tick.get("ltp"))
+    instrument = order.get("instrument", "EQ")
+    ltp = await _get_execution_ltp(symbol, instrument)
     if ltp <= 0:
-        logger.error("[order_manager] Trigger fill rejected — no LTP for %s", symbol)
+        logger.error("[order_manager] Trigger fill rejected — no LTP for %s %s", symbol, instrument)
         return {"status": "REJECTED", "reason": "NO_LTP"}
 
     snap     = await redis.hgetall(f"snapshot:{symbol}")
@@ -838,7 +864,6 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
     if lot_size < 1:
         lot_size = 1
 
-    instrument = order.get("instrument", "EQ")
     if instrument == "EQ":
         # Equity: user enters plain share quantity — never multiply by F&O lot size
         quantity = order["lots"]
