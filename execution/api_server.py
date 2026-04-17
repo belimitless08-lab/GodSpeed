@@ -594,6 +594,31 @@ async def debug_clean_corrupted_keys():
     }
 
 
+@app.get("/api/debug/clean-corrupted-keys")
+async def debug_clean_corrupted_keys_get():
+    """
+    DEBUG (GET, browser-friendly): same as POST version above.
+    Deletes stale/corrupted Redis keys that have wrong types.
+    """
+    redis = await get_redis()
+    keys_to_clean = [
+        "market:breadth",
+        "market:world_indices",
+        "ai:premarket",
+        "ai:premarket:summary",
+    ]
+    deleted = []
+    for key in keys_to_clean:
+        exists = await redis.exists(key)
+        if exists:
+            await redis.delete(key)
+            deleted.append(key)
+    return {
+        "deleted_keys":    deleted,
+        "message":         "Corrupted keys cleaned. Dependent services will repopulate.",
+    }
+
+
 # ===========================================================================
 # Market breadth and indices
 # ===========================================================================
