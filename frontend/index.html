@@ -647,8 +647,8 @@
                        padding:5px 10px;color:var(--text);
                        font-family:'JetBrains Mono',monospace;font-size:12px;
                        outline:none;"
-                oninput="filterWLSymbols(this.value)"
-                onfocus="showWLDropdown()"
+                oninput="filterWLSymbols(this.value); if(this.value.trim()) showWLDropdown(); else hideWLDropdown()"
+                onfocus="if(this.value.trim()) showWLDropdown()"
                 onblur="setTimeout(hideWLDropdown,200)"/>
             <div style="position:relative;">
                 <div id="wl-dropdown" style="display:none;position:absolute;
@@ -751,10 +751,10 @@
         <button class="inst-tab" data-inst="PE" onclick="selectMOInst(this)">PE</button>
       </div>
 
-      <!-- Lots / TG% / SL% -->
+      <!-- Qty/Lots / TG% / SL% -->
       <div class="ot-controls">
         <div class="ot-ctrl-group">
-          <span class="ot-ctrl-label">Lots</span>
+          <span class="ot-ctrl-label" id="mo-qty-label">Lots</span>
           <button class="ot-num-btn" onclick="adjustMO('lots',-1)">−</button>
           <input type="number" class="ot-num" id="mo-lots" value="5" min="1" max="999" oninput="syncMOInput('lots',this)" onchange="syncMOInput('lots',this)"/>
           <button class="ot-num-btn" onclick="adjustMO('lots',1)">+</button>
@@ -1098,43 +1098,46 @@ async function fetchIndices() {
     apiFetch('/api/world-indices')
   ]);
 
-  const hasRealIdx = idx && Array.isArray(idx) && idx.length > 0;
-  const hasRealWorld = world && Array.isArray(world) && world.length > 0;
+  const hasRealIdx   = idx   && Array.isArray(idx)   && idx.length   > 0;
+  const hasRealWorld = world && Array.isArray(world)  && world.length > 0;
 
   if (hasRealIdx) {
     renderIndices(idx);
+    // Remove offline banner if feed recovered
+    const stale = document.getElementById('demo-label');
+    if (stale) stale.remove();
   } else {
-    // Demo data — clearly marked
-    renderIndices([
-      {symbol:'NIFTY50',   name:'NIFTY 50',     ltp:22841.50, change_pct:0.42,  pcr:1.12, pcr_direction:'UP'},
-      {symbol:'SENSEX',    name:'SENSEX',        ltp:75341.20, change_pct:0.38,  pcr:null, pcr_direction:'UP'},
-      {symbol:'BANKNIFTY', name:'BANK NIFTY',    ltp:48762.35, change_pct:-0.18, pcr:0.91, pcr_direction:'DOWN'},
-      {symbol:'MIDCPNIFTY',name:'MIDCAP NIFTY',  ltp:10842.10, change_pct:0.65,  pcr:null, pcr_direction:'UP'},
-      {symbol:'FINNIFTY',  name:'FIN NIFTY',     ltp:21438.90, change_pct:0.22,  pcr:1.05, pcr_direction:'UP'},
-    ]);
-    // Add demo label to index bar
-    const bar = document.getElementById('index-tiles');
-    if (bar && !document.getElementById('demo-label')) {
+    // Index feed offline — show placeholder tiles, never fake prices
+    const names = [
+      {symbol:'NIFTY50',   name:'NIFTY 50'},
+      {symbol:'SENSEX',    name:'SENSEX'},
+      {symbol:'BANKNIFTY', name:'BANK NIFTY'},
+      {symbol:'MIDCPNIFTY',name:'MIDCAP NIFTY'},
+      {symbol:'FINNIFTY',  name:'FIN NIFTY'},
+    ];
+    const container = document.getElementById('index-tiles');
+    container.innerHTML = names.map(n => `
+      <div class="index-tile" style="opacity:0.45;">
+        <div class="index-name">${n.name}</div>
+        <div class="index-ltp" style="color:var(--muted);font-size:13px;">—</div>
+        <div class="index-change" style="color:var(--muted);font-size:9px;">No feed</div>
+      </div>`).join('');
+    if (!document.getElementById('demo-label')) {
       const label = document.createElement('div');
       label.id = 'demo-label';
       label.style.cssText = 'padding:4px 10px;font-size:9px;color:#f59e0b;' +
           'display:flex;align-items:center;border-right:1px solid #334155;white-space:nowrap;';
-      label.textContent = 'DEMO · Market Closed';
-      bar.appendChild(label);
+      label.textContent = '⚠ Index feed offline';
+      container.appendChild(label);
     }
   }
 
   if (hasRealWorld) {
     renderWorldIndices(world);
   } else {
-    renderWorldIndices([
-      {name:'DOW',       change_pct:-0.30},
-      {name:'NASDAQ',    change_pct:0.80},
-      {name:'GIFT NIFTY',change_pct:0.10},
-      {name:'SGX',       change_pct:0.10},
-      {name:'HANG SENG', change_pct:-1.20},
-      {name:'CRUDE',     change_pct:0.50},
-    ]);
+    const strip = document.getElementById('world-strip');
+    if (strip) strip.innerHTML =
+      '<span style="color:var(--muted);font-size:9px;letter-spacing:0.1em;">WORLD &nbsp;—&nbsp; unavailable</span>';
   }
 }
 
@@ -1143,22 +1146,39 @@ async function fetchIndices() {
 ══════════════════════════════════════════ */
 async function fetchBreadth() {
   const data = await apiFetch('/api/breadth');
-  const d = data || {advances:1284,declines:820,unchanged:96,ad_ratio:1.56,above_ema200:1102,above_ema200_pct:44.1,
-    vix:14.32,vix_change:-0.44,nifty_trend:'BULL',market_open:true,fii_flow:242.5,dii_flow:189.3,pcr:1.12};
 
-  document.getElementById('b-adv').textContent = d.advances ?? '—';
-  document.getElementById('b-dec').textContent = d.declines ?? '—';
+  // Breadth API unavailable — show dashes, never show stale/fake data
+  if (!data) {
+    const dash = '—';
+    ['b-adv','b-dec','b-unc','b-adr','b-ema'].forEach(id => {
+      document.getElementById(id).textContent = dash;
+    });
+    document.getElementById('m-vix').textContent   = dash;
+    document.getElementById('m-trend').textContent = dash;
+    document.getElementById('m-pcr').textContent   = dash;
+    document.getElementById('m-fii').textContent   = dash;
+    document.getElementById('m-dii').textContent   = dash;
+    return;
+  }
+
+  const d = data;
+  document.getElementById('b-adv').textContent = d.advances  ?? '—';
+  document.getElementById('b-dec').textContent = d.declines  ?? '—';
   document.getElementById('b-unc').textContent = d.unchanged ?? '—';
-  document.getElementById('b-adr').textContent = d.ad_ratio ? fmt(d.ad_ratio) : '—';
+  document.getElementById('b-adr').textContent = d.ad_ratio  ? fmt(d.ad_ratio) : '—';
   const ema = d.above_ema200 != null ? `${d.above_ema200} (${fmt(d.above_ema200_pct,1)}%)` : '—';
   document.getElementById('b-ema').textContent = ema;
 
   const vixChg = d.vix_change || 0;
-  document.getElementById('m-vix').innerHTML = `<span style="color:var(--gold)">${fmt(d.vix)}</span> <span style="color:${colorClass(vixChg)};font-size:10px;">${pct(vixChg)}</span>`;
+  document.getElementById('m-vix').innerHTML = d.vix
+    ? `<span style="color:var(--gold)">${fmt(d.vix)}</span> <span style="color:${colorClass(vixChg)};font-size:10px;">${pct(vixChg)}</span>`
+    : '—';
 
-  const trend = d.nifty_trend || 'UNKNOWN';
-  document.getElementById('m-trend').innerHTML = `<span style="color:${trend==='BULL'?'var(--green)':'var(--red)'}; font-weight:800;">${trend}</span>`;
-  document.getElementById('m-pcr').textContent = d.pcr ? fmt(d.pcr) : '—';
+  const trend = d.nifty_trend || null;
+  document.getElementById('m-trend').innerHTML = trend
+    ? `<span style="color:${trend==='BULL'?'var(--green)':'var(--red)'}; font-weight:800;">${trend}</span>`
+    : '—';
+  document.getElementById('m-pcr').textContent = d.pcr      ? fmt(d.pcr) : '—';
   document.getElementById('m-fii').textContent = d.fii_flow != null ? fmtINR(d.fii_flow * 1e7) : '—';
   document.getElementById('m-dii').textContent = d.dii_flow != null ? fmtINR(d.dii_flow * 1e7) : '—';
 
@@ -1172,31 +1192,28 @@ async function fetchBreadth() {
 
 async function fetchAIPremarket() {
   const data = await apiFetch('/api/ai/premarket');
-  const d = data || {
-    context: "Global risk-off tone. Dow futures down 0.3%. Nifty likely to face resistance at 22,800.",
-    timestamp: new Date().toISOString(),
-    top_positive: [
-      {symbol:'RELIANCE', sentiment:'BULLISH', alignment:'CONFIRMING', ici:88},
-      {symbol:'INFY', sentiment:'BULLISH', alignment:'CONFIRMING', ici:82},
-      {symbol:'TCS', sentiment:'BULLISH', alignment:'NEUTRAL', ici:76},
-      {symbol:'HDFCBANK', sentiment:'NEUTRAL', alignment:'CONFIRMING', ici:70},
-      {symbol:'ICICIBANK', sentiment:'BULLISH', alignment:'CONFIRMING', ici:91},
-    ],
-    top_negative: [
-      {symbol:'TATASTEEL', sentiment:'BEARISH', alignment:'CONFIRMING', ici:85},
-      {symbol:'HINDALCO', sentiment:'BEARISH', alignment:'CONFLICTING', ici:72},
-      {symbol:'COALINDIA', sentiment:'BEARISH', alignment:'CONFIRMING', ici:68},
-      {symbol:'ONGC', sentiment:'NEUTRAL', alignment:'CONFIRMING', ici:54},
-      {symbol:'NTPC', sentiment:'BEARISH', alignment:'NEUTRAL', ici:61},
-    ]
-  };
 
-  if (d.context) document.getElementById('ai-context-text').textContent = d.context;
-  if (d.timestamp) {
-    const ts = new Date(d.timestamp);
-    document.getElementById('ai-ts').textContent = ts.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+  if (!data) {
+    // AI pipeline unavailable — show clear message, never fabricated context
+    document.getElementById('ai-context-text').textContent =
+      'AI context unavailable — brain service offline or not yet run today.';
+    document.getElementById('ai-context-text').style.color = 'var(--muted)';
+    document.getElementById('ai-ts').textContent = '—';
+    renderAIStocks('ai-pos-list', 'ai-pos-count', []);
+    renderAIStocks('ai-neg-list', 'ai-neg-count', []);
+    return;
   }
 
+  const d = data;
+  if (d.context) {
+    document.getElementById('ai-context-text').textContent = d.context;
+    document.getElementById('ai-context-text').style.color = '';  // restore default
+  }
+  if (d.timestamp) {
+    const ts = new Date(d.timestamp);
+    document.getElementById('ai-ts').textContent =
+      ts.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'});
+  }
   renderAIStocks('ai-pos-list', 'ai-pos-count', d.top_positive || []);
   renderAIStocks('ai-neg-list', 'ai-neg-count', d.top_negative || []);
 }
@@ -1304,32 +1321,9 @@ async function fetchSignals() {
   if (data) {
     signalData = data;
     renderSignalCards(data);
-  } else {
-    // Demo data
-    const demo = {
-      opening_drive: [
-        {symbol:'INFY', ici_score:92, signal_type:'Gap+Vol', direction:'LONG', ce_tradability:'GREEN', pe_tradability:'AMBER', choppiness_class:'TRENDING'},
-        {symbol:'HCLTECH', ici_score:78, signal_type:'Gap+Vol', direction:'SHORT', ce_tradability:'AMBER', pe_tradability:'GREEN', choppiness_class:'NEUTRAL'},
-      ],
-      orb_breakout: [
-        {symbol:'RELIANCE', ici_score:88, signal_type:'ORB 15m', direction:'LONG', ce_tradability:'GREEN', pe_tradability:'RED', choppiness_class:'TRENDING'},
-      ],
-      hourly_breakout: [
-        {symbol:'BAJFINANCE', ici_score:81, signal_type:'1H BO', direction:'LONG', ce_tradability:'GREEN', pe_tradability:'AMBER', choppiness_class:'TRENDING'},
-        {symbol:'SBILIFE', ici_score:65, signal_type:'1H BO', direction:'SHORT', ce_tradability:'AMBER', pe_tradability:'GREEN', choppiness_class:'CHOPPY'},
-      ],
-      choppiness_break: [],
-      supertrend_flip: [
-        {symbol:'WIPRO', ici_score:75, signal_type:'ST Flip', direction:'LONG', ce_tradability:'GREEN', pe_tradability:'AMBER', choppiness_class:'TRENDING'},
-      ],
-      volume_surge: [
-        {symbol:'TATAMOTORS', ici_score:86, signal_type:'Vol Shock', direction:'LONG', ce_tradability:'GREEN', pe_tradability:'GREEN', choppiness_class:'TRENDING'},
-        {symbol:'MARUTI', ici_score:59, signal_type:'Vol Shock', direction:'SHORT', ce_tradability:'RED', pe_tradability:'GREEN', choppiness_class:'NEUTRAL'},
-      ]
-    };
-    signalData = demo;
-    renderSignalCards(demo);
   }
+  // API unavailable (market closed / service down):
+  // keep signalData as-is so last known signals stay visible.
 }
 
 /* ══════════════════════════════════════════
@@ -1415,7 +1409,7 @@ function createChart() {
     grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     rightPriceScale: { borderColor: '#334155' },
-    timeScale: { borderColor: '#334155', timeVisible: true, secondsVisible: false },
+    timeScale: { borderColor: '#334155', timeVisible: true, secondsVisible: false, offset: 330 },
   });
   candleSeries = chart.addCandlestickSeries({
     upColor: '#22c55e', downColor: '#ef4444',
@@ -1435,56 +1429,48 @@ async function loadChart(symbol, tf) {
   document.getElementById('cp-sym').textContent = symbol;
   document.getElementById('cp-ltp').textContent = '…';
 
-  // Candles
-  const candles = await apiFetch(`/api/candles/${symbol}/${tf}`);
-  if (candles && candles.length) {
-    const mapped = candles.map(c => ({
-      time: c.time,
-      open: c.open, high: c.high, low: c.low, close: c.close
+  // Standardised URL: query-param form, same as stock.html
+  const data = await apiFetch(`/api/candles/${symbol}?tf=${tf}`);
+
+  // Response shape: {candles:[...], ema9:[...], ema16:[...], ema200:[...], vwap:[...]}
+  // or legacy bare array — handle both
+  const rawCandles = data && data.candles ? data.candles
+                   : (Array.isArray(data) ? data : null);
+
+  if (rawCandles && rawCandles.length) {
+    const mapped = rawCandles.map(c => ({
+      time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
     }));
     candleSeries.setData(mapped);
 
-    // Compute EMAs
-    const ema16Data = computeEMA(candles, 16);
-    const ema200Data = computeEMA(candles, 200);
-    ema16Series.setData(ema16Data);
-    ema200Series.setData(ema200Data);
+    // EMAs — prefer backend-computed, fall back to client-side
+    if (data && data.ema16) {
+      ema16Series.setData(data.ema16.map((v, i) => ({ time: rawCandles[i].time, value: v })).filter(x => x.value));
+    } else {
+      ema16Series.setData(computeEMA(mapped, 16));
+    }
+    if (data && data.ema200) {
+      ema200Series.setData(data.ema200.map((v, i) => ({ time: rawCandles[i].time, value: v })).filter(x => x.value));
+    } else {
+      ema200Series.setData(computeEMA(mapped, 200));
+    }
 
-    // LTP from last candle
-    const last = candles[candles.length - 1];
+    const last = mapped[mapped.length - 1];
     document.getElementById('cp-ltp').textContent = fmt(last.close);
-    ltpLine.setData([{time: last.time, value: last.close}]);
+    ltpLine.setData([{ time: last.time, value: last.close }]);
+    chart.timeScale().fitContent();
   } else {
-    // Demo candles
-    const demoCandles = generateDemoCandles(symbol);
-    candleSeries.setData(demoCandles);
-    ema16Series.setData(computeEMA(demoCandles, 16));
-    ema200Series.setData(computeEMA(demoCandles, 200));
-    const last = demoCandles[demoCandles.length-1];
-    document.getElementById('cp-ltp').textContent = fmt(last.close);
-    ltpLine.setData([{time: last.time, value: last.close}]);
+    // No data — clear chart and show placeholder, never show fake candles
+    candleSeries.setData([]);
+    ema16Series.setData([]);
+    ema200Series.setData([]);
+    ltpLine.setData([]);
+    document.getElementById('cp-ltp').textContent = '—';
   }
 
   // Pivots
   const pivots = await apiFetch(`/api/pivots/${symbol}`);
   if (pivots) renderPivotLines(pivots);
-
-  // Options
-  const opts = await apiFetch(`/api/options/${symbol}`);
-  if (opts) {
-    currentOptionsData = opts;
-    document.getElementById('cp-atm').textContent = opts.atm || '—';
-    document.getElementById('cp-ce').textContent  = fmt(opts.ce_ltp);
-    document.getElementById('cp-pe').textContent  = fmt(opts.pe_ltp);
-    const spread = opts.ce_ask && opts.pe_bid ? fmt(Math.abs(opts.ce_ask - opts.pe_bid)) : '—';
-    document.getElementById('cp-spread').textContent = spread;
-  }
-
-  // Snapshot
-  const snap = await apiFetch(`/api/snapshot/${symbol}`);
-  if (snap && snap.ltp) {
-    document.getElementById('cp-ltp').textContent = fmt(snap.ltp);
-  }
 }
 
 function computeEMA(candles, period) {
@@ -1514,25 +1500,7 @@ function renderPivotLines(pivots) {
   });
 }
 
-function generateDemoCandles(symbol) {
-  const seed = symbol.charCodeAt(0) * 137 + symbol.charCodeAt(1 % symbol.length) * 31;
-  let price = 1000 + (seed % 3000);
-  const candles = [];
-  // Today 9:15 AM IST = UTC 3:45 AM
-  const now = new Date();
-  now.setHours(3, 45, 0, 0);
-  const start = Math.floor(now.getTime() / 1000);
-  for (let i = 0; i < 60; i++) {
-    const rng = (Math.sin(seed + i * 7.3) + 1) / 2;
-    const delta = (rng - 0.48) * price * 0.01;
-    const open = price;
-    price += delta;
-    const high = Math.max(open, price) + Math.abs(delta) * 0.5;
-    const low  = Math.min(open, price) - Math.abs(delta) * 0.5;
-    candles.push({ time: start + i * 300, open: +open.toFixed(2), high: +high.toFixed(2), low: +low.toFixed(2), close: +price.toFixed(2) });
-  }
-  return candles;
-}
+// generateDemoCandles removed — never show fake data
 
 /* Chart popup position logic */
 function positionPopup(e) {
@@ -1639,15 +1607,29 @@ function handleTickUpdate(data) {
   if (tile) { /* update inline */ }
 }
 
-/* ── 100ms render loop: live LTP in positions drawer (Change 6) ── */
+/* ── 100ms render loop: live LTP + PnL in positions drawer ── */
 setInterval(() => {
   if (document.getElementById('positions-drawer').style.transform === 'translateY(0%)') {
     state.openTrades.forEach(t => {
       const tick = state.ticks[t.symbol];
       if (!tick) return;
       const ltp = tick.ltp;
+
+      // Update LTP display
       const ltpEl = document.getElementById(`pos-ltp-${t.id}`);
       if (ltpEl) ltpEl.textContent = `₹${fmt(ltp)}`;
+
+      // Recalculate and update PnL display in real time
+      const pnl = t.direction === 'LONG'
+        ? (ltp - t.entry_price) * t.quantity
+        : (t.entry_price - ltp) * t.quantity;
+      const pnlPct = t.entry_price > 0 ? (pnl / (t.entry_price * t.quantity) * 100) : 0;
+      const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const pnlEl = document.getElementById(`pos-pnl-${t.id}`);
+      if (pnlEl) {
+        pnlEl.style.color = pnlColor;
+        pnlEl.innerHTML = `${pnl >= 0 ? '+' : ''}₹${Math.abs(pnl).toFixed(0)}<span style="font-size:9px;"> (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)</span>`;
+      }
     });
   }
   // Deferred chart LTP update (stutter fix)
@@ -1672,6 +1654,7 @@ function cpSelectInst(btn) {
   cpInst = btn.dataset.inst
   const optsInfo = document.getElementById('cp-opts-info')
   optsInfo.style.display = (cpInst === 'CE' || cpInst === 'PE') ? 'block' : 'none'
+  cpUpdateTriggerHelper()
   cpUpdateConfirm()
 }
 
@@ -1921,6 +1904,8 @@ function setMOType(type) {
       <button class="inst-tab active" data-inst="CE" onclick="selectMOInst(this)">CE</button>
       <button class="inst-tab" data-inst="PE" onclick="selectMOInst(this)">PE</button>`;
     moInst = 'CE';
+    const qtyLbl = document.getElementById('mo-qty-label');
+    if (qtyLbl) qtyLbl.textContent = 'Lots';
     fetchMOExpiries();
   } else {
     tabs.innerHTML = `
@@ -1928,6 +1913,8 @@ function setMOType(type) {
       <button class="inst-tab" data-inst="CE" onclick="selectMOInst(this)">CE</button>
       <button class="inst-tab" data-inst="PE" onclick="selectMOInst(this)">PE</button>`;
     moInst = 'EQ';
+    const qtyLbl = document.getElementById('mo-qty-label');
+    if (qtyLbl) qtyLbl.textContent = 'Qty';
   }
   moUpdateConfirm();
 }
@@ -1958,6 +1945,9 @@ function selectMOInst(btn) {
   btn.closest('#mo-inst-tabs').querySelectorAll('.inst-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
   moInst = btn.dataset.inst;
+  const qtyLbl = document.getElementById('mo-qty-label');
+  if (qtyLbl) qtyLbl.textContent = moInst === 'EQ' ? 'Qty' : 'Lots';
+  moUpdateTriggerHelper();
   moUpdateConfirm();
 }
 
@@ -2209,9 +2199,8 @@ function renderPositions(trades) {
                 <button class="chart-open-btn" onclick="openChart('${t.symbol}',event)" title="Chart">↗</button>
                 <span class="pos-inst">${t.instrument || 'EQ'}</span>
                 <span style="color:${dirColor};font-weight:700;font-size:11px;">${dirLabel}</span>
-                <span style="margin-left:auto;color:${pnlColor};font-weight:700;font-size:12px;">
-                    ${pnl >= 0 ? '+' : ''}₹${Math.abs(pnl).toFixed(0)}
-                    <span style="font-size:9px;">(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)</span>
+                <span id="pos-pnl-${t.id}" style="margin-left:auto;color:${pnlColor};font-weight:700;font-size:12px;">
+                    ${pnl >= 0 ? '+' : ''}₹${Math.abs(pnl).toFixed(0)}<span style="font-size:9px;"> (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)</span>
                 </span>
             </div>
             <div class="pos-sub">
@@ -2498,8 +2487,10 @@ function filterWLSymbols(query) {
 }
 
 function showWLDropdown() {
-    filterWLSymbols(document.getElementById('wl-search').value)
-    document.getElementById('wl-dropdown').style.display = 'block'
+    const q = document.getElementById('wl-search').value.trim();
+    if (!q) return;  // don't dump all stocks on empty focus
+    filterWLSymbols(q);
+    document.getElementById('wl-dropdown').style.display = 'block';
 }
 
 function hideWLDropdown() {
@@ -2508,11 +2499,17 @@ function hideWLDropdown() {
 
 function addToWatchlist(symbol) {
     if (!watchlist.includes(symbol)) {
-        watchlist.push(symbol)
-        saveWatchlist()
-        renderWatchlist()
-        document.getElementById('wl-search').value = ''
-        hideWLDropdown()
+        watchlist.push(symbol);
+        saveWatchlist();
+        renderWatchlist();
+        // Fetch snapshot immediately so LTP/chgPct shows right away
+        (async () => {
+            if (!state.snapshots) state.snapshots = {};
+            const snap = await apiFetch(`/api/snapshot/${symbol}`);
+            if (snap) { state.snapshots[symbol] = snap; renderWatchlist(); }
+        })();
+        document.getElementById('wl-search').value = '';
+        hideWLDropdown();
     }
 }
 
@@ -2523,85 +2520,101 @@ function removeFromWatchlist(symbol) {
 }
 
 function renderWatchlist() {
-    const el = document.getElementById('watchlist-rows')
-    if (!el) return
+    const el = document.getElementById('watchlist-rows');
+    if (!el) return;
     if (!watchlist.length) {
-        el.innerHTML = '<div class="empty-state" style="padding:16px;"><div style="font-size:11px;color:var(--muted);">Add symbols to track them here</div></div>'
-        return
+        el.innerHTML = '<div style="padding:16px;font-size:11px;color:var(--muted);text-align:center;">Add symbols to watch them here</div>';
+        return;
     }
-    el.innerHTML = watchlist.map(sym => {
-        const snap = state.snapshots?.[sym] || {}
-        const tick = state.ticks?.[sym] || {}
-        const ltp = tick.ltp || snap.last_close || 0
-        const chgPct = snap.prev_close ? ((ltp - snap.prev_close) / snap.prev_close * 100) : 0
-        const chop = snap.choppiness_class || 'NEUTRAL'
-        const chopIcon = chop === 'TRENDING' ? '↗' : chop === 'CHOPPY' ? '⟳' : '→'
-        const chopColor = chop === 'TRENDING' ? 'var(--green)' : chop === 'CHOPPY' ? 'var(--red)' : 'var(--gold)'
-        const iciScore = snap.ici_score ? Math.round(snap.ici_score) : null
-        const iciGrade = snap.ici_grade || ''
-        const iciColor = iciGrade === 'GOD' ? '#f59e0b'
-            : iciGrade === 'A' ? 'var(--green)'
-            : iciGrade === 'B' ? 'var(--accent)'
-            : 'var(--muted)'
-        const opts = state.optionsData?.[sym] || {}
-        const ceBadge = opts.ce?.badge || null
-        const peBadge = opts.pe?.badge || null
-        const dotColor = b => b === 'GREEN' ? 'var(--green)'
-            : b === 'AMBER' ? 'var(--gold)'
-            : b === 'RED' ? 'var(--red)' : 'var(--muted)'
-        return `<div style="display:grid;
-            grid-template-columns:90px 80px 80px 60px 70px 50px 24px;
-            gap:4px;align-items:center;padding:6px 14px;
-            border-bottom:1px solid rgba(51,65,85,0.35);
-            transition:background 0.1s;"
-            onmouseenter="this.style.background='rgba(56,189,248,0.04)'"
+    const COLS = '112px 88px 50px 50px 50px 50px 66px 20px';
+    const HDR = `<div style="display:grid;grid-template-columns:${COLS};
+        gap:0;padding:4px 12px;background:rgba(15,23,42,0.95);
+        border-bottom:2px solid rgba(51,65,85,0.7);position:sticky;top:0;z-index:2;">
+        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">SYMBOL</span>
+        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">LTP / CHG%</span>
+        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">ICI</span>
+        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">CHOP</span>
+        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">CE</span>
+        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">PE</span>
+        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">TREND</span>
+        <span></span></div>`;
+
+    const rows = watchlist.map(sym => {
+        const snap = state.snapshots?.[sym] || {};
+        const tick = state.ticks?.[sym]   || {};
+        const ltp  = tick.ltp || snap.last_close || 0;
+        const chgPct = (snap.prev_close && ltp)
+            ? ((ltp - snap.prev_close) / snap.prev_close * 100) : null;
+        const chgColor = chgPct === null ? 'var(--muted)' : chgPct >= 0 ? 'var(--green)' : 'var(--red)';
+        const chgStr   = chgPct === null ? '\u2014'
+            : (chgPct >= 0 ? '+' : '') + chgPct.toFixed(2) + '%';
+
+        const iciScore = snap.ici_score ? Math.round(snap.ici_score) : null;
+        const iciGrade = snap.ici_grade || '';
+        const iciColor = iciGrade === 'GOD' ? '#f59e0b' : iciGrade === 'A' ? 'var(--green)'
+            : iciGrade === 'B' ? 'var(--accent)' : 'var(--muted)';
+        const iciHtml = iciScore
+            ? `<span style="font-size:10px;font-weight:700;color:${iciColor};background:rgba(0,0,0,0.3);padding:2px 5px;border-radius:3px;">${iciGrade==='GOD'?'\u2605':iciGrade}\u00a0${iciScore}</span>`
+            : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
+
+        const chop = snap.choppiness_class || null;
+        const chopColor = chop === 'TRENDING' ? 'var(--green)' : chop === 'CHOPPY' ? 'var(--red)' : 'var(--gold)';
+        const chopLabel = chop === 'TRENDING' ? 'TRD' : chop === 'CHOPPY' ? 'CHOP' : chop === 'NEUTRAL' ? 'NEU' : null;
+        const chopHtml = chopLabel
+            ? `<span style="font-size:9px;font-weight:700;color:${chopColor};border:1px solid ${chopColor};padding:1px 4px;border-radius:3px;">${chopLabel}</span>`
+            : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
+
+        const opts     = state.optionsData?.[sym] || {};
+        const ceBadge  = snap.ce_tradability || opts.ce?.badge || null;
+        const peBadge  = snap.pe_tradability || opts.pe?.badge || null;
+        const tC = b => b==='GREEN'?'var(--green)':b==='AMBER'?'var(--gold)':b==='RED'?'var(--red)':'var(--muted)';
+        const tH = b => b
+            ? `<span style="font-size:9px;font-weight:700;color:${tC(b)};border:1px solid ${tC(b)};padding:1px 4px;border-radius:3px;">${b}</span>`
+            : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
+
+        const st      = snap.supertrend_dir || null;
+        const stColor = st==='BULL'?'var(--green)':st==='BEAR'?'var(--red)':'var(--muted)';
+        const stBg    = st==='BULL'?'rgba(34,197,94,0.12)':st==='BEAR'?'rgba(239,68,68,0.12)':'transparent';
+        const stHtml  = st
+            ? `<span style="font-size:9px;font-weight:800;color:${stColor};background:${stBg};padding:2px 5px;border-radius:3px;">${st==='BULL'?'\u25b2 BULL':'\u25bc BEAR'}</span>`
+            : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
+
+        return `<div style="display:grid;grid-template-columns:${COLS};
+            gap:0;align-items:center;padding:6px 12px;
+            border-bottom:1px solid rgba(51,65,85,0.2);transition:background .1s;"
+            onmouseenter="this.style.background='rgba(56,189,248,0.05)'"
             onmouseleave="this.style.background=''">
-            <div style="display:flex;align-items:center;gap:4px;">
-                <span style="font-weight:700;font-size:12px;color:var(--accent);
-                    cursor:pointer;" onclick="openChart('${sym}',event)">${sym}</span>
-                <button class="chart-open-btn" onclick="openChart('${sym}',event)" title="Chart">↗</button>
+            <div style="min-width:0;">
+                <span onclick="window.open('stock.html?symbol=${sym}','_blank')"
+                    style="font-weight:700;font-size:12px;color:var(--accent);cursor:pointer;
+                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;max-width:106px;">${sym}</span>
             </div>
-            <div>
-                <span style="font-weight:700;font-size:12px;">${ltp ? fmt(ltp) : '—'}</span>
-                <span style="font-size:10px;margin-left:4px;color:${colorClass(chgPct)}">
-                    ${chgPct ? pct(chgPct) : ''}
-                </span>
+            <div style="display:flex;flex-direction:column;gap:1px;">
+                <span style="font-weight:700;font-size:12px;">${ltp ? fmt(ltp) : '\u2014'}</span>
+                <span style="font-size:10px;font-weight:600;color:${chgColor};">${chgStr}</span>
             </div>
-            <div>
-                ${iciScore
-                    ? `<span style="font-size:11px;font-weight:700;color:${iciColor};">
-                        ${iciGrade === 'GOD' ? '★' : iciGrade} ${iciScore}</span>`
-                    : '<span style="color:var(--muted);font-size:11px;">—</span>'
-                }
-            </div>
-            <div style="font-size:14px;font-weight:700;color:${chopColor};" title="Choppiness: ${chop}">${chopIcon}</div>
-            <div style="display:flex;flex-direction:column;gap:2px;font-size:9px;color:var(--muted);">
-                <span>CE <span style="display:inline-block;width:7px;height:7px;
-                    border-radius:50%;background:${dotColor(ceBadge)};"></span></span>
-                <span>PE <span style="display:inline-block;width:7px;height:7px;
-                    border-radius:50%;background:${dotColor(peBadge)};"></span></span>
-            </div>
-            <div style="font-size:10px;font-weight:700;
-                color:${snap.supertrend_dir==='BULL'?'var(--green)':'var(--red)'}">
-                ${snap.supertrend_dir || '—'}
-            </div>
-            <button onclick="removeFromWatchlist('${sym}')"
-                style="background:none;border:none;color:var(--muted);
-                       cursor:pointer;font-size:12px;padding:2px;"
-                title="Remove">×</button>
-        </div>`
-    }).join('')
+            <div>${iciHtml}</div>
+            <div>${chopHtml}</div>
+            <div>${tH(ceBadge)}</div>
+            <div>${tH(peBadge)}</div>
+            <div>${stHtml}</div>
+            <button onclick="event.stopPropagation();removeFromWatchlist('${sym}')"
+                style="background:none;border:none;color:#475569;cursor:pointer;font-size:14px;padding:0;line-height:1;"
+                onmouseenter="this.style.color='var(--red)'" onmouseleave="this.style.color='#475569'">\u00d7</button>
+        </div>`;
+    }).join('');
+    el.innerHTML = HDR + rows;
 }
 
 setInterval(() => { if (watchlist.length) renderWatchlist() }, 10000)
 
 async function fetchWatchlistSnapshots() {
-    if (!state.snapshots) state.snapshots = {}
+    if (!state.snapshots) state.snapshots = {};
     for (const sym of watchlist) {
-        const snap = await apiFetch(`/api/snapshot/${sym}`)
-        if (snap) state.snapshots[sym] = snap
+        const snap = await apiFetch(`/api/snapshot/${sym}`);
+        if (snap) state.snapshots[sym] = snap;
     }
-    renderWatchlist()
+    renderWatchlist();
 }
 
 // Load universe symbols for all search/autocomplete features
