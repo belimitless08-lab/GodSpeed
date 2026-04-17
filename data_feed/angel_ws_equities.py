@@ -25,6 +25,7 @@ import json
 import logging
 import struct
 import time
+import httpx
 from datetime import datetime, timezone
 from typing import Optional
 
