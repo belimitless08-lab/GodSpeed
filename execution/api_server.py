@@ -509,26 +509,63 @@ async def debug_instrument_master():
 @app.get("/api/debug/live-ticks")
 async def debug_live_ticks():
     """
-    DEBUG: Check if live ticks are reaching Redis.
-    Returns current state of a few well-known symbols' tick data.
+    DEBUG: Check if live ticks are reaching Redis AND whether downstream
+    snapshots (built by cruncher) are up to date.
     """
     redis = await get_redis()
     symbols_to_check = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK"]
     result = {}
     for sym in symbols_to_check:
         tick = await redis.hgetall(f"tick:{sym}")
-        result[sym] = tick if tick else "NO DATA"
-    # Also count total tick:* keys
+        snap = await redis.hgetall(f"snapshot:{sym}")
+        result[sym] = {
+            "tick":     tick if tick else "NO DATA",
+            "snapshot": snap if snap else "NO DATA",
+        }
+
+    # Index symbols
+    index_state = {}
+    for sym in ["NIFTY50", "SENSEX", "BANKNIFTY", "MIDCPNIFTY", "NIFTY", "BANK_NIFTY"]:
+        tick = await redis.hgetall(f"tick:{sym}")
+        snap = await redis.hgetall(f"snapshot:{sym}")
+        index_state[sym] = {
+            "tick":     tick if tick else "NO DATA",
+            "snapshot": snap if snap else "NO DATA",
+        }
+
+    # Count various key types
     cursor = 0
-    total = 0
+    tick_count = 0
     while True:
         cursor, keys = await redis.scan(cursor=cursor, match="tick:*", count=500)
-        total += len(keys)
+        tick_count += len(keys)
         if cursor == 0:
             break
+
+    cursor = 0
+    snap_count = 0
+    while True:
+        cursor, keys = await redis.scan(cursor=cursor, match="snapshot:*", count=500)
+        snap_count += len(keys)
+        if cursor == 0:
+            break
+
+    cursor = 0
+    candle_count = 0
+    while True:
+        cursor, keys = await redis.scan(cursor=cursor, match="candle:*", count=500)
+        candle_count += len(keys)
+        if cursor == 0:
+            break
+
     return {
-        "total_tick_keys_in_redis": total,
-        "sample_ticks":             result,
+        "redis_key_counts": {
+            "tick:*":     tick_count,
+            "snapshot:*": snap_count,
+            "candle:*":   candle_count,
+        },
+        "stock_samples":    result,
+        "index_state":      index_state,
     }
 
 
