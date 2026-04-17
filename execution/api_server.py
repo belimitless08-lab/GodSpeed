@@ -1033,6 +1033,24 @@ async def manual_run_seeder():
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/debug/run-seeder")
+async def debug_run_seeder():
+    """
+    DEBUG (GET): Same as POST /api/admin/run-seeder but usable from a
+    browser URL. Triggers the morning seeder to build snapshot:{symbol}
+    entries so the cruncher can start accumulating ticks.
+    """
+    try:
+        from scripts.morning_seeder import run_seeder
+        asyncio.create_task(run_seeder())
+        return {
+            "status":  "started",
+            "message": "Seeder running in background. Check logs and re-run /api/debug/live-ticks in ~2 minutes.",
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 # ===========================================================================
 # Broadcaster tasks (one pub/sub listener shared across all clients)
 # ===========================================================================
