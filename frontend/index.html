@@ -774,7 +774,7 @@
       <div class="ot-trigger" style="margin-bottom:10px;">
         <span class="ot-ctrl-label">Trigger ₹:</span>
         <input type="number" id="mo-trigger-price" placeholder="market" step="0.05" oninput="moUpdateTriggerHelper()"/>
-        <span class="ot-trigger-hint" id="mo-trigger-helper">blank = market order at current LTP</span>
+        <span class="ot-trigger-hint" id="mo-trigger-helper">set trigger price, or blank for market order</span>
       </div>
 
       <!-- BUY / SELL -->
@@ -981,7 +981,7 @@
       <span class="ot-ctrl-label">Trigger ₹:</span>
       <input type="number" id="cp-trigger" placeholder="market" step="0.05"
              oninput="cpUpdateTriggerHelper()"/>
-      <span class="ot-trigger-hint" id="cp-trigger-hint">blank = market order at current LTP</span>
+      <span class="ot-trigger-hint" id="cp-trigger-hint">set trigger price, or blank for market order</span>
     </div>
 
     <!-- BUY / SELL -->
@@ -1680,16 +1680,29 @@ function cpSelectDir(dir) {
 }
 
 function getTriggerHelper(direction, instrument) {
-    if (!direction) return 'blank = market order at current LTP'
-    const blank = ' (blank = market order)'
+    // Detect market hours: 9:15–15:30 IST on weekdays
+    const now = new Date();
+    const ist = new Date(now.getTime() + (330 - now.getTimezoneOffset()) * 60000);
+    const day = ist.getUTCDay(); // 0=Sun, 6=Sat
+    const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+    const marketOpen = day >= 1 && day <= 5 && mins >= 555 && mins <= 930; // 9:15–15:30
+
+    if (!direction) {
+        return marketOpen
+            ? 'blank = market order executed immediately at LTP'
+            : '⚠ Market closed — set a trigger price for next session';
+    }
+    const blank = marketOpen
+        ? ' (blank = market order)'
+        : ' (blank = REJECTED, market closed — set a trigger price)';
     if (instrument === 'PE') {
         if (direction === 'BUY')
-            return 'PE BUY fires when 5m candle CLOSES BELOW trigger (bearish)'
-        return 'PE SELL fires when 5m candle CLOSES ABOVE trigger'
+            return 'PE BUY fires when 5m candle CLOSES BELOW trigger (bearish)' + blank;
+        return 'PE SELL fires when 5m candle CLOSES ABOVE trigger' + blank;
     }
     if (direction === 'BUY')
-        return 'Order fires when 5m candle CLOSES ABOVE trigger price' + blank
-    return 'Order fires when 5m candle CLOSES BELOW trigger price' + blank
+        return 'Order fires when 5m candle CLOSES ABOVE trigger price' + blank;
+    return 'Order fires when 5m candle CLOSES BELOW trigger price' + blank;
 }
 
 function cpUpdateTriggerHelper() {
@@ -1741,18 +1754,24 @@ async function confirmCPOrder() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
     })
-    if (r.ok) {
-      showToast(`Order placed — ${currentChartSymbol} ${cpInst} ${cpDir} ${cpLots} lots`, 'success')
+    const data = await r.json().catch(() => ({}))
+    if (r.ok && data.status !== 'REJECTED') {
+      const isPending = data.status === 'PENDING'
+      const label = isPending
+        ? `Trigger set — ${currentChartSymbol} ${cpInst} ${cpDir} @ ₹${body.trigger_price}`
+        : `Order filled — ${currentChartSymbol} ${cpInst} ${cpDir} ${cpLots} lots`
+      showToast(label, 'success')
       cpDir = null
       document.getElementById('cp-btn-buy').classList.remove('active')
       document.getElementById('cp-btn-sell').classList.remove('active')
       document.getElementById('cp-trigger').value = ''
       cpUpdateConfirm()
       fetchPositions()
+      fetchPendingOrders()
       updateFABCounts()
     } else {
-      const err = await r.json().catch(() => ({detail: 'Unknown error'}))
-      showToast(`Order failed: ${err.detail || r.status}`, 'error')
+      const reason = data.reason || data.detail || (r.ok ? 'Unknown rejection' : `HTTP ${r.status}`)
+      showToast(`Order rejected: ${reason}`, 'error')
     }
   } catch(e) {
     showToast(`Order failed: ${e.message}`, 'error')
@@ -1834,6 +1853,10 @@ function setMOType(type) {
     moInst = 'CE';
     const qtyLbl = document.getElementById('mo-qty-label');
     if (qtyLbl) qtyLbl.textContent = 'Lots';
+    // Reset strike step for current index
+    const _step = INDEX_STRIKE_STEPS[moIndex] || 50;
+    const _si = document.getElementById('mo-strike');
+    if (_si) { _si.step = _step; _si.placeholder = `ATM (step ${_step})`; }
     fetchMOExpiries();
   } else {
     tabs.innerHTML = `
@@ -1847,10 +1870,21 @@ function setMOType(type) {
   moUpdateConfirm();
 }
 
+const INDEX_STRIKE_STEPS = {
+  NIFTY: 50, BANKNIFTY: 100, FINNIFTY: 50, MIDCPNIFTY: 25, SENSEX: 100
+};
+
 function selectMOIndex(btn) {
   document.querySelectorAll('.idx-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   moIndex = btn.dataset.idx;
+  // Update strike input step and placeholder to match this index's interval
+  const step = INDEX_STRIKE_STEPS[moIndex] || 50;
+  const strikeEl = document.getElementById('mo-strike');
+  if (strikeEl) {
+    strikeEl.step = step;
+    strikeEl.placeholder = `ATM (step ${step})`;
+  }
   fetchMOExpiries();
   moUpdateConfirm();
 }
@@ -1957,18 +1991,24 @@ async function confirmMOOrder() {
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify(body)
     });
-    if (r.ok) {
-      showToast(`Order placed — ${sym} ${moInst} ${moDir} ${moLots} lots`, 'success');
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data.status !== 'REJECTED') {
+      const isPending = data.status === 'PENDING';
+      const label = isPending
+        ? `Trigger set — ${sym} ${moInst} ${moDir} @ ₹${body.trigger_price}`
+        : `Order filled — ${sym} ${moInst} ${moDir} ${moLots} lots`;
+      showToast(label, 'success');
       document.getElementById('mo-btn-buy').classList.remove('active');
       document.getElementById('mo-btn-sell').classList.remove('active');
       moDir = null;
       document.getElementById('mo-confirm-btn').disabled = true;
       document.getElementById('mo-confirm-btn').textContent = 'Select BUY or SELL to continue';
       fetchPositions();
+      fetchPendingOrders();
       updateFABCounts();
     } else {
-      const err = await r.json().catch(() => ({detail:'Unknown error'}));
-      showToast(`Order failed: ${err.detail || r.status}`, 'error');
+      const reason = data.reason || data.detail || (r.ok ? 'Unknown rejection' : `HTTP ${r.status}`);
+      showToast(`Order rejected: ${reason}`, 'error');
     }
   } catch(e) {
     showToast(`Order failed: ${e.message}`, 'error');
@@ -2253,10 +2293,12 @@ function togglePendingDrawer() {
 }
 
 async function fetchPendingOrders() {
-    const data = await apiFetch('/api/orders/pending')
-    const orders = data || []
-    renderPendingOrders(orders)
-    document.getElementById('fab-pend-count').textContent = orders.length
+    const data = await apiFetch('/api/orders/pending');
+    if (!data) return;
+    // Handle both bare array and {orders:[...]} wrapper
+    const orders = Array.isArray(data) ? data : (data.orders || data.pending || []);
+    renderPendingOrders(orders);
+    document.getElementById('fab-pend-count').textContent = orders.length;
 }
 
 function renderPendingOrders(orders) {
@@ -2604,8 +2646,9 @@ async function updateFABCounts() {
 }
 setInterval(updateFABCounts, 5000);
 updateFABCounts();
-// Poll open positions every 5s so drawer stays live
+// Poll open positions and pending orders every 5s
 setInterval(fetchPositions, 5000);
+setInterval(fetchPendingOrders, 5000);
 
 /* ══════════════════════════════════════════
    ORDER MODAL SYMBOL AUTOCOMPLETE
