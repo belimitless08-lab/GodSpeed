@@ -198,18 +198,17 @@ def _build_maps(instruments: list[dict]) -> tuple[list[str], dict[str, str], dic
     # Build a lookup of ALL NSE EQ entries.
     # Key: cleaned symbol name → token (stored both raw and cleaned forms).
     nse_eq_lookup: dict[str, str] = {}
-    for inst in instruments:
-        if inst.get("exch_seg") != "NSE":
-            continue
-        raw_sym = inst.get("symbol", "")
-        # NSE EQ stocks have instrumenttype="" and symbol ending in "-EQ".
-        # Indices have instrumenttype="AMXIDX"; ETFs end in different suffixes.
-        # We specifically want cash equities: symbol must end with "-EQ".
-        if not raw_sym.endswith("-EQ"):
-            continue
-        clean = raw_sym[:-3].strip()  # strip "-EQ"
-        nse_eq_lookup[clean] = str(inst.get("token", ""))
-        nse_eq_lookup[raw_sym] = str(inst.get("token", ""))
+       for inst in instruments:
+           if inst.get("exch_seg") != "NSE":
+               continue
+           raw_sym = inst.get("symbol", "")
+           # NSE EQ stocks have instrumenttype="" and symbol ending in "-EQ".
+           # Indices have instrumenttype="AMXIDX"; skip them.
+           if not raw_sym.endswith("-EQ"):
+               continue
+           clean = raw_sym[:-3].strip()  # strip "-EQ" suffix
+           nse_eq_lookup[clean] = str(inst.get("token", ""))
+           nse_eq_lookup[raw_sym] = str(inst.get("token", ""))
 
     logger.info("NSE EQ lookup built: %d entries", len(nse_eq_lookup))
 
