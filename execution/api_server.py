@@ -1044,20 +1044,20 @@ async def _scheduler() -> None:
         now      = datetime.now(_IST)
         time_str = now.strftime("%H:%M")
 
-        async def _fire_once(task_name: str, coro) -> None:
+        async def _fire_once(task_name: str, coro_fn) -> None:
             if fired.get(task_name) != time_str:
                 fired[task_name] = time_str
                 logger.info("[scheduler] Firing task '%s' at %s IST.", task_name, time_str)
                 try:
-                    await coro
+                    await coro_fn()
                 except Exception as exc:
                     logger.error("[scheduler] Task '%s' failed: %s", task_name, exc, exc_info=True)
 
         if time_str == "08:30":
-            await _fire_once("universe_build", build_universe())
+            await _fire_once("universe_build", build_universe)
 
         if time_str == "15:20":
-            await _fire_once("eod_close_all", eod_close_all())
+            await _fire_once("eod_close_all", eod_close_all)
 
         if time_str == "15:25":
             async def _save_final_account():
@@ -1069,7 +1069,7 @@ async def _scheduler() -> None:
                 )
                 logger.info("[scheduler] Final EOD account snapshot saved.")
 
-            await _fire_once("eod_account_snapshot", _save_final_account())
+            await _fire_once("eod_account_snapshot", _save_final_account)
 
         await asyncio.sleep(30)
 
