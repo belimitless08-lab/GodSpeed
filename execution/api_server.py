@@ -1045,33 +1045,32 @@ async def _scheduler() -> None:
         time_str = now.strftime("%H:%M")
 
         async def _fire_once(task_name: str, coro_factory) -> None:
-               if fired.get(task_name) == time_str:
-                   return
-               fired[task_name] = time_str
-               logger.info("[scheduler] Firing task '%s' at %s IST.", task_name, time_str)
-               try:
-                   await coro_factory()
-               except Exception as exc:
-                   logger.error("[scheduler] Task '%s' failed: %s", task_name, exc, exc_info=True)
-
-           if time_str == "08:30":
-               await _fire_once("universe_build", build_universe)
-
-           if time_str == "15:20":
-               await _fire_once("eod_close_all", eod_close_all)
-
-           if time_str == "15:25":
-               async def _save_final_account():
-                   redis   = await get_redis()
-                   account = await get_paper_account()
-                   await redis.set(
-                       f"paper:eod:{date.today().isoformat()}",
-                       json.dumps(account),
-                   )
-                   logger.info("[scheduler] Final EOD account snapshot saved.")
-
-               await _fire_once("eod_account_snapshot", _save_final_account)
-
+            if fired.get(task_name) == time_str:
+                return
+            fired[task_name] = time_str
+            logger.info("[scheduler] Firing task '%s' at %s IST.", task_name, time_str)
+            try:
+                await coro_factory()
+            except Exception as exc:
+                logger.error("[scheduler] Task '%s' failed: %s", task_name, exc, exc_info=True)
+ 
+        if time_str == "08:30":
+            await _fire_once("universe_build", build_universe)
+ 
+        if time_str == "15:20":
+            await _fire_once("eod_close_all", eod_close_all)
+ 
+        if time_str == "15:25":
+            async def _save_final_account():
+                redis   = await get_redis()
+                account = await get_paper_account()
+                await redis.set(
+                    f"paper:eod:{date.today().isoformat()}",
+                    json.dumps(account),
+                )
+                logger.info("[scheduler] Final EOD account snapshot saved.")
+ 
+            await _fire_once("eod_account_snapshot", _save_final_account)
         await asyncio.sleep(30)
 
 
