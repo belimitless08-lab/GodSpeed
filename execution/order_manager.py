@@ -835,7 +835,16 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
 
     snap     = await redis.hgetall(f"snapshot:{symbol}")
     lot_size = int(_safe_float(snap.get("lot_size"), 1))
-    quantity = order["lots"] * lot_size
+    if lot_size < 1:
+        lot_size = 1
+
+    instrument = order.get("instrument", "EQ")
+    if instrument == "EQ":
+        # Equity: user enters plain share quantity — never multiply by F&O lot size
+        quantity = order["lots"]
+    else:
+        # CE / PE: user enters number of lots — multiply by F&O lot size
+        quantity = order["lots"] * lot_size
 
     if order["direction"] == "LONG":
         sl_price = ltp * (1 - order["sl_pct"] / 100)
