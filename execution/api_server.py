@@ -476,13 +476,10 @@ async def debug_instrument_master():
         resp.raise_for_status()
         data = resp.json()
 
-    # Find a few known stocks on NSE to see the exact schema
     samples = {}
     for inst in data:
         sym = str(inst.get("symbol", ""))
         exch = str(inst.get("exch_seg", ""))
-
-        # Try to find RELIANCE on NSE
         if "RELIANCE" in sym and exch == "NSE" and "reliance_nse" not in samples:
             samples["reliance_nse"] = inst
         if "TCS" in sym and exch == "NSE" and "tcs_nse" not in samples:
@@ -492,7 +489,6 @@ async def debug_instrument_master():
         if len(samples) == 3:
             break
 
-    # Also collect: count of distinct instrumenttype values on NSE exchange
     nse_types: dict[str, int] = {}
     nse_keys_seen: set[str] = set()
     for inst in data:
@@ -507,6 +503,57 @@ async def debug_instrument_master():
         "samples":            samples,
         "nse_instrumenttype_counts": nse_types,
         "nse_entry_keys":     sorted(nse_keys_seen),
+    }
+
+
+@app.get("/api/debug/live-ticks")
+async def debug_live_ticks():
+    """
+    DEBUG: Check if live ticks are reaching Redis.
+    Returns current state of a few well-known symbols' tick data.
+    """
+    redis = await get_redis()
+    symbols_to_check = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK"]
+    result = {}
+    for sym in symbols_to_check:
+        tick = await redis.hgetall(f"tick:{sym}")
+        result[sym] = tick if tick else "NO DATA"
+    # Also count total tick:* keys
+    cursor = 0
+    total = 0
+    while True:
+        cursor, keys = await redis.scan(cursor=cursor, match="tick:*", count=500)
+        total += len(keys)
+        if cursor == 0:
+            break
+    return {
+        "total_tick_keys_in_redis": total,
+        "sample_ticks":             result,
+    }
+
+
+@app.post("/api/debug/clean-corrupted-keys")
+async def debug_clean_corrupted_keys():
+    """
+    DEBUG: Delete stale/corrupted Redis keys that have wrong types
+    from previous schema changes. Returns list of keys deleted.
+    """
+    redis = await get_redis()
+    keys_to_clean = [
+        "market:breadth",
+        "market:world_indices",
+        "ai:premarket",
+        "ai:premarket:summary",
+    ]
+    deleted = []
+    for key in keys_to_clean:
+        exists = await redis.exists(key)
+        if exists:
+            await redis.delete(key)
+            deleted.append(key)
+    return {
+        "deleted_keys":    deleted,
+        "message":         "Corrupted keys cleaned. Dependent services will repopulate.",
     }
 
 
