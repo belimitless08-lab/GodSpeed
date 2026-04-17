@@ -525,7 +525,7 @@ async def debug_live_ticks():
 
     # Index symbols
     index_state = {}
-    for sym in ["NIFTY50", "SENSEX", "BANKNIFTY", "MIDCPNIFTY", "NIFTY", "BANK_NIFTY"]:
+    for sym in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"]:
         tick = await redis.hgetall(f"tick:{sym}")
         snap = await redis.hgetall(f"snapshot:{sym}")
         index_state[sym] = {
@@ -705,7 +705,7 @@ async def get_market_breadth():
     )
 
 
-_INDEX_SYMBOLS = ["NIFTY50", "SENSEX", "BANKNIFTY", "MIDCPNIFTY"]
+_INDEX_SYMBOLS = ["NIFTY", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
 
 
 @app.get("/api/indices", response_model=list[IndexData])
@@ -715,12 +715,15 @@ async def get_indices():
     result = []
 
     for sym in _INDEX_SYMBOLS:
+        # Read live LTP from tick hash (written by angel_ws_equities on every tick).
+        # Fall back to snapshot for prev_close (written by cruncher/seeder).
+        tick = await redis.hgetall(f"tick:{sym}")
         snap = await redis.hgetall(f"snapshot:{sym}")
-        if not snap:
+        if not tick and not snap:
             continue
 
-        ltp        = _sf(snap, "ltp")
-        prev_close = _sf(snap, "prev_close", ltp or 1.0)
+        ltp        = _sf(tick, "ltp") or _sf(snap, "ltp")
+        prev_close = _sf(snap, "prev_close") or ltp or 1.0
         change_pct = (ltp - prev_close) / max(prev_close, 1) * 100
 
         pcr_raw = await redis.get(f"options:pcr:{sym}")
