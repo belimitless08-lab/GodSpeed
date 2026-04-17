@@ -836,26 +836,29 @@ async def place_trigger_order(payload: dict) -> dict:
     if payload["instrument"] in ("CE", "PE") and payload["symbol"] in _INDEX_SYMBOLS:
         if not payload.get("atm_strike"):
             atm = await get_index_atm_strike(payload["symbol"])
-            if atm <= 0:
-                return {
-                    "status": "REJECTED",
-                    "reason": "ATM_UNKNOWN",
-                    "detail": (
-                        f"Index feed for {payload['symbol']} is offline. "
-                        f"Type the strike manually in the Strike field."
-                    ),
-                }
-            payload["atm_strike"] = atm
+            if atm > 0:
+                payload["atm_strike"] = atm
+            else:
+                # Index feed offline — no ATM available.
+                # We still allow the paper order to proceed without a token.
+                # The user should enter the strike manually for accurate pricing.
+                logger.warning(
+                    "[order_manager] %s index feed offline — no ATM strike. "
+                    "Paper order will proceed without option token. "
+                    "Enter strike manually for accurate CE/PE pricing.",
+                    payload["symbol"],
+                )
 
-        token = await get_index_option_token(
-            payload["symbol"],
-            payload["atm_strike"],
-            payload["instrument"],
-            payload.get("expiry_date", ""),
-        )
-        # Token is only needed for live order routing.
-        # Paper trades proceed without it — priced from options:tick feed.
-        payload["option_token"] = token  # None if not found — logged inside lookup
+        # Token lookup — best-effort. Paper trades don't need it.
+        token = None
+        if payload.get("atm_strike") and payload.get("expiry_date"):
+            token = await get_index_option_token(
+                payload["symbol"],
+                payload["atm_strike"],
+                payload["instrument"],
+                payload.get("expiry_date", ""),
+            )
+        payload["option_token"] = token  # None is fine for paper trading
 
     order_id = str(uuid4())
     order = {
