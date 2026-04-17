@@ -619,6 +619,52 @@ async def debug_clean_corrupted_keys_get():
     }
 
 
+@app.get("/api/debug/inspect-snapshot/{symbol}")
+async def debug_inspect_snapshot(symbol: str):
+    """
+    DEBUG: Inspect what type a snapshot:{symbol} key is, and show its raw value.
+    This tells us if seeder wrote a hash, string, JSON, etc.
+    """
+    redis = await get_redis()
+    key = f"snapshot:{symbol}"
+
+    exists = await redis.exists(key)
+    if not exists:
+        return {"key": key, "exists": False}
+
+    # Get the type Redis reports
+    key_type = await redis.type(key)
+    # redis-py may return bytes or str depending on decode_responses
+    if isinstance(key_type, bytes):
+        key_type = key_type.decode("utf-8", errors="replace")
+
+    raw_value = None
+    try:
+        if key_type == "string":
+            raw_value = await redis.get(key)
+            if isinstance(raw_value, bytes):
+                raw_value = raw_value.decode("utf-8", errors="replace")
+        elif key_type == "hash":
+            raw_value = await redis.hgetall(key)
+        elif key_type == "list":
+            raw_value = await redis.lrange(key, 0, 10)
+        elif key_type == "set":
+            raw_value = list(await redis.smembers(key))[:20]
+        elif key_type == "zset":
+            raw_value = await redis.zrange(key, 0, 10, withscores=True)
+        else:
+            raw_value = f"<unsupported type: {key_type}>"
+    except Exception as e:
+        raw_value = f"<error reading: {e}>"
+
+    return {
+        "key":       key,
+        "exists":    True,
+        "type":      key_type,
+        "value":     raw_value,
+    }
+
+
 # ===========================================================================
 # Market breadth and indices
 # ===========================================================================
