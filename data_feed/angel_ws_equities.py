@@ -54,6 +54,16 @@ MARKET_STATUS_URL  = f"{SMARTAPI_BASE}/rest/secure/angelbroking/order/v1/getMark
 WS_URL             = "wss://smartapisocket.angelone.in/smart-stream"
 
 TOKEN_BUDGET       = 500        # AngelOne hard limit
+
+# Index tokens — AngelOne SmartAPI token IDs for NSE/BSE indices.
+# These are NOT in universe:token_map (no FUTSTK contract) so we inject them manually.
+_INDEX_TOKENS = {
+    "NIFTY":      ("99926000", EXCHANGE_NSE),
+    "BANKNIFTY":  ("99926009", EXCHANGE_NSE),
+    "FINNIFTY":   ("99926037", EXCHANGE_NSE),
+    "MIDCPNIFTY": ("99926074", EXCHANGE_NSE),
+    "SENSEX":     ("99919000", EXCHANGE_BSE),
+}
 HEALTH_INTERVAL    = 60         # seconds between health log/write
 MARKET_POLL_SLEEP  = 300        # 5 minutes when market is closed
 BACKOFF_INITIAL    = 15         # seconds — respect AngelOne 1 req/sec rate limit
@@ -61,6 +71,7 @@ BACKOFF_MAX        = 120        # seconds
 
 # AngelOne exchange codes
 EXCHANGE_NSE = 1
+EXCHANGE_BSE = 3
 
 # Subscribe action code
 ACTION_SUBSCRIBE = 1
@@ -182,19 +193,20 @@ async def _wait_for_market_open() -> str:
 # Token list helpers
 # ---------------------------------------------------------------------------
 
-async def _load_token_list() -> tuple[list[str], dict[str, str]]:
+async def _load_token_list() -> tuple[list[str], dict[str, str], list[str]]:
     """
-    Load universe:token_map from Redis.
+    Load universe:token_map from Redis and inject index tokens.
 
     Returns
     -------
-    tokens          : list of token strings to subscribe (max TOKEN_BUDGET)
-    reversed_map    : token → symbol (for tick processing)
+    nse_tokens   : NSE equity + index token strings to subscribe
+    reversed_map : token → symbol (for tick processing)
+    bse_tokens   : BSE index token strings (separate subscribe message)
     """
     token_map: dict[str, str] = await get_token_map()   # symbol → token
     reversed_map: dict[str, str] = {v: k for k, v in token_map.items()}
 
-    tokens = sorted(token_map.values())   # alphabetical by token string
+    tokens = sorted(token_map.values())   # F&O stock tokens
 
     if len(tokens) > TOKEN_BUDGET:
         logger.warning(
@@ -204,25 +216,41 @@ async def _load_token_list() -> tuple[list[str], dict[str, str]]:
             len(tokens), TOKEN_BUDGET, TOKEN_BUDGET,
         )
         tokens = tokens[:TOKEN_BUDGET]
-        # Rebuild reversed_map to only contain subscribed tokens
         reversed_map = {t: reversed_map[t] for t in tokens if t in reversed_map}
 
-    logger.info("[angel_ws] Subscribing %d tokens.", len(tokens))
-    return tokens, reversed_map
+    # Inject index tokens — not in universe:token_map but required for
+    # dashboard index bar, ATM strike resolution, and CE/PE order pricing.
+    nse_tokens = list(tokens)
+    bse_tokens = []
+    for symbol, (token, exchange) in _INDEX_TOKENS.items():
+        reversed_map[token] = symbol
+        if exchange == EXCHANGE_NSE:
+            if token not in nse_tokens:
+                nse_tokens.append(token)
+        else:  # BSE
+            bse_tokens.append(token)
+            reversed_map[token] = symbol
+
+    logger.info(
+        "[angel_ws] Subscribing %d NSE tokens (%d F&O stocks + %d indices) + %d BSE indices.",
+        len(nse_tokens), len(tokens),
+        len([t for _, (t, e) in _INDEX_TOKENS.items() if e == EXCHANGE_NSE]),
+        len(bse_tokens),
+    )
+    return nse_tokens, reversed_map, bse_tokens
 
 
-def _build_subscribe_message(tokens: list[str]) -> str:
+def _build_subscribe_message(nse_tokens: list[str], bse_tokens: list[str] = None) -> str:
+    """Build subscription message. NSE and BSE tokens need separate exchangeType entries."""
+    token_list = [{"exchangeType": EXCHANGE_NSE, "tokens": nse_tokens}]
+    if bse_tokens:
+        token_list.append({"exchangeType": EXCHANGE_BSE, "tokens": bse_tokens})
     return json.dumps({
         "correlationID": "feed",
         "action": ACTION_SUBSCRIBE,
         "params": {
             "mode": MODE_QUOTE,
-            "tokenList": [
-                {
-                    "exchangeType": EXCHANGE_NSE,
-                    "tokens": tokens,
-                }
-            ],
+            "tokenList": token_list,
         },
     })
 
@@ -370,7 +398,7 @@ async def _run_ws_session(session: dict) -> None:
     client_code = session["client_code"]
 
     # Load token universe fresh on every reconnect (universe may have refreshed)
-    tokens, reversed_map = await _load_token_list()
+    nse_tokens, reversed_map, bse_tokens = await _load_token_list()
     redis = await get_redis()
 
     ws_headers = {
@@ -380,8 +408,8 @@ async def _run_ws_session(session: dict) -> None:
         "x-feed-token":  feed_token,
     }
 
-    subscribe_msg = _build_subscribe_message(tokens)
-    symbol_count  = len(tokens)
+    subscribe_msg = _build_subscribe_message(nse_tokens, bse_tokens)
+    symbol_count  = len(nse_tokens) + len(bse_tokens)
 
     # Health tracking
     tick_count     = 0
@@ -405,8 +433,8 @@ async def _run_ws_session(session: dict) -> None:
         logger.info("[angel_ws] WebSocket connected. Subscribing …")
 
         await ws.send(subscribe_msg)
-        logger.info("[angel_ws] Subscription sent for %d tokens. First 5: %s",
-                    symbol_count, tokens[:5])
+        logger.info("[angel_ws] Subscription sent for %d tokens. First 5 NSE: %s BSE: %s",
+                    symbol_count, nse_tokens[:5], bse_tokens)
         logger.info("[angel_ws] Subscribe payload preview: %s", subscribe_msg[:300])
 
         # Send immediate ping to verify heartbeat path works, then every 25s.
