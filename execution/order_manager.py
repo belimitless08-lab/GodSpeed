@@ -745,15 +745,42 @@ async def get_index_option_token(
     redis = await get_redis()
     raw = await redis.get(f"universe:index_options:{index}")
     if not raw:
+        logger.error(
+            "[order_manager] universe:index_options:%s missing from Redis — "            "morning_seeder / universe_builder has not run or key expired.",
+            index,
+        )
         return None
     options = json.loads(raw)
+
+    # Type-safe comparison: strike stored as int in Redis, may arrive as float from frontend
+    strike_int = int(strike) if strike else 0
+
+    logger.info(
+        "[order_manager] Token lookup: %s %s strike=%d expiry=%s — searching %d contracts",
+        index, option_type, strike_int, expiry_date, len(options),
+    )
+
+    # Log a sample of what's actually stored so we can diagnose format mismatches
+    if options:
+        sample = options[0]
+        logger.info(
+            "[order_manager] Sample contract: strike=%r(%s) option_type=%r expiry=%r",
+            sample.get("strike"), type(sample.get("strike")).__name__,
+            sample.get("option_type"), sample.get("expiry"),
+        )
+
     for contract in options:
         if (
-            contract["strike"] == strike
+            int(contract["strike"]) == strike_int
             and contract["option_type"] == option_type
             and contract["expiry"] == expiry_date
         ):
             return contract["token"]
+
+    logger.warning(
+        "[order_manager] No token found for %s %s strike=%d expiry=%s. "        "Check expiry format and that universe_builder ran today.",
+        index, option_type, strike_int, expiry_date,
+    )
     return None
 
 
@@ -768,8 +795,15 @@ async def get_index_atm_strike(index: str) -> int:
     redis = await get_redis()
     tick = await redis.hgetall(f"tick:{index}")
     ltp = _safe_float(tick.get("ltp"))
+    if ltp <= 0:
+        logger.error(
+            "[order_manager] get_index_atm_strike: tick:%%s has no LTP — "            "index feed not subscribed. ATM will be 0, token lookup will fail.",
+            index,
+        )
     interval = _INDEX_STRIKE_INTERVALS.get(index, 50)
-    return round(ltp / interval) * interval
+    atm = round(ltp / interval) * interval
+    logger.info("[order_manager] ATM for %%s: ltp=%%s interval=%%d atm=%%d", index, ltp, interval, atm)
+    return atm
 
 
 # ---------------------------------------------------------------------------
