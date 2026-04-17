@@ -105,29 +105,42 @@ def _safe_float(value, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
-async def _get_execution_ltp(symbol: str, instrument: str, atm_strike: Optional[int] = None) -> float:
+
+def _normalise_expiry(expiry_str: str) -> str:
+    """Normalise any expiry format to YYYY-MM-DD (what universe_builder stores)."""
+    if not expiry_str:
+        return ""
+    s = expiry_str.strip().upper()
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        return s
+    from datetime import datetime as _dt
+    for fmt in ("%d%b%Y", "%d-%b-%Y", "%d/%m/%Y", "%Y%m%d"):
+        try:
+            return _dt.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    logger.warning("[order_manager] Could not normalise expiry %r", expiry_str)
+    return expiry_str
+
+
+async def _get_execution_ltp(symbol: str, instrument: str, atm_strike=None) -> float:
     """
-    Returns the correct LTP for order execution and PnL calculation.
-
-    EQ  → tick:{symbol}.ltp
-    CE  → options:tick:{symbol}:{atm_strike}CE  (individual contract tick)
-    PE  → options:tick:{symbol}:{atm_strike}PE
-
-    The options feed writes to options:tick:{sym}:{strike}CE/PE.
-    Falls back to spot tick if options feed has no data (e.g. market closed).
+    Correct LTP per instrument:
+      EQ  -> tick:{symbol}.ltp
+      CE  -> options:tick:{symbol}:{atm_strike}CE
+      PE  -> options:tick:{symbol}:{atm_strike}PE
+    Falls back to spot tick if options feed has no data.
     """
     redis = await get_redis()
     if instrument in ("CE", "PE") and atm_strike:
         suffix = "CE" if instrument == "CE" else "PE"
-        opts_key = f"options:tick:{symbol}:{atm_strike}{suffix}"
-        opts = await redis.hgetall(opts_key)
+        opts = await redis.hgetall(f"options:tick:{symbol}:{atm_strike}{suffix}")
         ltp = _safe_float(opts.get("ltp"))
         if ltp > 0:
             return ltp
         logger.warning(
-            "[order_manager] %s has no LTP (options feed offline or not subscribed) "
-            "— falling back to spot. Symbol=%s strike=%s",
-            opts_key, symbol, atm_strike,
+            "[order_manager] options:tick:%s:%s%s has no LTP — falling back to spot",
+            symbol, atm_strike, suffix,
         )
     tick = await redis.hgetall(f"tick:{symbol}")
     return _safe_float(tick.get("ltp"))
@@ -533,8 +546,8 @@ async def close_trade(trade_id: str, exit_price: float, reason: str) -> dict:
 # EOD forced close
 # ---------------------------------------------------------------------------
 
-async def get_best_exit_price(symbol: str, entry_price: float, instrument: str = "EQ", atm_strike: Optional[int] = None) -> float:
-    # 1. Live price — use options feed for CE/PE, tick for EQ
+async def get_best_exit_price(symbol: str, entry_price: float, instrument: str = "EQ", atm_strike=None) -> float:
+    # 1. Live price — instrument-aware
     ltp = await _get_execution_ltp(symbol, instrument, atm_strike)
     if ltp > 0:
         return ltp
@@ -615,9 +628,7 @@ async def monitor_stop_losses() -> None:
                     continue
 
                 ltp = await _get_execution_ltp(
-                    trade["symbol"],
-                    trade.get("instrument", "EQ"),
-                    trade.get("atm_strike"),
+                    trade["symbol"], trade.get("instrument", "EQ"), trade.get("atm_strike")
                 )
                 if ltp <= 0:
                     continue
@@ -678,9 +689,7 @@ async def update_unrealised_pnl() -> None:
                     continue
 
                 ltp = await _get_execution_ltp(
-                    trade["symbol"],
-                    trade.get("instrument", "EQ"),
-                    trade.get("atm_strike"),
+                    trade["symbol"], trade.get("instrument", "EQ"), trade.get("atm_strike")
                 )
                 if ltp <= 0:
                     ltp = _safe_float(trade.get("entry_price"))
@@ -728,26 +737,6 @@ _INDEX_STRIKE_INTERVALS: dict[str, int] = {
 }
 
 
-def _normalise_expiry(expiry_str: str) -> str:
-    """
-    Convert any expiry format to YYYY-MM-DD (what universe_builder stores).
-    Handles: '2025-04-24', '24APR2025', '24-Apr-2025', '24/04/2025'
-    """
-    if not expiry_str:
-        return ""
-    s = expiry_str.strip().upper()
-    if len(s) == 10 and s[4] == "-" and s[7] == "-":
-        return s  # already YYYY-MM-DD
-    from datetime import datetime as _dt
-    for fmt in ("%d%b%Y", "%d-%b-%Y", "%d/%m/%Y", "%Y%m%d"):
-        try:
-            return _dt.strptime(s, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    logger.warning("[order_manager] Could not normalise expiry %r — using as-is", expiry_str)
-    return expiry_str
-
-
 async def get_index_option_token(
     index: str,
     strike: int,
@@ -756,91 +745,48 @@ async def get_index_option_token(
 ) -> str | None:
     """
     Finds NFO option token for index options.
+
+    Parameters
+    ----------
+    index       : NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY / SENSEX
+    strike      : strike price as int
+    option_type : CE / PE
+    expiry_date : YYYY-MM-DD
+
     Reads from Redis key: universe:index_options:{index}
     Returns token string or None if not found.
     """
     redis = await get_redis()
     raw = await redis.get(f"universe:index_options:{index}")
     if not raw:
-        logger.error(
-            "[order_manager] universe:index_options:%s missing — "
-            "universe_builder has not run or key expired.",
-            index,
-        )
         return None
-
     options = json.loads(raw)
     strike_int = int(strike) if strike else 0
-
-    # Normalise expiry to YYYY-MM-DD — universe_builder always stores ISO format
-    expiry_normalised = _normalise_expiry(expiry_date)
+    expiry_norm = _normalise_expiry(expiry_date)
 
     logger.info(
-        "[order_manager] Token lookup: %s %s strike=%d expiry=%s — %d contracts",
-        index, option_type, strike_int, expiry_normalised, len(options),
+        "[order_manager] Token lookup %s %s strike=%d expiry=%s (%d contracts)",
+        index, option_type, strike_int, expiry_norm, len(options),
     )
 
     for contract in options:
         if (
             int(contract["strike"]) == strike_int
             and contract["option_type"] == option_type
-            and contract["expiry"] == expiry_normalised
+            and contract["expiry"] == expiry_norm
         ):
             return contract["token"]
 
-    # Nothing found — log available expiries and strikes to help debug
     expiries = sorted({c["expiry"] for c in options})
-    strikes_for_expiry = sorted({
+    strikes_this_expiry = sorted({
         int(c["strike"]) for c in options
-        if c["expiry"] == expiry_normalised and c["option_type"] == option_type
+        if c["expiry"] == expiry_norm and c["option_type"] == option_type
     })
     logger.warning(
         "[order_manager] No token: %s %s strike=%d expiry=%s. "
-        "Available expiries: %s. Available %s strikes for this expiry: %s",
-        index, option_type, strike_int, expiry_normalised,
-        expiries[:5], option_type, strikes_for_expiry[:10],
-    )
-    return None
-    Returns token string or None if not found.
-    """
-    redis = await get_redis()
-    raw = await redis.get(f"universe:index_options:{index}")
-    if not raw:
-        logger.error(
-            "[order_manager] universe:index_options:%s missing from Redis — "            "morning_seeder / universe_builder has not run or key expired.",
-            index,
-        )
-        return None
-    options = json.loads(raw)
-
-    # Type-safe comparison: strike stored as int in Redis, may arrive as float from frontend
-    strike_int = int(strike) if strike else 0
-
-    logger.info(
-        "[order_manager] Token lookup: %s %s strike=%d expiry=%s — searching %d contracts",
-        index, option_type, strike_int, expiry_date, len(options),
-    )
-
-    # Log a sample of what's actually stored so we can diagnose format mismatches
-    if options:
-        sample = options[0]
-        logger.info(
-            "[order_manager] Sample contract: strike=%r(%s) option_type=%r expiry=%r",
-            sample.get("strike"), type(sample.get("strike")).__name__,
-            sample.get("option_type"), sample.get("expiry"),
-        )
-
-    for contract in options:
-        if (
-            int(contract["strike"]) == strike_int
-            and contract["option_type"] == option_type
-            and contract["expiry"] == expiry_date
-        ):
-            return contract["token"]
-
-    logger.warning(
-        "[order_manager] No token found for %s %s strike=%d expiry=%s. "        "Check expiry format and that universe_builder ran today.",
-        index, option_type, strike_int, expiry_date,
+        "Expiries in Redis: %s. %s strikes for this expiry: %s",
+        index, option_type, strike_int, expiry_norm,
+        expiries[:5], option_type, strikes_this_expiry[:10],
     )
     return None
 
@@ -857,13 +803,11 @@ async def get_index_atm_strike(index: str) -> int:
     tick = await redis.hgetall(f"tick:{index}")
     ltp = _safe_float(tick.get("ltp"))
     if ltp <= 0:
-        logger.error(
-            "[order_manager] get_index_atm_strike: tick:%%s has no LTP — "            "index feed not subscribed. ATM will be 0, token lookup will fail.",
-            index,
-        )
+        logger.error("[order_manager] tick:%s has no LTP — index feed not subscribed. Pass atm_strike manually.", index)
     interval = _INDEX_STRIKE_INTERVALS.get(index, 50)
     atm = round(ltp / interval) * interval
-    logger.info("[order_manager] ATM for %%s: ltp=%%s interval=%%d atm=%%d", index, ltp, interval, atm)
+    if ltp > 0:
+        logger.info("[order_manager] ATM %s: ltp=%.2f -> strike=%d", index, ltp, atm)
     return atm
 
 
@@ -890,8 +834,6 @@ async def place_trigger_order(payload: dict) -> dict:
 
     # ── Index option: resolve ATM strike and option token ────────────────────
     if payload["instrument"] in ("CE", "PE") and payload["symbol"] in _INDEX_SYMBOLS:
-
-        # ── Strike resolution ────────────────────────────────────────────────
         if not payload.get("atm_strike"):
             atm = await get_index_atm_strike(payload["symbol"])
             if atm <= 0:
@@ -899,32 +841,21 @@ async def place_trigger_order(payload: dict) -> dict:
                     "status": "REJECTED",
                     "reason": "ATM_UNKNOWN",
                     "detail": (
-                        f"Index feed for {payload['symbol']} is offline — cannot auto-resolve ATM. "
-                        f"Type the strike price manually in the Strike field."
+                        f"Index feed for {payload['symbol']} is offline. "
+                        f"Type the strike manually in the Strike field."
                     ),
                 }
             payload["atm_strike"] = atm
 
-        # ── Token lookup (best-effort for paper trading) ─────────────────────
-        # Token needed for live routing only. Paper trades proceed without it.
         token = await get_index_option_token(
             payload["symbol"],
             payload["atm_strike"],
             payload["instrument"],
             payload.get("expiry_date", ""),
         )
-        if token:
-            payload["option_token"] = token
-        else:
-            logger.warning(
-                "[order_manager] No token for %s %s strike=%s expiry=%s — "
-                "proceeding as paper trade without token. "
-                "Check: universe:index_options:%s in Redis, expiry format, morning_seeder.",
-                payload["symbol"], payload["instrument"],
-                payload.get("atm_strike"), payload.get("expiry_date"),
-                payload["symbol"],
-            )
-            payload["option_token"] = None
+        # Token is only needed for live order routing.
+        # Paper trades proceed without it — priced from options:tick feed.
+        payload["option_token"] = token  # None if not found — logged inside lookup
 
     order_id = str(uuid4())
     order = {
@@ -977,12 +908,9 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
     lot_size = int(_safe_float(snap.get("lot_size"), 1))
     if lot_size < 1:
         lot_size = 1
-
     if instrument == "EQ":
-        # Equity: user enters plain share quantity — never multiply by F&O lot size
         quantity = order["lots"]
     else:
-        # CE / PE: user enters number of lots — multiply by F&O lot size
         quantity = order["lots"] * lot_size
 
     if order["direction"] == "LONG":
