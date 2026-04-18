@@ -1493,3 +1493,43 @@ async def debug_inspect_key(key: str):
         "type": key_type_str,
         "sample": sample,
     }
+
+@app.get("/api/debug/check-fno-stocks")
+async def debug_check_fno_stocks():
+    """Diagnose why stock options aren't populating."""
+    result = {}
+
+    # Try the import
+    try:
+        from options_config import FNO_STOCKS
+        result["import_status"] = "SUCCESS"
+        result["fno_stocks_type"] = type(FNO_STOCKS).__name__
+        result["fno_stocks_count"] = len(FNO_STOCKS) if hasattr(FNO_STOCKS, "__len__") else "no len"
+        result["fno_stocks_first_10"] = list(FNO_STOCKS)[:10] if FNO_STOCKS else []
+    except ImportError as e:
+        result["import_status"] = "IMPORT_ERROR"
+        result["error"] = str(e)
+    except Exception as e:
+        result["import_status"] = "OTHER_ERROR"
+        result["error"] = str(e)
+        result["error_type"] = type(e).__name__
+
+    # Also try alternative locations in case FNO_STOCKS lives elsewhere
+    alternatives_tried = {}
+    for module_path in ["options_config", "config.options_config", "core.options_config",
+                        "execution.options_config", "data_feed.options_config"]:
+        try:
+            mod = __import__(module_path, fromlist=["*"])
+            alternatives_tried[module_path] = {
+                "importable": True,
+                "has_FNO_STOCKS": hasattr(mod, "FNO_STOCKS"),
+                "has_FNO_UNIVERSE": hasattr(mod, "FNO_UNIVERSE"),
+                "has_STOCK_UNIVERSE": hasattr(mod, "STOCK_UNIVERSE"),
+                "all_uppercase_vars": [v for v in dir(mod) if v.isupper() and not v.startswith("_")],
+            }
+        except Exception as e:
+            alternatives_tried[module_path] = {"importable": False, "error": str(e)}
+
+    result["alternative_paths"] = alternatives_tried
+
+    return result
