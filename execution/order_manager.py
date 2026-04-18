@@ -1011,10 +1011,23 @@ async def place_trigger_order(payload: dict) -> dict:
             ref_price = payload.get("trigger_price") or 0
 
             if ref_price <= 0:
-                # Market order — no trigger price, use current spot
+                # Market order — no trigger price, derive from underlying price.
+                # Fallback chain:
+                #   1. Live spot tick (market open, normal case)
+                #   2. Snapshot last_close (after-hours, market holiday)
                 redis_tmp = await get_redis()
                 spot = await redis_tmp.hgetall(f"tick:{payload['symbol']}")
                 ref_price = _safe_float(spot.get("ltp"))
+
+                if ref_price <= 0:
+                    snap = await redis_tmp.hgetall(f"snapshot:{payload['symbol']}")
+                    ref_price = _safe_float(snap.get("last_close"))
+                    if ref_price > 0:
+                        logger.info(
+                            "[order_manager] Market closed — using snapshot last_close "
+                            "₹%.2f for strike resolution of %s",
+                            ref_price, payload['symbol'],
+                        )
 
             if ref_price > 0:
                 if payload["symbol"] in _INDEX_SYMBOLS:
