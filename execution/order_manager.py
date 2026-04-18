@@ -123,27 +123,169 @@ def _normalise_expiry(expiry_str: str) -> str:
     return expiry_str
 
 
-async def _get_execution_ltp(symbol: str, instrument: str, atm_strike=None) -> float:
+async def _get_execution_ltp(
+    symbol: str,
+    instrument: str,
+    atm_strike=None,
+    expiry_date: str | None = None,
+) -> tuple[float, str]:
     """
-    Correct LTP per instrument:
-      EQ  -> tick:{symbol}.ltp
-      CE  -> options:tick:{symbol}:{atm_strike}CE
-      PE  -> options:tick:{symbol}:{atm_strike}PE
-    Falls back to spot tick if options feed has no data.
+    4-tier pricing fallback for order execution.
+
+    Returns
+    -------
+    (ltp, price_source) tuple.
+
+    price_source values:
+        "LIVE_WS"      — Redis tick fresh (<10s old, market open)
+        "LAST_CLOSE"   — Redis tick stale (>10s) or market closed but key exists
+        "REST"         — Fetched via AngelOne REST fallback
+        "FAILED"       — No price available from any source; caller must reject
     """
     redis = await get_redis()
+
+    # ── Tier 1 & 2: Redis ticks ───────────────────────────────────────
     if instrument in ("CE", "PE") and atm_strike:
-        suffix = "CE" if instrument == "CE" else "PE"
-        opts = await redis.hgetall(f"options:tick:{symbol}:{atm_strike}{suffix}")
-        ltp = _safe_float(opts.get("ltp"))
-        if ltp > 0:
-            return ltp
-        logger.warning(
-            "[order_manager] options:tick:%s:%s%s has no LTP — falling back to spot",
-            symbol, atm_strike, suffix,
+        suffix = instrument  # "CE" or "PE"
+        tick_key = f"options:tick:{symbol}:{atm_strike}{suffix}"
+    else:
+        tick_key = f"tick:{symbol}"
+
+    tick = await redis.hgetall(tick_key)
+    ltp = _safe_float(tick.get("ltp"))
+    ts_raw = tick.get("ts", "")
+
+    if ltp > 0:
+        age_sec = (_now_ist() - _parse_ts(ts_raw)).total_seconds() if ts_raw else 999999
+        market_is_open = await check_market_open()
+
+        # Tier 1: Live fresh tick
+        if market_is_open and age_sec < 10:
+            return ltp, "LIVE_WS"
+
+        # Tier 2: Stale but usable (market closed or old tick but data present)
+        return ltp, "LAST_CLOSE"
+
+    # ── Tier 3: REST fallback for options only ────────────────────────
+    # For equity (EQ), no REST fallback — we require live tick data.
+    if instrument in ("CE", "PE") and atm_strike:
+        token, tradingsymbol, exchange = await _lookup_option_contract_meta(
+            symbol, atm_strike, instrument, expiry_date,
         )
-    tick = await redis.hgetall(f"tick:{symbol}")
-    return _safe_float(tick.get("ltp"))
+        if token and tradingsymbol and exchange:
+            try:
+                from execution.options_rest import fetch_option_ltp
+                rest_ltp = await fetch_option_ltp(exchange, tradingsymbol, token)
+                if rest_ltp and rest_ltp > 0:
+                    logger.info(
+                        "[order_manager] REST fallback filled LTP for %s %s%d: ₹%.2f",
+                        symbol, instrument, atm_strike, rest_ltp,
+                    )
+                    return rest_ltp, "REST"
+            except Exception as exc:
+                logger.warning("[order_manager] REST fallback error: %s", exc)
+
+    # ── Tier 4: All tiers failed ──────────────────────────────────────
+    logger.error(
+        "[order_manager] No LTP available — symbol=%s instrument=%s strike=%s expiry=%s",
+        symbol, instrument, atm_strike, expiry_date,
+    )
+    return 0.0, "FAILED"
+
+
+async def _lookup_option_contract_meta(
+    symbol: str,
+    strike: int,
+    option_type: str,
+    expiry_date: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """
+    Look up option contract metadata from the unified universe.
+
+    Returns (token, tradingsymbol, exchange) tuple or (None, None, None)
+    if the contract isn't in the universe.
+
+    Reads NEW key: universe:options:{symbol}
+    Field format:  "{strike}{CE|PE}:{YYYY-MM-DD}"
+    """
+    if not expiry_date:
+        return None, None, None
+
+    expiry_norm = _normalise_expiry(expiry_date)
+    contract_key = f"{int(strike)}{option_type}:{expiry_norm}"
+
+    redis = await get_redis()
+    raw = await redis.hget(f"universe:options:{symbol}", contract_key)
+    if not raw:
+        return None, None, None
+
+    try:
+        data = json.loads(raw)
+        return (
+            data.get("token"),
+            data.get("tradingsymbol"),
+            data.get("exchange"),
+        )
+    except (json.JSONDecodeError, KeyError):
+        return None, None, None
+
+
+async def _resolve_nearest_stock_strike(
+    symbol: str,
+    ref_price: float,
+    expiry_date: str | None,
+) -> int | None:
+    """
+    Find the nearest available stock option strike for (symbol, expiry).
+
+    If expiry_date is None, uses the nearest upcoming expiry.
+    Returns None if no strikes found (caller should reject order).
+    """
+    redis = await get_redis()
+
+    # Resolve expiry
+    if expiry_date:
+        expiry_norm = _normalise_expiry(expiry_date)
+    else:
+        # Use nearest expiry
+        expiries = await redis.zrange(f"universe:options:{symbol}:expiries", 0, 0)
+        if not expiries:
+            logger.warning("[order_manager] No expiries found for %s", symbol)
+            return None
+        expiry_norm = expiries[0] if isinstance(expiries[0], str) else expiries[0].decode()
+
+    # Use ZRANGEBYSCORE to find nearest strikes efficiently
+    # Search a ±10% band around ref_price; if empty, widen to ±20%
+    strike_key = f"universe:options:{symbol}:strikes:{expiry_norm}"
+
+    lo = ref_price * 0.9
+    hi = ref_price * 1.1
+    candidates = await redis.zrangebyscore(strike_key, lo, hi)
+
+    if not candidates:
+        # Widen search
+        candidates = await redis.zrangebyscore(strike_key, ref_price * 0.8, ref_price * 1.2)
+
+    if not candidates:
+        # Full fallback: get all strikes for this expiry
+        candidates = await redis.zrange(strike_key, 0, -1)
+
+    if not candidates:
+        logger.warning(
+            "[order_manager] No strikes found for %s expiry=%s",
+            symbol, expiry_norm,
+        )
+        return None
+
+    # Decode and find nearest
+    strikes = [int(s if isinstance(s, str) else s.decode()) for s in candidates]
+    nearest = min(strikes, key=lambda s: abs(s - ref_price))
+
+    logger.info(
+        "[order_manager] Nearest strike for %s near ₹%.2f (expiry=%s): %d",
+        symbol, ref_price, expiry_norm, nearest,
+    )
+    return nearest
 
 
 # ---------------------------------------------------------------------------
@@ -546,22 +688,41 @@ async def close_trade(trade_id: str, exit_price: float, reason: str) -> dict:
 # EOD forced close
 # ---------------------------------------------------------------------------
 
-async def get_best_exit_price(symbol: str, entry_price: float, instrument: str = "EQ", atm_strike=None) -> float:
-    # 1. Live price — instrument-aware
-    ltp = await _get_execution_ltp(symbol, instrument, atm_strike)
+async def get_best_exit_price(
+    symbol: str,
+    entry_price: float,
+    instrument: str = "EQ",
+    atm_strike=None,
+    expiry_date: str | None = None,
+) -> tuple[float, str]:
+    """
+    3-tier fallback for EOD close pricing.
+
+    Returns (exit_price, price_source) — caller uses price_source to log
+    how the final exit price was derived.
+    """
+    # Tier 1-3: use main LTP function (WS + stale + REST)
+    ltp, source = await _get_execution_ltp(symbol, instrument, atm_strike, expiry_date)
     if ltp > 0:
-        return ltp
+        return ltp, source
 
-    # 2. Last known candle close from snapshot
+    # Tier 4: snapshot last_close (FIX: get redis connection)
+    redis = await get_redis()
     snap = await redis.hgetall(f"snapshot:{symbol}")
-    last_close = float(snap.get("last_close", 0))
+    last_close = _safe_float(snap.get("last_close"))
     if last_close > 0:
-        logger.warning(f"EOD {symbol}: using snapshot last_close {last_close}")
-        return last_close
+        logger.warning(
+            "[order_manager] EOD %s: using snapshot last_close ₹%.2f",
+            symbol, last_close,
+        )
+        return last_close, "SNAPSHOT_CLOSE"
 
-    # 3. Entry price — last resort, always log
-    logger.error(f"EOD {symbol}: no price found, falling back to entry {entry_price}")
-    return entry_price
+    # Tier 5: entry price fallback
+    logger.error(
+        "[order_manager] EOD %s: no price source, falling back to entry ₹%.2f",
+        symbol, entry_price,
+    )
+    return entry_price, "ENTRY_FALLBACK"
 
 
 async def eod_close_all() -> None:
@@ -584,7 +745,16 @@ async def eod_close_all() -> None:
         except json.JSONDecodeError:
             continue
 
-        ltp = await get_best_exit_price(trade["symbol"], trade["entry_price"], trade.get("instrument", "EQ"), trade.get("atm_strike"))
+        ltp, exit_source = await get_best_exit_price(
+            trade["symbol"],
+            trade["entry_price"],
+            trade.get("instrument", "EQ"),
+            trade.get("atm_strike"),
+            trade.get("expiry_date"),
+        )
+        # Mark the trade with exit price source for audit
+        trade["exit_price_source"] = exit_source
+        await redis.set(f"paper:trade:{trade['id']}", json.dumps(trade))
 
         await close_trade(trade_id, ltp, reason="EOD_CLOSE")
 
@@ -627,8 +797,11 @@ async def monitor_stop_losses() -> None:
                 if trade.get("status") != "OPEN":
                     continue
 
-                ltp = await _get_execution_ltp(
-                    trade["symbol"], trade.get("instrument", "EQ"), trade.get("atm_strike")
+                ltp, _ = await _get_execution_ltp(
+                    trade["symbol"],
+                    trade.get("instrument", "EQ"),
+                    trade.get("atm_strike"),
+                    trade.get("expiry_date"),
                 )
                 if ltp <= 0:
                     continue
@@ -688,8 +861,11 @@ async def update_unrealised_pnl() -> None:
                 except json.JSONDecodeError:
                     continue
 
-                ltp = await _get_execution_ltp(
-                    trade["symbol"], trade.get("instrument", "EQ"), trade.get("atm_strike")
+                ltp, _ = await _get_execution_ltp(
+                    trade["symbol"],
+                    trade.get("instrument", "EQ"),
+                    trade.get("atm_strike"),
+                    trade.get("expiry_date"),
                 )
                 if ltp <= 0:
                     ltp = _safe_float(trade.get("entry_price"))
@@ -737,58 +913,51 @@ _INDEX_STRIKE_INTERVALS: dict[str, int] = {
 }
 
 
-async def get_index_option_token(
-    index: str,
+async def get_option_token(
+    symbol: str,
     strike: int,
     option_type: str,
     expiry_date: str,
 ) -> str | None:
     """
-    Finds NFO option token for index options.
+    Look up option token from the unified options universe.
 
-    Parameters
-    ----------
-    index       : NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY / SENSEX
-    strike      : strike price as int
-    option_type : CE / PE
-    expiry_date : YYYY-MM-DD
+    Works for both indices (NIFTY, BANKNIFTY, ...) and stocks (RELIANCE, TCS, ...).
+    Reads from Redis hash: universe:options:{symbol}
+    Field format: "{strike}{CE|PE}:{YYYY-MM-DD}"
 
-    Reads from Redis key: universe:index_options:{index}
-    Returns token string or None if not found.
+    Returns token string or None if contract is not in the universe.
     """
-    redis = await get_redis()
-    raw = await redis.get(f"universe:index_options:{index}")
-    if not raw:
+    if not expiry_date or not strike or option_type not in ("CE", "PE"):
         return None
-    options = json.loads(raw)
-    strike_int = int(strike) if strike else 0
+
     expiry_norm = _normalise_expiry(expiry_date)
+    contract_key = f"{int(strike)}{option_type}:{expiry_norm}"
 
-    logger.info(
-        "[order_manager] Token lookup %s %s strike=%d expiry=%s (%d contracts)",
-        index, option_type, strike_int, expiry_norm, len(options),
-    )
+    redis = await get_redis()
+    raw = await redis.hget(f"universe:options:{symbol}", contract_key)
 
-    for contract in options:
-        if (
-            int(contract["strike"]) == strike_int
-            and contract["option_type"] == option_type
-            and contract["expiry"] == expiry_norm
-        ):
-            return contract["token"]
+    if not raw:
+        # Debug logging: show what IS available to help diagnose misses
+        total = await redis.hlen(f"universe:options:{symbol}")
+        expiries = await redis.zrange(f"universe:options:{symbol}:expiries", 0, -1)
+        logger.warning(
+            "[order_manager] Token not found: %s %s strike=%d expiry=%s. "
+            "Universe has %d contracts, %d expiries: %s",
+            symbol, option_type, int(strike), expiry_norm,
+            total, len(expiries), expiries[:5],
+        )
+        return None
 
-    expiries = sorted({c["expiry"] for c in options})
-    strikes_this_expiry = sorted({
-        int(c["strike"]) for c in options
-        if c["expiry"] == expiry_norm and c["option_type"] == option_type
-    })
-    logger.warning(
-        "[order_manager] No token: %s %s strike=%d expiry=%s. "
-        "Expiries in Redis: %s. %s strikes for this expiry: %s",
-        index, option_type, strike_int, expiry_norm,
-        expiries[:5], option_type, strikes_this_expiry[:10],
-    )
-    return None
+    try:
+        data = json.loads(raw)
+        return data.get("token")
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+
+# Keep old name as alias for backward compat during transition — remove in Session 4
+get_index_option_token = get_option_token
 
 
 async def get_index_atm_strike(index: str) -> int:
@@ -853,20 +1022,13 @@ async def place_trigger_order(payload: dict) -> dict:
                     interval = _INDEX_STRIKE_INTERVALS.get(payload["symbol"], 50)
                     payload["atm_strike"] = round(ref_price / interval) * interval
                 else:
-                    # Equity: find nearest available strike in options:active
-                    redis_tmp = await get_redis()
-                    active_raw = await redis_tmp.get(f"options:active:{payload['symbol']}")
-                    if active_raw:
-                        try:
-                            active = json.loads(active_raw)
-                            strikes = sorted({
-                                int(c["strike"]) for c in active
-                                if c.get("type", "").upper() == payload["instrument"]
-                            })
-                            if strikes:
-                                payload["atm_strike"] = min(strikes, key=lambda s: abs(s - ref_price))
-                        except (json.JSONDecodeError, KeyError, ValueError):
-                            pass
+                    # Equity: find nearest available strike in the unified universe
+                    # for the specified expiry (or nearest expiry if none given).
+                    payload["atm_strike"] = await _resolve_nearest_stock_strike(
+                        payload["symbol"],
+                        ref_price,
+                        payload.get("expiry_date"),
+                    )
 
             logger.info(
                 "[order_manager] Strike resolved from trigger_price=%.2f -> atm_strike=%s for %s %s",
@@ -876,11 +1038,11 @@ async def place_trigger_order(payload: dict) -> dict:
         # Token lookup — best-effort. Paper trades don't require it.
         token = None
         if payload.get("atm_strike") and payload.get("expiry_date"):
-            token = await get_index_option_token(
+            token = await get_option_token(          # renamed
                 payload["symbol"],
                 payload["atm_strike"],
                 payload["instrument"],
-                payload.get("expiry_date", ""),
+                payload["expiry_date"],
             )
         payload["option_token"] = token
 
@@ -931,10 +1093,14 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
     # This preserves the user's intended breakout level (e.g. 1200 CE, not 1220 CE).
     atm_strike_val = order.get("atm_strike")
 
-    ltp = await _get_execution_ltp(symbol, instrument, atm_strike_val)
+    ltp, price_source = await _get_execution_ltp(
+        symbol, instrument, atm_strike_val, order.get("expiry_date"),
+    )
     if ltp <= 0:
-        logger.error("[order_manager] Trigger fill rejected — no LTP for %s %s strike=%s",
-                     symbol, instrument, atm_strike_val)
+        logger.error(
+            "[order_manager] Trigger fill rejected — no LTP for %s %s strike=%s expiry=%s",
+            symbol, instrument, atm_strike_val, order.get("expiry_date"),
+        )
         return {"status": "REJECTED", "reason": "NO_LTP"}
 
     snap     = await redis.hgetall(f"snapshot:{symbol}")
@@ -992,7 +1158,27 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
         "signal_type":   "TRIGGER",
         "ici_score":     0.0,
         "ici_grade":     "",
+        "price_source":      price_source,          # NEW: LIVE_WS | LAST_CLOSE | REST
+        "price_age_seconds": None,                  # NEW: computed below for LAST_CLOSE
+        "underlying_at_fill": None,                 # NEW: spot price when option filled
+        "broker":            "PAPER",               # NEW: placeholder for Groww swap
     }
+
+    # Populate underlying_at_fill for CE/PE (useful for backtesting P&L realism)
+    if instrument in ("CE", "PE"):
+        spot_tick = await redis.hgetall(f"tick:{symbol}")
+        trade["underlying_at_fill"] = _safe_float(spot_tick.get("ltp")) or None
+
+    # Compute price age if it was a stale tick
+    if price_source in ("LAST_CLOSE", "REST"):
+        tick_key = (
+            f"options:tick:{symbol}:{atm_strike_val}{instrument}"
+            if instrument in ("CE", "PE") else f"tick:{symbol}"
+        )
+        ts_raw = (await redis.hgetall(tick_key)).get("ts", "")
+        if ts_raw:
+            age = (_now_ist() - _parse_ts(ts_raw)).total_seconds()
+            trade["price_age_seconds"] = round(age, 1)
 
     await redis.set(f"paper:trade:{trade['id']}", json.dumps(trade))
     await redis.sadd("paper:trades:open", trade["id"])
