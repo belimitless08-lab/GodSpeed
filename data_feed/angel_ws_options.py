@@ -205,9 +205,6 @@ async def get_fresh_session() -> dict:
         feed_token = obj.getfeedToken()
         jwt = token_data.get('jwtToken', '')
 
-        # Publish JWT to Redis for consumers (e.g. options_rest REST fallback)
-        await publish_angel_jwt(jwt)
-
         if not jwt or not feed_token:
             raise RuntimeError(
                 f"[options_ws] Missing jwtToken or feedToken: {token_data}"
@@ -220,6 +217,11 @@ async def get_fresh_session() -> dict:
         }
 
     session = await asyncio.to_thread(_login)
+
+    # Publish JWT to Redis for consumers (e.g. options_rest REST fallback).
+    # Done AFTER _login() returns so we're back in async context.
+    await publish_angel_jwt(session['jwt'])
+
     logger.info("[options_ws] Session obtained for client %s", cfg.ANGELONE_CLIENT_ID)
     return session
 
