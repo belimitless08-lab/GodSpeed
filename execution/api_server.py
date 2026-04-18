@@ -993,16 +993,16 @@ async def get_pending_trades():
 @app.get("/api/expiries/{underlying}")
 async def get_expiries(underlying: str):
     """
-    Returns available expiry dates for index/stock options.
-    Reads from Redis: universe:index_options:{underlying}
-    Returns sorted list of unique YYYY-MM-DD expiry dates.
+    Returns available expiry dates for index AND stock options.
+    Reads from unified universe: universe:options:{underlying}:expiries
     """
     redis = await get_redis()
-    raw   = await redis.get(f"universe:index_options:{underlying}")
-    if not raw:
-        return {"underlying": underlying, "expiries": []}
-    contracts = json.loads(raw)
-    expiries  = sorted({c["expiry"] for c in contracts})
+    # ZRANGE returns expiries already sorted chronologically (sorted by timestamp score)
+    expiries = await redis.zrange(f"universe:options:{underlying}:expiries", 0, -1)
+
+    # Decode bytes→str if needed depending on redis-py config
+    expiries = [e if isinstance(e, str) else e.decode() for e in expiries]
+
     return {"underlying": underlying, "expiries": expiries}
 
 
@@ -1383,6 +1383,33 @@ async def serve_index():
 @app.get('/stock.html')
 async def serve_stock():
     return FileResponse(os.path.join(frontend_path, 'stock.html'))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TEMPORARY STEP-2 DIAGNOSTICS — DELETE AFTER SESSION 2 VERIFIED
+# ═══════════════════════════════════════════════════════════════════
+
+@app.get("/api/debug/pricing-test/{symbol}/{instrument}")
+async def debug_pricing_test(symbol: str, instrument: str, strike: int = 0, expiry: str = ""):
+    """TEMPORARY — test the 4-tier pricing for any symbol/strike/expiry."""
+    from execution.order_manager import _get_execution_ltp, _lookup_option_contract_meta
+
+    ltp, source = await _get_execution_ltp(symbol, instrument, strike or None, expiry or None)
+
+    meta = None
+    if instrument in ("CE", "PE") and strike and expiry:
+        token, tsym, exch = await _lookup_option_contract_meta(symbol, strike, instrument, expiry)
+        meta = {"token": token, "tradingsymbol": tsym, "exchange": exch}
+
+    return {
+        "symbol": symbol,
+        "instrument": instrument,
+        "strike": strike,
+        "expiry": expiry,
+        "ltp": ltp,
+        "price_source": source,
+        "contract_meta": meta,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
