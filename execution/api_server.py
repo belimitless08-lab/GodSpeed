@@ -993,17 +993,37 @@ async def get_pending_trades():
 @app.get("/api/expiries/{underlying}")
 async def get_expiries(underlying: str):
     """
-    Returns available expiry dates for index AND stock options.
-    Reads from unified universe: universe:options:{underlying}:expiries
+    Returns available expiry dates + suggested ATM strike.
+    Reads unified universe: universe:options:{underlying}:expiries
+    ATM computed from current spot tick (live) or snapshot.last_close (off-hours).
     """
     redis = await get_redis()
-    # ZRANGE returns expiries already sorted chronologically (sorted by timestamp score)
     expiries = await redis.zrange(f"universe:options:{underlying}:expiries", 0, -1)
-
-    # Decode bytes→str if needed depending on redis-py config
     expiries = [e if isinstance(e, str) else e.decode() for e in expiries]
 
-    return {"underlying": underlying, "expiries": expiries}
+    # Compute ATM from spot price with fallback to last_close
+    tick = await redis.hgetall(f"tick:{underlying}")
+    spot_ltp = float(tick.get("ltp") or 0)
+    if spot_ltp <= 0:
+        snap = await redis.hgetall(f"snapshot:{underlying}")
+        spot_ltp = float(snap.get("last_close") or 0)
+
+    # Round to index strike interval (fallback to 50 for unknown symbols)
+    _INTERVALS = {
+        "NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50,
+        "MIDCPNIFTY": 25, "SENSEX": 100, "BANKEX": 100,
+    }
+    atm = None
+    if spot_ltp > 0:
+        interval = _INTERVALS.get(underlying, 50)
+        atm = round(spot_ltp / interval) * interval
+
+    return {
+        "underlying": underlying,
+        "expiries": expiries,
+        "atm": atm,
+        "spot": spot_ltp if spot_ltp > 0 else None,
+    }
 
 
 # ===========================================================================
