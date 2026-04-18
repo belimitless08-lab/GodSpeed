@@ -1579,3 +1579,49 @@ async def debug_fix_breadth_key():
     # Wrong type — delete it
     await redis.delete("market:breadth")
     return {"status": "FIXED", "message": "Deleted wrong-type key", "was_type": t_str}
+
+
+@app.get("/api/debug/find-login-sites")
+async def debug_find_login_sites():
+    """Locate every place AngelOne authentication happens in the deployed code."""
+    import os
+    
+    matches = []
+    keywords = ["generateSession", "jwtToken", "jwt_token", "getfeedToken",
+                "SmartConnect", "get_fresh_session"]
+    
+    for scan_root in ["/app", "."]:
+        if not os.path.isdir(scan_root):
+            continue
+        for root, dirs, files in os.walk(scan_root):
+            dirs[:] = [d for d in dirs if d not in (
+                ".git", "__pycache__", ".venv", "venv", "node_modules", "site-packages"
+            )]
+            for fname in files:
+                if not fname.endswith(".py"):
+                    continue
+                path = os.path.join(root, fname)
+                try:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        for lineno, line in enumerate(f, 1):
+                            for kw in keywords:
+                                if kw in line:
+                                    matches.append({
+                                        "file": path.replace("/app/", ""),
+                                        "line": lineno,
+                                        "keyword": kw,
+                                        "text": line.strip()[:160],
+                                    })
+                                    break
+                except Exception:
+                    pass
+        break
+    
+    # Group by file for readability
+    by_file = {}
+    for m in matches:
+        by_file.setdefault(m["file"], []).append({
+            "line": m["line"], "kw": m["keyword"], "text": m["text"]
+        })
+    
+    return {"login_related_sites_by_file": by_file, "total_hits": len(matches)}
