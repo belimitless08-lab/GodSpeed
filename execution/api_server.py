@@ -1439,3 +1439,15 @@ async def debug_universe_check():
         "total_symbols_in_master_set": total_symbols,
         "checks": checks,
     }
+
+@app.get("/api/debug/wipe-universe-options")
+async def debug_wipe_universe_options():
+    """TEMPORARY — wipe all universe:options:* keys to clear WRONGTYPE conflicts."""
+    redis = await get_redis()
+    deleted = 0
+    async for key in redis.scan_iter(match="universe:options*", count=500):
+        await redis.delete(key)
+        deleted += 1
+    return {"status": "OK", "deleted_keys": deleted}
+
+
