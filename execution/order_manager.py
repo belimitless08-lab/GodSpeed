@@ -832,24 +832,48 @@ async def place_trigger_order(payload: dict) -> dict:
     """
     redis = await get_redis()
 
-    # ── Index option: resolve ATM strike and option token ────────────────────
-    if payload["instrument"] in ("CE", "PE") and payload["symbol"] in _INDEX_SYMBOLS:
+    # ── Options: resolve strike from trigger_price (not current LTP) ────────
+    if payload["instrument"] in ("CE", "PE"):
         if not payload.get("atm_strike"):
-            atm = await get_index_atm_strike(payload["symbol"])
-            if atm > 0:
-                payload["atm_strike"] = atm
-            else:
-                # Index feed offline — no ATM available.
-                # We still allow the paper order to proceed without a token.
-                # The user should enter the strike manually for accurate pricing.
-                logger.warning(
-                    "[order_manager] %s index feed offline — no ATM strike. "
-                    "Paper order will proceed without option token. "
-                    "Enter strike manually for accurate CE/PE pricing.",
-                    payload["symbol"],
-                )
+            # Strike is based on trigger price — the level the user targets.
+            # Using trigger_price (not current LTP) means:
+            #   trigger=1200, close=1220 → buy 1200 CE (the breakout level)
+            #   NOT the 1220 CE (which is ATM at execution, wrong for breakout trades)
+            ref_price = payload.get("trigger_price") or 0
 
-        # Token lookup — best-effort. Paper trades don't need it.
+            if ref_price <= 0:
+                # Market order — no trigger price, use current spot
+                redis_tmp = await get_redis()
+                spot = await redis_tmp.hgetall(f"tick:{payload['symbol']}")
+                ref_price = _safe_float(spot.get("ltp"))
+
+            if ref_price > 0:
+                if payload["symbol"] in _INDEX_SYMBOLS:
+                    # Index: round to fixed interval
+                    interval = _INDEX_STRIKE_INTERVALS.get(payload["symbol"], 50)
+                    payload["atm_strike"] = round(ref_price / interval) * interval
+                else:
+                    # Equity: find nearest available strike in options:active
+                    redis_tmp = await get_redis()
+                    active_raw = await redis_tmp.get(f"options:active:{payload['symbol']}")
+                    if active_raw:
+                        try:
+                            active = json.loads(active_raw)
+                            strikes = sorted({
+                                int(c["strike"]) for c in active
+                                if c.get("type", "").upper() == payload["instrument"]
+                            })
+                            if strikes:
+                                payload["atm_strike"] = min(strikes, key=lambda s: abs(s - ref_price))
+                        except (json.JSONDecodeError, KeyError, ValueError):
+                            pass
+
+            logger.info(
+                "[order_manager] Strike resolved from trigger_price=%.2f -> atm_strike=%s for %s %s",
+                ref_price, payload.get("atm_strike"), payload["symbol"], payload["instrument"],
+            )
+
+        # Token lookup — best-effort. Paper trades don't require it.
         token = None
         if payload.get("atm_strike") and payload.get("expiry_date"):
             token = await get_index_option_token(
@@ -858,7 +882,7 @@ async def place_trigger_order(payload: dict) -> dict:
                 payload["instrument"],
                 payload.get("expiry_date", ""),
             )
-        payload["option_token"] = token  # None is fine for paper trading
+        payload["option_token"] = token
 
     order_id = str(uuid4())
     order = {
@@ -901,10 +925,16 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
     symbol = order["symbol"]
 
     instrument = order.get("instrument", "EQ")
+
+    # Strike was already resolved at order placement time from trigger_price.
+    # Use it as-is — do not recalculate from close price at execution time.
+    # This preserves the user's intended breakout level (e.g. 1200 CE, not 1220 CE).
     atm_strike_val = order.get("atm_strike")
+
     ltp = await _get_execution_ltp(symbol, instrument, atm_strike_val)
     if ltp <= 0:
-        logger.error("[order_manager] Trigger fill rejected — no LTP for %s %s", symbol, instrument)
+        logger.error("[order_manager] Trigger fill rejected — no LTP for %s %s strike=%s",
+                     symbol, instrument, atm_strike_val)
         return {"status": "REJECTED", "reason": "NO_LTP"}
 
     snap     = await redis.hgetall(f"snapshot:{symbol}")
@@ -946,7 +976,7 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
         "lots":          order["lots"],
         "quantity":      quantity,
         "lot_size":      lot_size,
-        "atm_strike":    order.get("atm_strike"),
+        "atm_strike":    atm_strike_val,
         "option_token":  order.get("option_token"),
         "expiry_date":   order.get("expiry_date"),
         "margin_used":   round(margin, 2),
