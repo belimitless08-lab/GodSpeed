@@ -32,6 +32,7 @@ from core.universe_builder import (
     get_symbols,
     get_token_map,
 )
+from execution.options_rest import publish_angel_jwt
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -97,6 +98,7 @@ async def get_angel_session() -> dict:
         raise RuntimeError(f"AngelOne login failed: {data.get('message')}")
 
     d = data["data"]
+    await publish_angel_jwt(d["jwtToken"])
     return {
         "jwt": d["jwtToken"],
         "feed_token": d["feedToken"],
