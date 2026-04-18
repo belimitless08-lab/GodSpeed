@@ -67,16 +67,6 @@ _FUTURES_SUFFIX_RE = re.compile(r"\d{2}[A-Z]{3}\d{2}FUT$")
 # NEW — Unified Options Universe constants
 # ---------------------------------------------------------------------------
 
-# Import FNO_STOCKS from options_config (the canonical F&O stock list).
-# Wrapped in try/except so this file can be imported in isolation for tests.
-try:
-    from options_config import FNO_STOCKS  # type: ignore[import]
-except ImportError:
-    logger.warning(
-        "options_config.FNO_STOCKS not importable — FNO_STOCKS will be empty. "
-        "Stock options universe will not be populated."
-    )
-    FNO_STOCKS: list[str] = []
 
 # Indices with options (superset of legacy INDEX_UNDERLYINGS — includes BSE)
 INDEX_OPTION_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]
@@ -732,6 +722,7 @@ async def _write_symbol_to_redis(
 
 async def build_options_universe(
     instrument_master: list[dict],
+    fno_stocks: list[str],
     *,
     include_indices: bool = True,
     include_stocks: bool = True,
@@ -787,7 +778,7 @@ async def build_options_universe(
 
     # Determine which symbol sets are active this run
     active_indices: list[str] = list(INDEX_OPTION_SYMBOLS) if include_indices else []
-    active_stocks:  list[str] = list(FNO_STOCKS)           if include_stocks  else []
+    active_stocks:  list[str] = list(fno_stocks)           if include_stocks  else []
 
     # Sort indices longest-name-first as a prefix-match guard
     active_indices_sorted = sorted(active_indices, key=len, reverse=True)
@@ -985,8 +976,11 @@ async def build_universe() -> dict:
     index_counts = await _build_index_options(instruments)
     meta["index_options"] = index_counts  # e.g. {"NIFTY": 420, "BANKNIFTY": 380, …}
 
-    # NEW: unified options universe (indices + stocks)
-    options_stats = await build_options_universe(instruments)
+    # NEW: unified options universe (indices + stocks).
+    # Pass the F&O stock list built in _build_maps() so we don't need
+    # to hardcode or import it — the list already lives in Redis under
+    # universe:symbols after _build_maps() runs.
+    options_stats = await build_options_universe(instruments, fno_stocks=symbols)
     meta["options_universe"] = options_stats
     logger.info("[universe] Options universe built: %s", options_stats)
 
