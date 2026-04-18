@@ -1386,12 +1386,31 @@ async def serve_stock():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# TEMPORARY DIAGNOSTIC — DELETE AFTER STEP 1 VERIFICATION
+# TEMPORARY STEP-1 DIAGNOSTICS — DELETE AFTER VERIFICATION COMPLETE
 # ═══════════════════════════════════════════════════════════════════
+import traceback as _tb
+import json as _json
+
+
+@app.get("/api/debug/force-universe-build")
+async def debug_force_universe_build():
+    """Manually trigger the full universe build and return detailed status."""
+    try:
+        from core.universe_builder import build_universe
+        meta = await build_universe()
+        return {"status": "SUCCESS", "meta": meta}
+    except Exception as exc:
+        return {
+            "status": "FAILED",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": _tb.format_exc(),
+        }
+
+
 @app.get("/api/debug/universe-check")
 async def debug_universe_check():
-    """Verify Step 1 unified options universe deployed correctly."""
-    import json as _json
+    """Inspect the new unified options universe keys."""
     from core.redis_client import get_redis
     redis = await get_redis()
 
@@ -1428,7 +1447,7 @@ async def debug_universe_check():
         checks[sym] = {
             "contract_count": hash_count,
             "expiry_count": len(expiries),
-            "expiries": expiries,
+            "expiries": expiries[:5] if expiries else [],
             "strike_keys_count": strike_keys_count,
             "strike_key_match": strike_keys_count == len(expiries),
             "sample_exchange": sample_exchange,
@@ -1440,14 +1459,37 @@ async def debug_universe_check():
         "checks": checks,
     }
 
-@app.get("/api/debug/wipe-universe-options")
-async def debug_wipe_universe_options():
-    """TEMPORARY — wipe all universe:options:* keys to clear WRONGTYPE conflicts."""
+
+@app.get("/api/debug/inspect-key/{key:path}")
+async def debug_inspect_key(key: str):
+    """Check a Redis key's type and sample value — helps debug WRONGTYPE errors."""
+    from core.redis_client import get_redis
     redis = await get_redis()
-    deleted = 0
-    async for key in redis.scan_iter(match="universe:options*", count=500):
-        await redis.delete(key)
-        deleted += 1
-    return {"status": "OK", "deleted_keys": deleted}
+    key_type = await redis.type(key)
+    # redis-py may return bytes or str
+    key_type_str = key_type if isinstance(key_type, str) else key_type.decode()
+    exists = await redis.exists(key)
 
+    sample = None
+    if exists:
+        try:
+            if key_type_str == "string":
+                v = await redis.get(key)
+                sample = (v if isinstance(v, str) else v.decode())[:200] if v else None
+            elif key_type_str == "hash":
+                sample = await redis.hrandfield(key, count=1, withvalues=True)
+            elif key_type_str == "set":
+                sample = list(await redis.srandmember(key, 5))
+            elif key_type_str == "list":
+                sample = await redis.lrange(key, 0, 4)
+            elif key_type_str == "zset":
+                sample = await redis.zrange(key, 0, 4, withscores=True)
+        except Exception as e:
+            sample = f"ERROR reading: {e}"
 
+    return {
+        "key": key,
+        "exists": bool(exists),
+        "type": key_type_str,
+        "sample": sample,
+    }
