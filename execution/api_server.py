@@ -1533,3 +1533,22 @@ async def debug_check_fno_stocks():
     result["alternative_paths"] = alternatives_tried
 
     return result
+
+
+@app.get("/api/debug/fix-breadth-key")
+async def debug_fix_breadth_key():
+    """TEMPORARY — delete market:breadth if it has wrong Redis type."""
+    from core.redis_client import get_redis
+    redis = await get_redis()
+    t = await redis.type("market:breadth")
+    t_str = t if isinstance(t, str) else t.decode()
+    
+    if t_str == "none":
+        return {"status": "OK", "message": "Key does not exist", "was_type": "none"}
+    
+    if t_str == "hash":
+        return {"status": "OK", "message": "Key is already a hash — no fix needed", "was_type": "hash"}
+    
+    # Wrong type — delete it
+    await redis.delete("market:breadth")
+    return {"status": "FIXED", "message": "Deleted wrong-type key", "was_type": t_str}
