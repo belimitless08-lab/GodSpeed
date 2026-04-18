@@ -54,6 +54,14 @@ MARKET_STATUS_URL  = f"{SMARTAPI_BASE}/rest/secure/angelbroking/order/v1/getMark
 WS_URL             = "wss://smartapisocket.angelone.in/smart-stream"
 
 TOKEN_BUDGET       = 500        # AngelOne hard limit
+HEALTH_INTERVAL    = 60         # seconds between health log/write
+MARKET_POLL_SLEEP  = 300        # 5 minutes when market is closed
+BACKOFF_INITIAL    = 15         # seconds — respect AngelOne 1 req/sec rate limit
+BACKOFF_MAX        = 120        # seconds
+
+# AngelOne exchange codes
+EXCHANGE_NSE = 1
+EXCHANGE_BSE = 3
 
 # Index tokens — AngelOne SmartAPI token IDs for NSE/BSE indices.
 # These are NOT in universe:token_map (no FUTSTK contract) so we inject them manually.
@@ -64,19 +72,12 @@ _INDEX_TOKENS = {
     "MIDCPNIFTY": ("99926074", EXCHANGE_NSE),
     "SENSEX":     ("99919000", EXCHANGE_BSE),
 }
-HEALTH_INTERVAL    = 60         # seconds between health log/write
-MARKET_POLL_SLEEP  = 300        # 5 minutes when market is closed
-BACKOFF_INITIAL    = 15         # seconds — respect AngelOne 1 req/sec rate limit
-BACKOFF_MAX        = 120        # seconds
-
-# AngelOne exchange codes
-EXCHANGE_NSE = 1
-EXCHANGE_BSE = 3
 
 # Subscribe action code
 ACTION_SUBSCRIBE = 1
 
 # Mode 2 = Quote (LTP + volume + basic market depth)
+MODE_LTP   = 1
 MODE_QUOTE = 2
 
 # ---------------------------------------------------------------------------
@@ -193,7 +194,7 @@ async def _wait_for_market_open() -> str:
 # Token list helpers
 # ---------------------------------------------------------------------------
 
-async def _load_token_list() -> tuple[list[str], dict[str, str], list[str]]:
+async def _load_token_list() -> tuple[list[str], dict[str, str], list[str], list[str]]:
     """
     Load universe:token_map from Redis and inject index tokens.
 
@@ -218,30 +219,28 @@ async def _load_token_list() -> tuple[list[str], dict[str, str], list[str]]:
         tokens = tokens[:TOKEN_BUDGET]
         reversed_map = {t: reversed_map[t] for t in tokens if t in reversed_map}
 
-    # Inject index tokens — not in universe:token_map but required for
-    # dashboard index bar, ATM strike resolution, and CE/PE order pricing.
-    nse_tokens = list(tokens)
-    bse_tokens = []
+    # Separate index tokens from equity tokens — indices use LTP mode, equities use QUOTE mode
+    nse_equity_tokens = list(tokens)
+    nse_index_tokens  = []
+    bse_index_tokens  = []
     for symbol, (token, exchange) in _INDEX_TOKENS.items():
         reversed_map[token] = symbol
         if exchange == EXCHANGE_NSE:
-            if token not in nse_tokens:
-                nse_tokens.append(token)
+            nse_index_tokens.append(token)
         else:  # BSE
-            bse_tokens.append(token)
-            reversed_map[token] = symbol
+            bse_index_tokens.append(token)
 
     logger.info(
-        "[angel_ws] Subscribing %d NSE tokens (%d F&O stocks + %d indices) + %d BSE indices.",
-        len(nse_tokens), len(tokens),
-        len([t for _, (t, e) in _INDEX_TOKENS.items() if e == EXCHANGE_NSE]),
-        len(bse_tokens),
+        "[angel_ws] Subscribing %d NSE equity tokens (QUOTE mode) + "
+        "%d NSE index tokens + %d BSE index tokens (LTP mode).",
+        len(nse_equity_tokens), len(nse_index_tokens), len(bse_index_tokens),
     )
-    return nse_tokens, reversed_map, bse_tokens
+    # Return: equity tokens (QUOTE), all tokens reversed_map, nse_index, bse_index
+    return nse_equity_tokens, reversed_map, nse_index_tokens, bse_index_tokens
 
 
 def _build_subscribe_message(nse_tokens: list[str], bse_tokens: list[str] = None) -> str:
-    """Build subscription message. NSE and BSE tokens need separate exchangeType entries."""
+    """Build QUOTE-mode subscription for equity stocks."""
     token_list = [{"exchangeType": EXCHANGE_NSE, "tokens": nse_tokens}]
     if bse_tokens:
         token_list.append({"exchangeType": EXCHANGE_BSE, "tokens": bse_tokens})
@@ -250,6 +249,21 @@ def _build_subscribe_message(nse_tokens: list[str], bse_tokens: list[str] = None
         "action": ACTION_SUBSCRIBE,
         "params": {
             "mode": MODE_QUOTE,
+            "tokenList": token_list,
+        },
+    })
+
+
+def _build_index_subscribe_message(nse_index_tokens: list[str], bse_index_tokens: list[str] = None) -> str:
+    """Build LTP-mode subscription for index tokens (no volume/OI data available)."""
+    token_list = [{"exchangeType": EXCHANGE_NSE, "tokens": nse_index_tokens}]
+    if bse_index_tokens:
+        token_list.append({"exchangeType": EXCHANGE_BSE, "tokens": bse_index_tokens})
+    return json.dumps({
+        "correlationID": "index_feed",
+        "action": ACTION_SUBSCRIBE,
+        "params": {
+            "mode": MODE_LTP,
             "tokenList": token_list,
         },
     })
@@ -279,6 +293,11 @@ def _build_subscribe_message(nse_tokens: list[str], bse_tokens: list[str] = None
 
 _QUOTE_STRUCT = struct.Struct("<BB25sqqqqqqddqqqq")
 _QUOTE_SIZE   = _QUOTE_STRUCT.size   # 123 bytes
+
+# LTP mode (mode=1) packet — used for indices which have no volume/OI data
+# Layout: sub_mode(1) + exch_type(1) + token(25) + seq_no(8) + exch_ts_ms(8) + ltp(8) = 51 bytes
+_LTP_STRUCT = struct.Struct("<BB25sqqq")
+_LTP_SIZE   = _LTP_STRUCT.size  # 51 bytes
 
 
 def _parse_tick(raw: bytes) -> Optional[dict]:
@@ -336,6 +355,41 @@ def _parse_tick(raw: bytes) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # Redis helpers
 # ---------------------------------------------------------------------------
+
+def _parse_ltp_tick(raw: bytes) -> Optional[dict]:
+    """
+    Parse an AngelOne LTP-mode (mode=1) binary tick.
+    Used for index tokens which stream in LTP mode, not QUOTE mode.
+    Returns None if packet is too short or malformed.
+    """
+    if len(raw) < _LTP_SIZE:
+        return None
+    try:
+        sub_mode, exch_type, token_bytes, seq_no, exch_ts_ms, ltp_raw = (
+            _LTP_STRUCT.unpack(raw[:_LTP_SIZE])
+        )
+    except struct.error:
+        return None
+
+    token = token_bytes.rstrip(b"\x00").decode("ascii", errors="replace").strip()
+    try:
+        ts = datetime.fromtimestamp(exch_ts_ms / 1000.0, tz=timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        ts = datetime.now(timezone.utc).isoformat()
+
+    return {
+        "token":  token,
+        "ltp":    round(ltp_raw / 100.0, 2),
+        "volume": 0,
+        "ltq":    0,
+        "atp":    round(ltp_raw / 100.0, 2),
+        "open":   0.0,
+        "high":   0.0,
+        "low":    0.0,
+        "close":  0.0,
+        "ts":     ts,
+    }
+
 
 async def _write_tick(redis, symbol: str, tick: dict) -> None:
     """Write tick data to Redis hash and publish to ticks channel."""
@@ -398,7 +452,7 @@ async def _run_ws_session(session: dict) -> None:
     client_code = session["client_code"]
 
     # Load token universe fresh on every reconnect (universe may have refreshed)
-    nse_tokens, reversed_map, bse_tokens = await _load_token_list()
+    nse_equity_tokens, reversed_map, nse_index_tokens, bse_index_tokens = await _load_token_list()
     redis = await get_redis()
 
     ws_headers = {
@@ -408,8 +462,11 @@ async def _run_ws_session(session: dict) -> None:
         "x-feed-token":  feed_token,
     }
 
-    subscribe_msg = _build_subscribe_message(nse_tokens, bse_tokens)
-    symbol_count  = len(nse_tokens) + len(bse_tokens)
+    # Equity stocks: QUOTE mode (mode=2) — has volume, OI, OHLC
+    subscribe_msg       = _build_subscribe_message(nse_equity_tokens)
+    # Indices: LTP mode (mode=1) — no volume/OI, just price
+    index_subscribe_msg = _build_index_subscribe_message(nse_index_tokens, bse_index_tokens)
+    symbol_count = len(nse_equity_tokens) + len(nse_index_tokens) + len(bse_index_tokens)
 
     # Health tracking
     tick_count     = 0
@@ -433,8 +490,11 @@ async def _run_ws_session(session: dict) -> None:
         logger.info("[angel_ws] WebSocket connected. Subscribing …")
 
         await ws.send(subscribe_msg)
-        logger.info("[angel_ws] Subscription sent for %d tokens. First 5 NSE: %s BSE: %s",
-                    symbol_count, nse_tokens[:5], bse_tokens)
+        logger.info("[angel_ws] QUOTE subscription sent — %d equity tokens.", len(nse_equity_tokens))
+        await ws.send(index_subscribe_msg)
+        logger.info("[angel_ws] LTP subscription sent — %d index tokens: NSE=%s BSE=%s",
+                    len(nse_index_tokens) + len(bse_index_tokens),
+                    nse_index_tokens, bse_index_tokens)
         logger.info("[angel_ws] Subscribe payload preview: %s", subscribe_msg[:300])
 
         # Send immediate ping to verify heartbeat path works, then every 25s.
@@ -494,6 +554,9 @@ async def _run_ws_session(session: dict) -> None:
 
                 bin_count += 1
                 tick = _parse_tick(message)
+                if tick is None:
+                    # Try LTP mode parser (used for index ticks)
+                    tick = _parse_ltp_tick(message)
                 if tick is None:
                     if bin_count <= 3:
                         logger.warning(
