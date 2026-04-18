@@ -1625,3 +1625,24 @@ async def debug_find_login_sites():
         })
     
     return {"login_related_sites_by_file": by_file, "total_hits": len(matches)}
+
+
+@app.get("/api/debug/check-jwt")
+async def debug_check_jwt():
+    """TEMPORARY — verify JWT publisher is wired correctly."""
+    redis = await get_redis()
+    raw = await redis.get("angel:session:jwt")
+    if not raw:
+        return {
+            "jwt_in_redis": False,
+            "message": "No JWT — login sites not publishing, OR no service has logged in yet.",
+        }
+    jwt = raw if isinstance(raw, str) else raw.decode()
+    ttl = await redis.ttl("angel:session:jwt")
+    return {
+        "jwt_in_redis": True,
+        "jwt_length": len(jwt),
+        "jwt_prefix_20": jwt[:20] + "...",
+        "ttl_seconds": ttl,
+        "ttl_hours": round(ttl / 3600, 1) if ttl > 0 else None,
+    }
