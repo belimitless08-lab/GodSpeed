@@ -40,6 +40,7 @@ from websockets.exceptions import (
 from core.config import cfg
 from core.redis_client import get_redis
 from core.universe_builder import get_token_map
+from execution.options_rest import publish_angel_jwt
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -117,6 +118,8 @@ async def get_fresh_session() -> dict:
         }
 
     session = await asyncio.to_thread(_login)
+    # Publish JWT to Redis for consumers (e.g. options_rest REST fallback)
+    await publish_angel_jwt(session['jwt'])
     logger.info("[angel_ws] Session obtained for client %s", cfg.ANGELONE_CLIENT_ID)
     return session
 
