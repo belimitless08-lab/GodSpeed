@@ -48,6 +48,7 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from core.config import cfg
 from core.redis_client import get_redis
+from execution.options_rest import publish_angel_jwt
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -203,6 +204,10 @@ async def get_fresh_session() -> dict:
         token_data = data.get('data', {})
         feed_token = obj.getfeedToken()
         jwt = token_data.get('jwtToken', '')
+
+        # Publish JWT to Redis for consumers (e.g. options_rest REST fallback)
+        await publish_angel_jwt(jwt)
+
         if not jwt or not feed_token:
             raise RuntimeError(
                 f"[options_ws] Missing jwtToken or feedToken: {token_data}"
