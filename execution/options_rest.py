@@ -64,6 +64,10 @@ async def publish_angel_jwt(jwt_token: str) -> None:
     """
     Publish a freshly-generated AngelOne JWT to Redis for consumers.
 
+    Strips any leading 'Bearer ' prefix — newer versions of smartapi-python
+    return the JWT already prefixed, and downstream consumers add their own
+    'Bearer ' in the Authorization header, causing double-prefix 401 errors.
+
     Called by any service that performs AngelOne login — equity feed,
     options feed, morning seeder, etc.  All valid JWTs for the same
     account are equivalent, so last-writer-wins is safe.
@@ -73,10 +77,23 @@ async def publish_angel_jwt(jwt_token: str) -> None:
     """
     if not jwt_token:
         return
+
+    # Defensive: strip 'Bearer ' prefix if already present.
+    # smartapi-python sometimes returns 'Bearer eyJ...' while the raw
+    # AngelOne response contains just 'eyJ...'. Normalize at write time
+    # so readers always get a clean token.
+    cleaned = jwt_token.strip()
+    if cleaned.lower().startswith("bearer "):
+        cleaned = cleaned[7:].strip()
+
+    if not cleaned:
+        logger.warning("[options_rest] JWT is empty after cleaning; not publishing")
+        return
+
     try:
         redis = await get_redis()
-        await redis.set(_REDIS_JWT_KEY, jwt_token, ex=_JWT_TTL_SECONDS)
-        logger.info("[options_rest] JWT published to Redis")
+        await redis.set(_REDIS_JWT_KEY, cleaned, ex=_JWT_TTL_SECONDS)
+        logger.info("[options_rest] JWT published to Redis (%d chars)", len(cleaned))
     except Exception as exc:
         logger.warning("[options_rest] Failed to publish JWT: %s", exc)
 
