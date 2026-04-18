@@ -1383,3 +1383,59 @@ async def serve_index():
 @app.get('/stock.html')
 async def serve_stock():
     return FileResponse(os.path.join(frontend_path, 'stock.html'))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TEMPORARY DIAGNOSTIC — DELETE AFTER STEP 1 VERIFICATION
+# ═══════════════════════════════════════════════════════════════════
+@app.get("/api/debug/universe-check")
+async def debug_universe_check():
+    """Verify Step 1 unified options universe deployed correctly."""
+    import json as _json
+    from core.redis_client import get_redis
+    redis = await get_redis()
+
+    total_symbols = await redis.scard("universe:options:symbols")
+    checks = {}
+
+    for sym in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY",
+                "SENSEX", "RELIANCE", "TCS", "INFY", "HDFCBANK"]:
+        hash_count = await redis.hlen(f"universe:options:{sym}")
+        expiries = await redis.zrange(f"universe:options:{sym}:expiries", 0, -1)
+
+        strike_keys_count = 0
+        async for _ in redis.scan_iter(
+            match=f"universe:options:{sym}:strikes:*", count=100
+        ):
+            strike_keys_count += 1
+
+        sample_contract = None
+        sample_exchange = None
+        sample_class = None
+        if hash_count > 0:
+            try:
+                fields = await redis.hrandfield(
+                    f"universe:options:{sym}", count=1, withvalues=True
+                )
+                if fields and len(fields) >= 2:
+                    raw = fields[1] if isinstance(fields[1], str) else fields[1].decode()
+                    sample_contract = _json.loads(raw)
+                    sample_exchange = sample_contract.get("exchange")
+                    sample_class = sample_contract.get("instrument_class")
+            except Exception as e:
+                sample_contract = f"ERROR: {e}"
+
+        checks[sym] = {
+            "contract_count": hash_count,
+            "expiry_count": len(expiries),
+            "expiries": expiries,
+            "strike_keys_count": strike_keys_count,
+            "strike_key_match": strike_keys_count == len(expiries),
+            "sample_exchange": sample_exchange,
+            "sample_instrument_class": sample_class,
+        }
+
+    return {
+        "total_symbols_in_master_set": total_symbols,
+        "checks": checks,
+    }
