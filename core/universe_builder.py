@@ -63,9 +63,54 @@ INDEX_OPTIONS_LOOKAHEAD_DAYS = 45
 # full contract names like RELIANCE28APR26FUT to pass through unstripped.
 _FUTURES_SUFFIX_RE = re.compile(r"\d{2}[A-Z]{3}\d{2}FUT$")
 
+# ---------------------------------------------------------------------------
+# NEW — Unified Options Universe constants
+# ---------------------------------------------------------------------------
+
+# Import FNO_STOCKS from options_config (the canonical F&O stock list).
+# Wrapped in try/except so this file can be imported in isolation for tests.
+try:
+    from options_config import FNO_STOCKS  # type: ignore[import]
+except ImportError:
+    logger.warning(
+        "options_config.FNO_STOCKS not importable — FNO_STOCKS will be empty. "
+        "Stock options universe will not be populated."
+    )
+    FNO_STOCKS: list[str] = []
+
+# Indices with options (superset of legacy INDEX_UNDERLYINGS — includes BSE)
+INDEX_OPTION_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]
+
+# How far ahead to include expiries.
+# Indices: 45 days (weeklies + monthlies).
+# Stocks:  90 days (monthly-only — need deeper window to guarantee ≥2 expiries).
+LOOKAHEAD_INDEX_DAYS = 45
+LOOKAHEAD_STOCK_DAYS = 90
+
+# Exchange ↔ index symbol mapping. Defensive guard against malformed instrument
+# master entries that would otherwise silently pollute the wrong universe hash.
+# NSE indices trade on NFO; BSE indices trade on BFO.
+_EXPECTED_INDEX_EXCHANGE: dict[str, str] = {
+    "NIFTY":       "NFO",
+    "BANKNIFTY":   "NFO",
+    "FINNIFTY":    "NFO",
+    "MIDCPNIFTY":  "NFO",
+    "SENSEX":      "BFO",
+    "BANKEX":      "BFO",
+}
+
+# All F&O stock options trade on NFO. This is enforced defensively below.
+_EXPECTED_STOCK_EXCHANGE = "NFO"
+
+# IST offset for expiry score calculation (UTC+5:30)
+_IST_OFFSET = timezone(timedelta(hours=5, minutes=30))
+
+# Pipeline batch size — stay well under Redis's command-count soft limits
+_PIPELINE_BATCH = 1000
+
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Internal helpers (original)
 # ---------------------------------------------------------------------------
 
 def _derive_underlying(futures_symbol: str) -> str:
@@ -418,8 +463,510 @@ async def _build_index_options(instruments: list[dict]) -> dict[str, int]:
     return counts
 
 
+# ===========================================================================
+# NEW — Unified Options Universe
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
-# Public async API
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _parse_angel_expiry(raw: str) -> date | None:
+    """
+    Normalise an AngelOne instrument-master expiry string to a ``datetime.date``.
+
+    Known formats seen in the wild::
+
+        "24APR2026"    ← most common for NFO options
+        "24-APR-2026"
+        "2026-04-24"
+        "24/04/2026"
+
+    Returns ``None`` on any unparseable input (caller should log and skip).
+    Consolidates the same logic previously duplicated in order_manager.
+    """
+    if not raw:
+        return None
+    cleaned = raw.strip().upper()
+    for fmt in ("%d%b%Y", "%Y-%m-%d", "%d-%b-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    logger.debug("_parse_angel_expiry: could not parse %r", raw)
+    return None
+
+
+def _derive_instrument_class(instrument_type: str) -> str | None:
+    """
+    Map AngelOne ``instrumenttype`` field to our internal classification.
+
+    Returns
+    -------
+    "INDEX"  for OPTIDX
+    "STOCK"  for OPTSTK
+    None     for anything else (caller skips that contract)
+    """
+    mapping = {"OPTIDX": "INDEX", "OPTSTK": "STOCK"}
+    return mapping.get(instrument_type)
+
+
+def _match_symbol_to_name(name_field: str, candidates: list[str]) -> str | None:
+    """
+    Match the ``name`` field from the instrument master to one of our symbol
+    candidates.
+
+    Strategy
+    --------
+    * **Exact match first** — AngelOne's master stores the clean base name
+      (e.g. ``"name": "BANKNIFTY"``), so exact equality works for both
+      indices and stocks.
+    * **Longest-prefix fallback** — only reached when the name field is NOT
+      an exact member of candidates (shouldn't happen for well-maintained
+      data, but is a safe guard against edge cases).  Sorted longest-first
+      so that "BANKNIFTY" is matched before "NIFTY".
+
+    Returns matched symbol string, or ``None`` if no candidate matches.
+    """
+    # Exact match (O(1) with set lookup)
+    candidate_set = set(candidates)
+    if name_field in candidate_set:
+        return name_field
+
+    # Longest-prefix fallback
+    for candidate in sorted(candidates, key=len, reverse=True):
+        if name_field.startswith(candidate):
+            return candidate
+
+    return None
+
+
+def _contract_key(strike: int, option_type: str, expiry_iso: str) -> str:
+    """
+    Return the deterministic hash-field key used in ``universe:options:{sym}``.
+
+    Format: ``"{strike}{CE|PE}:{expiry_YYYY-MM-DD}"``
+
+    Example::
+
+        _contract_key(24500, "CE", "2026-04-24") → "24500CE:2026-04-24"
+
+    Args
+    ----
+    strike      : int — NEVER float (enforce conversion upstream)
+    option_type : "CE" or "PE"
+    expiry_iso  : YYYY-MM-DD string (already normalised)
+    """
+    return f"{int(strike)}{option_type}:{expiry_iso}"
+
+
+def _expiry_score(expiry_date: date) -> float:
+    """
+    Convert an expiry date to a unix timestamp at 15:30 IST.
+
+    Using 15:30 IST (market close) means:
+    * Same-day expiries score correctly relative to real-time ``now``.
+    * ``ZRANGEBYSCORE ... {now_ts} +inf`` filters past expiries accurately
+      throughout the trading day.
+    """
+    dt_ist = datetime(
+        expiry_date.year, expiry_date.month, expiry_date.day,
+        15, 30, 0, tzinfo=_IST_OFFSET
+    )
+    return dt_ist.timestamp()
+
+
+async def _write_symbol_to_redis(
+    redis,
+    symbol: str,
+    contracts: list[dict],
+) -> int:
+    """
+    Write all three key types for one symbol atomically via pipeline.
+
+    Deletes existing keys BEFORE writing to prevent stale contracts
+    accumulating as weekly expiries roll off.
+
+    Pipeline sequence
+    -----------------
+    1. DEL  universe:options:{sym}
+    2. DEL  universe:options:{sym}:expiries
+    3. DEL  universe:options:{sym}:strikes:{expiry}  (one per unique expiry)
+    4. HSET universe:options:{sym}           (bulk)
+    5. ZADD universe:options:{sym}:expiries  (bulk)
+    6. ZADD universe:options:{sym}:strikes:{expiry}  (bulk, one per expiry)
+    7. SADD universe:options:symbols {sym}
+
+    Batches pipeline flushes every ``_PIPELINE_BATCH`` commands to avoid
+    memory spikes with large option chains (~32 k commands for some symbols).
+
+    Parameters
+    ----------
+    redis     : async Redis client
+    symbol    : e.g. "NIFTY" or "RELIANCE"
+    contracts : list of pre-parsed, pre-filtered contract dicts containing
+                keys: token, lot_size, exchange, instrument_class,
+                      tradingsymbol, strike (int), option_type, expiry_iso
+
+    Returns
+    -------
+    Number of contracts written to the hash.
+    """
+    if not contracts:
+        return 0
+
+    hash_key     = f"universe:options:{symbol}"
+    expiries_key = f"universe:options:{symbol}:expiries"
+
+    # Collect unique expiries from the incoming batch.
+    unique_expiries: set[str] = {c["expiry_iso"] for c in contracts}
+
+    # ------------------------------------------------------------------
+    # Phase 1 — DELETE stale keys
+    #
+    # We must delete ALL existing strike keys for this symbol, not just
+    # those appearing in the incoming batch. Weekly expiries roll off over
+    # time, and if we only DEL incoming expiries, rolled-off weeks' strike
+    # keys accumulate in Redis forever as zombie data.
+    #
+    # SCAN is used instead of KEYS to avoid blocking Redis on a large
+    # keyspace. Match pattern is scoped tightly to this symbol.
+    # ------------------------------------------------------------------
+    existing_strike_keys: list[str] = []
+    scan_pattern = f"universe:options:{symbol}:strikes:*"
+    async for key in redis.scan_iter(match=scan_pattern, count=100):
+        # redis-py may return bytes or str depending on decode_responses setting.
+        existing_strike_keys.append(
+            key.decode() if isinstance(key, bytes) else key
+        )
+
+    # Union of existing keys (for cleanup) and incoming keys (in case new
+    # expiries are being written that weren't there before — SCAN wouldn't
+    # find those, but DEL on a nonexistent key is a no-op, so this is safe).
+    incoming_strike_keys = [
+        f"universe:options:{symbol}:strikes:{exp}" for exp in unique_expiries
+    ]
+    all_strike_keys_to_delete = set(existing_strike_keys) | set(incoming_strike_keys)
+
+    async with redis.pipeline(transaction=False) as pipe:
+        pipe.delete(hash_key)
+        pipe.delete(expiries_key)
+        for sk in all_strike_keys_to_delete:
+            pipe.delete(sk)
+        await pipe.execute()
+
+    if existing_strike_keys:
+        rolled_off = set(existing_strike_keys) - set(incoming_strike_keys)
+        if rolled_off:
+            logger.debug(
+                "[universe] %s: cleaning up %d rolled-off expiry keys: %s",
+                symbol, len(rolled_off), sorted(rolled_off)
+            )
+
+    # ------------------------------------------------------------------
+    # Phase 2 — WRITE new data in batches
+    # ------------------------------------------------------------------
+    # Prepare bulk structures
+    hash_fields: dict[str, str] = {}
+    expiry_scores: dict[str, float] = {}
+    # strikes_per_expiry: expiry_iso → {strike_str: score}
+    strikes_per_expiry: dict[str, dict[str, float]] = {}
+
+    for c in contracts:
+        exp = c["expiry_iso"]
+        strike = int(c["strike"])
+        opt_type = c["option_type"]
+
+        field = _contract_key(strike, opt_type, exp)
+        value = json.dumps({
+            "token":            c["token"],
+            "lot_size":         c["lot_size"],
+            "exchange":         c["exchange"],
+            "instrument_class": c["instrument_class"],
+            "tradingsymbol":    c["tradingsymbol"],
+        })
+        hash_fields[field] = value
+
+        expiry_date = date.fromisoformat(exp)
+        expiry_scores[exp] = _expiry_score(expiry_date)
+
+        if exp not in strikes_per_expiry:
+            strikes_per_expiry[exp] = {}
+        strikes_per_expiry[exp][str(strike)] = float(strike)
+
+    # Write hash fields in batches
+    hash_items = list(hash_fields.items())
+    for batch_start in range(0, len(hash_items), _PIPELINE_BATCH):
+        batch = hash_items[batch_start : batch_start + _PIPELINE_BATCH]
+        async with redis.pipeline(transaction=False) as pipe:
+            pipe.hset(hash_key, mapping=dict(batch))
+            await pipe.execute()
+
+    # Write expiries sorted set
+    async with redis.pipeline(transaction=False) as pipe:
+        # zadd mapping: {member: score}
+        pipe.zadd(expiries_key, {exp: score for exp, score in expiry_scores.items()})
+        await pipe.execute()
+
+    # Write per-expiry strike sorted sets in batches
+    for exp, strike_map in strikes_per_expiry.items():
+        sk = f"universe:options:{symbol}:strikes:{exp}"
+        items = list(strike_map.items())
+        for batch_start in range(0, len(items), _PIPELINE_BATCH):
+            batch = items[batch_start : batch_start + _PIPELINE_BATCH]
+            async with redis.pipeline(transaction=False) as pipe:
+                pipe.zadd(sk, dict(batch))
+                await pipe.execute()
+
+    # Register this symbol in the master set
+    async with redis.pipeline(transaction=False) as pipe:
+        pipe.sadd("universe:options:symbols", symbol)
+        await pipe.execute()
+
+    return len(contracts)
+
+
+# ---------------------------------------------------------------------------
+# Main new function
+# ---------------------------------------------------------------------------
+
+async def build_options_universe(
+    instrument_master: list[dict],
+    *,
+    include_indices: bool = True,
+    include_stocks: bool = True,
+    index_lookahead_days: int = LOOKAHEAD_INDEX_DAYS,
+    stock_lookahead_days: int = LOOKAHEAD_STOCK_DAYS,
+) -> dict:
+    """
+    Populate unified options universe keys for all configured symbols.
+
+    Reads
+    -----
+    * ``instrument_master``     — the OpenAPIScripMaster.json loaded list
+    * ``options_config.FNO_STOCKS``  — list of stock symbols with F&O
+    * ``INDEX_OPTION_SYMBOLS``  — list of index symbols with F&O
+
+    Writes (atomically per-symbol via pipeline)
+    -------------------------------------------
+    * ``universe:options:{sym}``                → HASH of contracts
+    * ``universe:options:{sym}:expiries``       → ZSET of expiry dates
+    * ``universe:options:{sym}:strikes:{exp}``  → ZSET of strikes per expiry
+    * ``universe:options:symbols``              → SET of all symbols populated
+
+    Matching logic
+    --------------
+    * Indices (instrumenttype == "OPTIDX"): match on ``name`` field using
+      _match_symbol_to_name() which does exact-match-first then
+      longest-prefix. Processing order within INDEX_OPTION_SYMBOLS is
+      longest-name-first (MIDCPNIFTY → BANKNIFTY → FINNIFTY → NIFTY …)
+      as a belt-and-suspenders guard.
+    * Stocks  (instrumenttype == "OPTSTK"): exact match on ``name`` field
+      against FNO_STOCKS list.
+
+    Strike normalisation
+    --------------------
+    AngelOne stores strikes as floats in paise (e.g. 2450000.0 = ₹24500).
+    Convert: ``int(float(raw_strike) / 100)``.
+
+    Returns
+    -------
+    dict with keys:
+      * ``indices_written``        : int — count of index symbols populated
+      * ``stocks_written``         : int — count of stock symbols populated
+      * ``total_contracts``        : int — total contracts across all symbols
+      * ``skipped_expired``        : int — contracts past today
+      * ``skipped_out_of_window``  : int — contracts beyond lookahead
+      * ``errors``                 : list[str] — non-fatal issues logged
+    """
+    redis = await get_redis()
+    today = date.today()
+
+    index_cutoff = today + timedelta(days=index_lookahead_days)
+    stock_cutoff = today + timedelta(days=stock_lookahead_days)
+
+    # Determine which symbol sets are active this run
+    active_indices: list[str] = list(INDEX_OPTION_SYMBOLS) if include_indices else []
+    active_stocks:  list[str] = list(FNO_STOCKS)           if include_stocks  else []
+
+    # Sort indices longest-name-first as a prefix-match guard
+    active_indices_sorted = sorted(active_indices, key=len, reverse=True)
+
+    # Build per-symbol contract buckets
+    # key: symbol string → list of pre-parsed contract dicts
+    symbol_contracts: dict[str, list[dict]] = {}
+    for sym in active_indices + active_stocks:
+        symbol_contracts[sym] = []
+
+    # Counters
+    skipped_expired        = 0
+    skipped_out_of_window  = 0
+    errors: list[str]      = []
+
+    # ------------------------------------------------------------------
+    # Single pass through instrument master
+    # ------------------------------------------------------------------
+    for inst in instrument_master:
+        inst_type = inst.get("instrumenttype", "")
+        instrument_class = _derive_instrument_class(inst_type)
+        if instrument_class is None:
+            continue  # not an options contract
+
+        is_index = instrument_class == "INDEX"
+        is_stock = instrument_class == "STOCK"
+
+        if is_index and not include_indices:
+            continue
+        if is_stock and not include_stocks:
+            continue
+
+        # Exchange filter
+        exch = inst.get("exch_seg", "")
+        if exch not in ("NFO", "BFO"):
+            continue
+
+        # Resolve symbol via name field (most reliable for both indices and stocks)
+        name_field = inst.get("name", "").strip().upper()
+        if not name_field:
+            continue
+
+        if is_index:
+            matched_sym = _match_symbol_to_name(name_field, active_indices_sorted)
+        else:
+            # Stocks: exact match only
+            matched_sym = name_field if name_field in set(active_stocks) else None
+
+        if matched_sym is None:
+            continue
+
+        # --- Exchange sanity guard ---
+        # Prevents silent pollution of the wrong symbol's universe hash if
+        # AngelOne's instrument master contains a mislabeled entry.
+        if is_index:
+            expected = _EXPECTED_INDEX_EXCHANGE.get(matched_sym)
+            if expected is None or exch != expected:
+                # Log once per unexpected combination to surface data-quality issues
+                # without spamming (e.g. an OPTIDX with name=NIFTY on BFO).
+                errors.append(
+                    f"Exchange mismatch for {matched_sym}: expected {expected}, "
+                    f"got {exch} (token {inst.get('token')}, symbol {inst.get('symbol')!r})"
+                )
+                continue
+        else:  # is_stock
+            if exch != _EXPECTED_STOCK_EXCHANGE:
+                errors.append(
+                    f"Exchange mismatch for stock {matched_sym}: expected "
+                    f"{_EXPECTED_STOCK_EXCHANGE}, got {exch} "
+                    f"(token {inst.get('token')}, symbol {inst.get('symbol')!r})"
+                )
+                continue
+
+        # --- Expiry ---
+        expiry_raw = inst.get("expiry", "")
+        expiry_date = _parse_angel_expiry(expiry_raw)
+        if expiry_date is None:
+            errors.append(f"Unparseable expiry {expiry_raw!r} for token {inst.get('token')}")
+            continue
+
+        if expiry_date < today:
+            skipped_expired += 1
+            continue
+
+        cutoff = index_cutoff if is_index else stock_cutoff
+        if expiry_date > cutoff:
+            skipped_out_of_window += 1
+            continue
+
+        expiry_iso = expiry_date.isoformat()
+
+        # --- Option type ---
+        tradingsymbol = inst.get("symbol", "")
+        if tradingsymbol.endswith("CE"):
+            option_type = "CE"
+        elif tradingsymbol.endswith("PE"):
+            option_type = "PE"
+        else:
+            continue
+
+        # --- Strike (paise → rupees, int) ---
+        raw_strike = inst.get("strike", 0)
+        try:
+            strike = int(float(raw_strike) / 100)
+        except (TypeError, ValueError):
+            errors.append(
+                f"Unparseable strike {raw_strike!r} for {tradingsymbol!r} — skipping"
+            )
+            continue
+        if strike <= 0:
+            continue
+
+        # --- Lot size (from master — authoritative) ---
+        try:
+            lot_size = int(inst.get("lotsize", 1))
+        except (TypeError, ValueError):
+            lot_size = 1
+
+        symbol_contracts[matched_sym].append({
+            "token":            str(inst.get("token", "")),
+            "lot_size":         lot_size,
+            "exchange":         exch,
+            "instrument_class": instrument_class,
+            "tradingsymbol":    tradingsymbol,
+            "strike":           strike,
+            "option_type":      option_type,
+            "expiry_iso":       expiry_iso,
+        })
+
+    # ------------------------------------------------------------------
+    # Write to Redis — one symbol at a time
+    # ------------------------------------------------------------------
+    indices_written = 0
+    stocks_written  = 0
+    total_contracts = 0
+
+    for sym in active_indices:
+        contracts = symbol_contracts.get(sym, [])
+        count = await _write_symbol_to_redis(redis, sym, contracts)
+        total_contracts += count
+        if count > 0:
+            indices_written += 1
+        logger.info(
+            "[universe] Index %s: %d contracts written (%d expiries)",
+            sym, count,
+            len({c["expiry_iso"] for c in contracts}),
+        )
+
+    for sym in active_stocks:
+        contracts = symbol_contracts.get(sym, [])
+        count = await _write_symbol_to_redis(redis, sym, contracts)
+        total_contracts += count
+        if count > 0:
+            stocks_written += 1
+        logger.debug(
+            "[universe] Stock %s: %d contracts written (%d expiries)",
+            sym, count,
+            len({c["expiry_iso"] for c in contracts}),
+        )
+
+    stats = {
+        "indices_written":       indices_written,
+        "stocks_written":        stocks_written,
+        "total_contracts":       total_contracts,
+        "skipped_expired":       skipped_expired,
+        "skipped_out_of_window": skipped_out_of_window,
+        "errors":                errors,
+    }
+
+    if errors:
+        logger.warning("[universe] Non-fatal errors during build: %d", len(errors))
+        for err in errors[:10]:  # cap log noise
+            logger.warning("[universe]   %s", err)
+
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Public async API (original)
 # ---------------------------------------------------------------------------
 
 async def build_universe() -> dict:
@@ -433,9 +980,15 @@ async def build_universe() -> dict:
     symbols, token_map, lot_sizes = _build_maps(instruments)
     meta = await _write_to_redis(symbols, token_map, lot_sizes)
 
-    # Build index option chains from the same already-downloaded master.
+    # OLD (back-compat): write universe:index_options:{idx} for legacy readers.
+    # Will be removed in Session 3 once all readers migrate to new keys.
     index_counts = await _build_index_options(instruments)
     meta["index_options"] = index_counts  # e.g. {"NIFTY": 420, "BANKNIFTY": 380, …}
+
+    # NEW: unified options universe (indices + stocks)
+    options_stats = await build_options_universe(instruments)
+    meta["options_universe"] = options_stats
+    logger.info("[universe] Options universe built: %s", options_stats)
 
     return meta
 
@@ -550,8 +1103,8 @@ async def _main() -> None:
             assert looked_up == first_sym, f"Reverse lookup mismatch: {looked_up!r} != {first_sym!r}"
             print(f"\nReverse lookup OK: token {tok!r} → {looked_up!r}")
 
-    # Index options smoke-test
-    print("\n--- Index options ---")
+    # Index options smoke-test (legacy keys)
+    print("\n--- Index options (legacy keys) ---")
     for idx in INDEX_UNDERLYINGS:
         try:
             contracts = await get_index_options(idx)
@@ -565,6 +1118,23 @@ async def _main() -> None:
                 print(f"             sample: {sample}")
         except RuntimeError as exc:
             print(f"  {idx}: ⚠ {exc}")
+
+    # New unified universe smoke-test
+    print("\n--- Unified options universe (new keys) ---")
+    redis = await get_redis()
+    all_syms = await redis.smembers("universe:options:symbols")
+    print(f"  Total symbols in universe:options:symbols: {len(all_syms)}")
+
+    for sym in ["NIFTY", "BANKNIFTY", "RELIANCE", "TCS"]:
+        h_count  = await redis.hlen(f"universe:options:{sym}")
+        expiries = await redis.zrange(f"universe:options:{sym}:expiries", 0, -1)
+        print(f"  {sym:12s}: {h_count:5d} contracts | expiries: {expiries}")
+        if expiries:
+            nearest_exp = expiries[0]
+            strikes = await redis.zrange(
+                f"universe:options:{sym}:strikes:{nearest_exp}", 0, 4, withscores=True
+            )
+            print(f"               first 5 strikes for {nearest_exp}: {strikes}")
 
 
 if __name__ == "__main__":
