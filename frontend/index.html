@@ -1753,7 +1753,6 @@ async function confirmCPOrder() {
     instrument: cpInst,
     direction: cpDir === 'BUY' ? 'LONG' : 'SHORT',
     lots: cpLots,
-    lot_size: (window.universeLotSizes && window.universeLotSizes[currentChartSymbol]) || null,
     trigger_price: trigger ? parseFloat(trigger) : null,
     sl_pct: cpSl,
     tg_pct: cpTg,
@@ -2062,7 +2061,6 @@ async function confirmMOOrder() {
     instrument: moInst,
     direction: moDir === 'BUY' ? 'LONG' : 'SHORT',
     lots: moLots,
-    lot_size: (window.universeLotSizes && window.universeLotSizes[sym]) || null,
     trigger_price: triggerVal ? parseFloat(triggerVal) : null,
     sl_pct: moSl,
     tg_pct: moTg,
@@ -2458,10 +2456,7 @@ function renderPendingOrders(orders) {
             </div>
             <div class="pos-sub">
                 <span>Trigger: ₹${fmt(o.trigger_price)} <span style="font-size:9px;color:var(--muted);">(5m ${triggerText})</span></span>
-                ${isOpt
-                    ? `<span>Lots: ${o.lots}${o.lot_size ? ` <span style="font-size:9px;color:var(--muted);">(${o.lots * o.lot_size} qty)</span>` : ''}</span>`
-                    : `<span>Qty: ${o.lots}</span>`
-                }
+                <span>Lots: ${o.lots}${o.quantity ? ` <span style="font-size:9px;color:var(--muted);">(${o.quantity} qty)</span>` : ''}</span>
                 <span>SL: ${slText}</span>
                 <span>TG: ${tgText}</span>
                 <button class="pos-close-btn" onclick="cancelPendingOrder('${o.id}','${o.symbol}')">Cancel ×</button>
@@ -2752,13 +2747,11 @@ async function fetchWatchlistSnapshots() {
 
 // Load universe symbols for all search/autocomplete features
 window.universeSymbols = [];
-window.universeLotSizes = {};   // symbol → lot_size (used when building pending order payloads)
 async function loadUniverseSymbols() {
     const data = await apiFetch('/api/universe');
     if (data && data.symbols && Array.isArray(data.symbols)) {
         // API returns {count, symbols: [{symbol, lot_size}]}
         window.universeSymbols = data.symbols.map(s => s.symbol || s);
-        data.symbols.forEach(s => { if (s.symbol && s.lot_size) window.universeLotSizes[s.symbol] = s.lot_size; });
     } else if (Array.isArray(data)) {
         window.universeSymbols = data.map(s => s.symbol || s);
     }
