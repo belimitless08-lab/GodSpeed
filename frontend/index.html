@@ -1878,9 +1878,9 @@ function setMOType(type) {
     moInst = 'EQ';
     const qtyLbl = document.getElementById('mo-qty-label');
     if (qtyLbl) qtyLbl.textContent = 'Qty';
-    // Hide stock strike+expiry row when switching back to STOCK (default to EQ)
-    const stockStrikeRow = document.getElementById('mo-stock-strike-row');
-    if (stockStrikeRow) stockStrikeRow.style.display = 'none';
+    // Hide stock strike row by default (EQ is selected) — it re-shows when user picks CE/PE
+    const row = document.getElementById('mo-stock-strike-row');
+    if (row) row.style.display = 'none';
   }
   moUpdateConfirm();
 }
@@ -2033,6 +2033,11 @@ async function confirmMOOrder() {
   if (moType === 'STOCK') {
     sym = (document.getElementById('mo-sym-input').value || '').toUpperCase().trim();
     if (!sym) { showToast('Enter a symbol', 'error'); return; }
+    // Read stock strike/expiry for CE/PE orders (row is hidden for EQ)
+    if (moInst === 'CE' || moInst === 'PE') {
+      strike = document.getElementById('mo-stock-strike').value || null;
+      expiry = document.getElementById('mo-stock-expiry').value || null;
+    }
   } else {
     sym = moIndex;
     strike = document.getElementById('mo-strike').value || null;
