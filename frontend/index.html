@@ -1414,11 +1414,29 @@ function createChart() {
   chart = LightweightCharts.createChart(container, {
     width: container.clientWidth,
     height: 300,
-    layout: { background: { color: '#0f172a' }, textColor: '#94a3b8' },
-    grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
+    layout: {
+      background: { color: '#0f172a' },
+      textColor: '#94a3b8',
+      fontSize: 11,
+    },
+    grid: {
+      vertLines: { color: '#1e293b' },
+      horzLines: { color: '#1e293b' },
+    },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    rightPriceScale: { borderColor: '#334155' },
-    timeScale: { borderColor: '#334155', timeVisible: true, secondsVisible: false, offset: 330 },
+    rightPriceScale: {
+      borderColor: '#334155',
+      visible: true,
+      scaleMargins: { top: 0.1, bottom: 0.1 },
+    },
+    timeScale: {
+      borderColor: '#334155',
+      timeVisible: true,
+      secondsVisible: false,
+      visible: true,
+      rightOffset: 12,
+      barSpacing: 6,
+    },
   });
   candleSeries = chart.addCandlestickSeries({
     upColor: '#22c55e', downColor: '#ef4444',
