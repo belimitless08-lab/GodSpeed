@@ -55,6 +55,19 @@ _REDIS_JWT_KEY = "angel:session:jwt"
 # JWT TTL safeguard — if no service refreshes for 24h, treat as expired
 _JWT_TTL_SECONDS = 24 * 3600
 
+# Hardcoded index token + tradingsymbol mapping.
+# AngelOne's REST LTP endpoint requires specific tradingsymbol formats for
+# indices that differ from the common ticker symbol. Confirmed from SmartAPI
+# forum admin posts. The old tokens (26000/26009) are deprecated.
+_INDEX_TOKENS: dict[str, dict] = {
+    "NIFTY":      {"token": "99926000", "exchange": "NSE", "tradingsymbol": "Nifty 50"},
+    "BANKNIFTY":  {"token": "99926009", "exchange": "NSE", "tradingsymbol": "Nifty Bank"},
+    "FINNIFTY":   {"token": "99926037", "exchange": "NSE", "tradingsymbol": "Nifty Fin Service"},
+    "MIDCPNIFTY": {"token": "99926074", "exchange": "NSE", "tradingsymbol": "NIFTY MID SELECT"},
+    "SENSEX":     {"token": "99919000", "exchange": "BSE", "tradingsymbol": "SENSEX"},
+    "BANKEX":     {"token": "99919005", "exchange": "BSE", "tradingsymbol": "BANKEX"},
+}
+
 
 # ---------------------------------------------------------------------------
 # Session management — Redis-backed, multi-writer, last-writer-wins
@@ -182,6 +195,89 @@ async def fetch_option_ltp(
             await redis.set(cache_key, str(ltp), ex=_CACHE_TTL_SECONDS)
         except Exception as exc:
             logger.debug("[options_rest] Cache write failed (non-fatal): %s", exc)
+
+    return ltp
+
+
+async def fetch_underlying_ltp(symbol: str) -> Optional[float]:
+    """
+    Fetch last-traded-price of the underlying (index or stock) via REST.
+
+    Used when:
+      - Market is closed and tick:{symbol} is stale/empty
+      - Seeded snapshot doesn't exist (e.g. indices not in morning_seeder)
+      - We need a reference price for strike resolution on a market order
+
+    Index tokens + tradingsymbols are hardcoded (NIFTY, BANKNIFTY, etc.)
+    because AngelOne requires specific formats that differ from common
+    ticker symbols. Stock tokens read from universe:token_map (populated
+    by universe_builder).
+
+    Returns float LTP or None on failure.  Never raises.
+    """
+    if not symbol:
+        return None
+
+    redis = await get_redis()
+
+    # Cache hit first — 30s TTL
+    cache_key = f"underlying:rest_cache:{symbol}"
+    try:
+        cached = await redis.get(cache_key)
+        if cached:
+            val = float(cached if isinstance(cached, str) else cached.decode())
+            if val > 0:
+                return val
+    except (TypeError, ValueError):
+        pass
+    except Exception as exc:
+        logger.debug("[options_rest] underlying cache read failed: %s", exc)
+
+    # Resolve token + exchange + tradingsymbol
+    if symbol in _INDEX_TOKENS:
+        meta = _INDEX_TOKENS[symbol]
+        token = meta["token"]
+        exchange = meta["exchange"]
+        tradingsymbol = meta["tradingsymbol"]
+    else:
+        # Stock: look up NSE equity token from universe:token_map
+        try:
+            token_map_raw = await redis.get("universe:token_map")
+            if not token_map_raw:
+                logger.warning("[options_rest] universe:token_map empty, cannot resolve %s", symbol)
+                return None
+            import json as _json
+            token_map = _json.loads(
+                token_map_raw if isinstance(token_map_raw, str) else token_map_raw.decode()
+            )
+            token = token_map.get(symbol)
+            if not token:
+                logger.warning("[options_rest] No token for stock %s in universe:token_map", symbol)
+                return None
+            exchange = "NSE"
+            tradingsymbol = f"{symbol}-EQ"
+        except Exception as exc:
+            logger.warning("[options_rest] Token resolution failed for %s: %s", symbol, exc)
+            return None
+
+    # Auth
+    jwt = await _get_current_jwt()
+    api_key = _get_api_key()
+    if not jwt or not api_key:
+        logger.warning("[options_rest] No JWT/API key — cannot fetch underlying %s", symbol)
+        return None
+
+    # Throttled REST call — reuse the options semaphore + _do_rest_call helper
+    async with _SEMAPHORE:
+        ltp = await _do_rest_call(exchange, tradingsymbol, token, jwt, api_key)
+
+    # Cache for 30 seconds
+    if ltp is not None and ltp > 0:
+        try:
+            await redis.set(cache_key, str(ltp), ex=30)
+        except Exception:
+            pass
+        logger.info("[options_rest] Underlying LTP for %s: ₹%.2f", symbol, ltp)
 
     return ltp
 
