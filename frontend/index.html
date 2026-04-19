@@ -2437,27 +2437,13 @@ function renderPendingOrders(orders) {
             ? `<span style="color:var(--muted);font-size:10px;">Exp: ${o.expiry_date}</span>`
             : ''
 
-        // Compute projected SL/TG rupee prices from trigger_price + pct.
-        // For LONG: SL below trigger, TG above. For SHORT: inverted.
-        // Note: these are PROJECTIONS — actual fill price may differ when the
-        // trigger fires, so show pct alongside so user understands it's an estimate.
-        const trig = o.trigger_price
-        let slPrice = null, tgPrice = null
-        if (trig && o.sl_pct != null && o.tg_pct != null) {
-            if (o.direction === 'LONG') {
-                slPrice = trig * (1 - o.sl_pct / 100)
-                tgPrice = trig * (1 + o.tg_pct / 100)
-            } else {
-                slPrice = trig * (1 + o.sl_pct / 100)
-                tgPrice = trig * (1 - o.tg_pct / 100)
-            }
-        }
-        const slText = slPrice
-            ? `~₹${fmt(slPrice)} <span style="font-size:9px;color:var(--muted);">(${o.sl_pct}%)</span>`
-            : `${o.sl_pct}%`
-        const tgText = tgPrice
-            ? `~₹${fmt(tgPrice)} <span style="font-size:9px;color:var(--muted);">(${o.tg_pct}%)</span>`
-            : `${o.tg_pct}%`
+        // SL/TG percentages apply to OPTION PREMIUM at fill time, not the
+        // underlying trigger price. Cannot know premium until trigger fires
+        // (depends on IV, theta, exact spot at breakout), so showing a rupee
+        // estimate here would be misleading. Position row shows exact rupees
+        // once filled.
+        const slText = `${o.sl_pct}%`
+        const tgText = `${o.tg_pct}%`
 
         return `<div class="pend-row" id="pend-${o.id}">
             <div class="pos-top">
