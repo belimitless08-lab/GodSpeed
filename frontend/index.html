@@ -2636,7 +2636,7 @@ function renderWatchlist() {
         return;
     }
     // cols: symbol | ltp+chg | ici | chop | ce | pe | trend | link | remove
-    const COLS = '110px 88px 46px 48px 50px 50px 64px 22px 20px';
+    const COLS = '130px 88px 46px 48px 50px 50px 64px 20px';
     const HDR = `<div style="display:grid;grid-template-columns:${COLS};
         gap:0;padding:4px 10px;background:rgba(15,23,42,0.95);
         border-bottom:2px solid rgba(51,65,85,0.7);position:sticky;top:0;z-index:2;">
@@ -2647,7 +2647,7 @@ function renderWatchlist() {
         <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">CE</span>
         <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">PE</span>
         <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">TREND</span>
-        <span></span><span></span></div>`;
+        <span></span></div>`;
 
     const rows = watchlist.map(sym => {
         const snap = state.snapshots?.[sym] || {};
@@ -2709,10 +2709,12 @@ function renderWatchlist() {
             border-bottom:1px solid rgba(51,65,85,0.2);transition:background .1s;"
             onmouseenter="this.style.background='rgba(56,189,248,0.05)'"
             onmouseleave="this.style.background=''">
-            <div style="min-width:0;">
+            <div style="min-width:0;display:flex;align-items:center;gap:6px;">
                 <span onclick="window.open('stock.html?symbol=${sym}','_blank')"
                     style="font-weight:700;font-size:12px;color:var(--accent);cursor:pointer;
-                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;max-width:106px;">${sym}</span>
+                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:86px;">${sym}</span>
+                <button class="chart-open-btn" title="Open chart"
+                    onclick="event.stopPropagation();openChart('${sym}',event)">&#8599;</button>
             </div>
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <span style="font-weight:700;font-size:12px;white-space:nowrap;">${ltp ? fmt(ltp) : '\u2014'}</span>
@@ -2723,9 +2725,6 @@ function renderWatchlist() {
             <div>${tH(ceBadge)}</div>
             <div>${tH(peBadge)}</div>
             <div>${stHtml}</div>
-            <button onclick="event.stopPropagation();openChart('${sym}',event)"
-                style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0;line-height:1;transition:color .1s;"
-                onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--muted)'">&#8599;</button>
             <button onclick="event.stopPropagation();removeFromWatchlist('${sym}')"
                 style="background:none;border:none;color:#475569;cursor:pointer;font-size:14px;padding:0;line-height:1;transition:color .1s;"
                 onmouseenter="this.style.color='var(--red)'" onmouseleave="this.style.color='#475569'">\u00d7</button>
