@@ -731,18 +731,30 @@ _INDEX_SYMBOLS = ["NIFTY", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
 @app.get("/api/indices", response_model=list[IndexData])
 async def get_indices():
     """Nifty50, Sensex, BankNifty, MidcpNifty with PCR."""
+    from execution.options_rest import fetch_underlying_ltp
     redis = await get_redis()
     result = []
 
     for sym in _INDEX_SYMBOLS:
-        # Read live LTP from tick hash (written by angel_ws_equities on every tick).
-        # Fall back to snapshot for prev_close (written by cruncher/seeder).
+        # LTP fallback chain:
+        #   1. Live tick (market hours, WebSocket streaming)
+        #   2. Snapshot (seeded morning — for stocks only; indices unseeded)
+        #   3. REST fallback (off-hours, or if WS feed dropped)
+        # fetch_underlying_ltp caches 30s, safe to call frequently.
         tick = await redis.hgetall(f"tick:{sym}")
         snap = await redis.hgetall(f"snapshot:{sym}")
 
         ltp = _sf(tick, "ltp") or _sf(snap, "ltp")
         if ltp <= 0:
-            continue  # No data yet — omit tile rather than show 0
+            try:
+                rest_ltp = await fetch_underlying_ltp(sym)
+                if rest_ltp and rest_ltp > 0:
+                    ltp = rest_ltp
+            except Exception:
+                pass
+
+        if ltp <= 0:
+            continue  # Still nothing — omit tile
 
         prev_close = _sf(snap, "prev_close") or ltp
         change_pct = (ltp - prev_close) / max(prev_close, 1) * 100
