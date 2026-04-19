@@ -1893,13 +1893,20 @@ async function fetchMOExpiries() {
   const sel = document.getElementById('mo-expiry');
   sel.innerHTML = '<option>Loading…</option>';
   const data = await apiFetch(`/api/expiries/${moIndex}`);
-  // Backend returns {expiries: ['2025-04-24', ...]} — YYYY-MM-DD format
+  // Backend returns {expiries: ['2025-04-24', ...], atm: 24350, spot: 24353.55}
   const list = data && data.expiries ? data.expiries
              : (Array.isArray(data) ? data : null);
   if (list && list.length) {
     sel.innerHTML = list.map(e => `<option value="${e}">${e}</option>`).join('');
   } else {
     sel.innerHTML = '<option value="">-- No expiries available --</option>';
+  }
+  // Auto-fill ATM strike if provided by backend
+  if (data && data.atm) {
+    const strikeEl = document.getElementById('mo-strike');
+    if (strikeEl && !strikeEl.value) {
+      strikeEl.value = data.atm;
+    }
   }
   moUpdateConfirm();
 }
