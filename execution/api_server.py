@@ -1666,3 +1666,39 @@ async def debug_check_jwt():
         "ttl_seconds": ttl,
         "ttl_hours": round(ttl / 3600, 1) if ttl > 0 else None,
     }
+
+
+@app.get("/api/debug/test-underlying-rest/{symbol}")
+async def debug_test_underlying_rest(symbol: str):
+    """TEMPORARY — test fetch_underlying_ltp directly with verbose output."""
+    import traceback
+    result = {"symbol": symbol}
+
+    # Try import — will reveal if fetch_underlying_ltp actually exists now
+    try:
+        from execution.options_rest import fetch_underlying_ltp, _INDEX_TOKENS
+        result["import_ok"] = True
+        result["is_index"] = symbol in _INDEX_TOKENS
+        result["index_meta"] = _INDEX_TOKENS.get(symbol)
+    except ImportError as exc:
+        result["import_ok"] = False
+        result["import_error"] = str(exc)
+        return result  # stop here — function doesn't exist
+    except Exception as exc:
+        result["import_ok"] = False
+        result["error"] = str(exc)
+        result["error_type"] = type(exc).__name__
+        return result
+
+    # Try calling it
+    try:
+        ltp = await fetch_underlying_ltp(symbol)
+        result["ltp"] = ltp
+        result["call_status"] = "SUCCESS" if ltp else "RETURNED_NONE"
+    except Exception as exc:
+        result["call_status"] = "EXCEPTION"
+        result["error"] = str(exc)
+        result["error_type"] = type(exc).__name__
+        result["traceback"] = traceback.format_exc()
+
+    return result
