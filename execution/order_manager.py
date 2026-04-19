@@ -1134,6 +1134,19 @@ async def place_trigger_order(payload: dict) -> dict:
         payload["option_token"] = token
 
     order_id = str(uuid4())
+
+    # Resolve lot_size at order-placement time so the pending order is
+    # self-contained for UI display and future fill computation.
+    # Options: read from universe; Equity: always 1.
+    order_lot_size = 1
+    if payload["instrument"] in ("CE", "PE"):
+        order_lot_size = await get_option_lot_size(
+            payload["symbol"],
+            payload.get("atm_strike"),
+            payload["instrument"],
+            payload.get("expiry_date"),
+        )
+
     order = {
         "id":            order_id,
         "symbol":        payload["symbol"],
@@ -1141,6 +1154,8 @@ async def place_trigger_order(payload: dict) -> dict:
         "direction":     payload["direction"],
         "trigger_price": payload.get("trigger_price"),
         "lots":          payload["lots"],
+        "lot_size":      order_lot_size,
+        "quantity":      payload["lots"] * order_lot_size,
         "sl_pct":        payload["sl_pct"],
         "tg_pct":        payload["tg_pct"],
         "atm_strike":    payload.get("atm_strike"),
