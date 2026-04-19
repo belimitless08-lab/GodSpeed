@@ -714,6 +714,7 @@
         <input type="text" class="mo-sym-search" id="mo-sym-input"
             placeholder="Symbol (e.g. RELIANCE, INFY…)"
             oninput="filterMOSymbols(this.value); moUpdateConfirm()"
+            onchange="fetchStockMOExpiries()"
             onfocus="filterMOSymbols(this.value)"
             onblur="setTimeout(hideMODropdown, 200)"
             autocomplete="off"/>
@@ -722,6 +723,17 @@
             border:1px solid #334155; border-radius:5px;
             max-height:160px; overflow-y:auto; z-index:300;
             margin-top:2px; box-shadow:0 8px 24px rgba(0,0,0,0.5);">
+        </div>
+        <!-- Strike + expiry row (visible only for CE/PE instruments, not EQ) -->
+        <div class="mo-expiry-row" id="mo-stock-strike-row" style="display:none; margin-top:10px;">
+          <span class="mo-label">Expiry:</span>
+          <select class="mo-select" id="mo-stock-expiry" onchange="moUpdateConfirm()">
+            <option>Select symbol first</option>
+          </select>
+          <span class="mo-label">Strike:</span>
+          <input type="number" class="mo-strike-input" id="mo-stock-strike"
+                 placeholder="ATM" oninput="moUpdateConfirm()"/>
+          <span style="font-size:9px;color:var(--muted);">(auto ATM)</span>
         </div>
       </div>
       <!-- Index mode -->
@@ -1866,6 +1878,9 @@ function setMOType(type) {
     moInst = 'EQ';
     const qtyLbl = document.getElementById('mo-qty-label');
     if (qtyLbl) qtyLbl.textContent = 'Qty';
+    // Hide stock strike+expiry row when switching back to STOCK (default to EQ)
+    const stockStrikeRow = document.getElementById('mo-stock-strike-row');
+    if (stockStrikeRow) stockStrikeRow.style.display = 'none';
   }
   moUpdateConfirm();
 }
@@ -1911,12 +1926,55 @@ async function fetchMOExpiries() {
   moUpdateConfirm();
 }
 
+async function fetchStockMOExpiries() {
+  const sym = (document.getElementById('mo-sym-input').value || '').toUpperCase().trim();
+  if (!sym) return;
+
+  const sel = document.getElementById('mo-stock-expiry');
+  const strikeEl = document.getElementById('mo-stock-strike');
+
+  sel.innerHTML = '<option>Loading…</option>';
+  strikeEl.value = '';  // Clear on symbol change
+
+  const data = await apiFetch(`/api/expiries/${sym}`);
+  const list = data && data.expiries ? data.expiries : null;
+  if (list && list.length) {
+    sel.innerHTML = list.map(e => `<option value="${e}">${e}</option>`).join('');
+  } else {
+    sel.innerHTML = '<option value="">-- No expiries available --</option>';
+  }
+
+  // Auto-fill ATM if backend returned one
+  if (data && data.atm && !strikeEl.value) {
+    strikeEl.value = data.atm;
+  }
+
+  moUpdateConfirm();
+}
+
 function selectMOInst(btn) {
   btn.closest('#mo-inst-tabs').querySelectorAll('.inst-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
   moInst = btn.dataset.inst;
   const qtyLbl = document.getElementById('mo-qty-label');
   if (qtyLbl) qtyLbl.textContent = moInst === 'EQ' ? 'Qty' : 'Lots';
+
+  // Show/hide the stock strike+expiry row based on instrument.
+  // EQ = cash equity, no options → hide. CE/PE → show.
+  if (moType === 'STOCK') {
+    const row = document.getElementById('mo-stock-strike-row');
+    if (row) {
+      if (moInst === 'CE' || moInst === 'PE') {
+        row.style.display = '';  // show
+        // If user already typed a symbol, fetch its expiries
+        const sym = (document.getElementById('mo-sym-input').value || '').trim();
+        if (sym) fetchStockMOExpiries();
+      } else {
+        row.style.display = 'none';  // hide for EQ
+      }
+    }
+  }
+
   moUpdateTriggerHelper();
   moUpdateConfirm();
 }
