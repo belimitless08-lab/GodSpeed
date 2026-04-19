@@ -1073,10 +1073,24 @@ async def place_trigger_order(payload: dict) -> dict:
                 ref_price, payload.get("atm_strike"), payload["symbol"], payload["instrument"],
             )
 
+        # Auto-pick nearest expiry if user didn't specify one.
+        # UI may or may not send expiry; backend guarantees one gets chosen.
+        if not payload.get("expiry_date"):
+            expiries_zset = await redis.zrange(
+                f"universe:options:{payload['symbol']}:expiries", 0, 0
+            )
+            if expiries_zset:
+                first = expiries_zset[0]
+                payload["expiry_date"] = first if isinstance(first, str) else first.decode()
+                logger.info(
+                    "[order_manager] Auto-picked nearest expiry %s for %s market order",
+                    payload["expiry_date"], payload["symbol"],
+                )
+
         # Token lookup — best-effort. Paper trades don't require it.
         token = None
         if payload.get("atm_strike") and payload.get("expiry_date"):
-            token = await get_option_token(          # renamed
+            token = await get_option_token(
                 payload["symbol"],
                 payload["atm_strike"],
                 payload["instrument"],
