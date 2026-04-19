@@ -1865,10 +1865,6 @@ function setMOType(type) {
     moInst = 'CE';
     const qtyLbl = document.getElementById('mo-qty-label');
     if (qtyLbl) qtyLbl.textContent = 'Lots';
-    // Reset strike step for current index
-    const _step = INDEX_STRIKE_STEPS[moIndex] || 50;
-    const _si = document.getElementById('mo-strike');
-    if (_si) { _si.step = _step; _si.placeholder = `ATM (step ${_step})`; }
     fetchMOExpiries();
   } else {
     tabs.innerHTML = `
@@ -1885,21 +1881,21 @@ function setMOType(type) {
   moUpdateConfirm();
 }
 
-const INDEX_STRIKE_STEPS = {
-  NIFTY: 50, BANKNIFTY: 100, FINNIFTY: 50, MIDCPNIFTY: 25, SENSEX: 100
-};
+
 
 function selectMOIndex(btn) {
   document.querySelectorAll('.idx-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   moIndex = btn.dataset.idx;
-  // Update strike input step and placeholder to match this index's interval
-  const step = INDEX_STRIKE_STEPS[moIndex] || 50;
+
+  // Clear strike input — fetchMOExpiries will auto-fill with the new index's
+  // ATM and set the correct step from backend response. No hardcoded steps here.
   const strikeEl = document.getElementById('mo-strike');
   if (strikeEl) {
-    strikeEl.step = step;
-    strikeEl.placeholder = `ATM (step ${step})`;
+    strikeEl.value = '';
+    strikeEl.placeholder = 'ATM';
   }
+
   fetchMOExpiries();
   moUpdateConfirm();
 }
@@ -1908,7 +1904,7 @@ async function fetchMOExpiries() {
   const sel = document.getElementById('mo-expiry');
   sel.innerHTML = '<option>Loading…</option>';
   const data = await apiFetch(`/api/expiries/${moIndex}`);
-  // Backend returns {expiries: ['2025-04-24', ...], atm: 24350, spot: 24353.55}
+  // Backend returns {expiries, atm, spot, strike_step}
   const list = data && data.expiries ? data.expiries
              : (Array.isArray(data) ? data : null);
   if (list && list.length) {
@@ -1916,13 +1912,20 @@ async function fetchMOExpiries() {
   } else {
     sel.innerHTML = '<option value="">-- No expiries available --</option>';
   }
-  // Auto-fill ATM strike if provided by backend
-  if (data && data.atm) {
-    const strikeEl = document.getElementById('mo-strike');
-    if (strikeEl && !strikeEl.value) {
+
+  const strikeEl = document.getElementById('mo-strike');
+  if (strikeEl) {
+    // Apply dynamic step from backend (computed from universe data)
+    if (data && data.strike_step) {
+      strikeEl.step = data.strike_step;
+      strikeEl.placeholder = `ATM (step ${data.strike_step})`;
+    }
+    // Auto-fill ATM (only if empty — preserves user override)
+    if (data && data.atm && !strikeEl.value) {
       strikeEl.value = data.atm;
     }
   }
+
   moUpdateConfirm();
 }
 
@@ -1944,7 +1947,16 @@ async function fetchStockMOExpiries() {
     sel.innerHTML = '<option value="">-- No expiries available --</option>';
   }
 
-  // Auto-fill ATM if backend returned one
+  // Apply dynamic strike step from backend (same code path as indices)
+  if (data && data.strike_step) {
+    strikeEl.step = data.strike_step;
+    strikeEl.placeholder = `ATM (step ${data.strike_step})`;
+  } else {
+    strikeEl.step = 'any';  // fallback if backend couldn't compute
+    strikeEl.placeholder = 'ATM';
+  }
+
+  // Auto-fill ATM
   if (data && data.atm && !strikeEl.value) {
     strikeEl.value = data.atm;
   }
