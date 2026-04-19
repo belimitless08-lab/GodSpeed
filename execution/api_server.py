@@ -893,13 +893,16 @@ async def get_closed_trades_endpoint(
 @app.post("/api/trades/{trade_id}/close")
 async def close_trade_endpoint(trade_id: str, exit_price: Optional[float] = None):
     """
-    Manually close an open trade.
-    If exit_price is not provided, uses the current LTP.
+    Manually close an open trade at current market price.
+    If exit_price is passed explicitly, it is honored.
+    Otherwise the 4-tier pricing resolver handles:
+      EQ → live tick / LAST_CLOSE / REST fallback on underlying
+      CE/PE → live options tick / REST fallback on option premium
     """
+    from execution.order_manager import _get_execution_ltp
     redis = await get_redis()
 
     if not exit_price:
-        # Look up the symbol from the trade record
         raw = await redis.get(f"paper:trade:{trade_id}")
         if not raw:
             raise HTTPException(404, f"Trade '{trade_id}' not found")
@@ -908,11 +911,22 @@ async def close_trade_endpoint(trade_id: str, exit_price: Optional[float] = None
         except json.JSONDecodeError:
             raise HTTPException(500, "Corrupt trade data")
 
-        symbol = trade_data.get("symbol", "")
-        tick   = await redis.hgetall(f"tick:{symbol}")
-        ltp    = _safe_float(tick.get("ltp"))
+        symbol     = trade_data.get("symbol", "")
+        instrument = trade_data.get("instrument", "EQ")
+        atm_strike = trade_data.get("atm_strike")
+        expiry     = trade_data.get("expiry_date")
+
+        ltp, source = await _get_execution_ltp(symbol, instrument, atm_strike, expiry)
         if ltp <= 0:
-            raise HTTPException(400, f"Cannot close — no valid LTP for {symbol}")
+            raise HTTPException(
+                400,
+                f"Cannot close — no valid LTP for {symbol} {instrument} "
+                f"strike={atm_strike} expiry={expiry}",
+            )
+        logger.info(
+            "[api_server] Manual close %s using %s LTP ₹%.2f (trade_id=%s)",
+            symbol, source, ltp, trade_id,
+        )
         exit_price = ltp
 
     result = await close_trade(trade_id, exit_price, reason="MANUAL_CLOSE")
