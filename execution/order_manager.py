@@ -1011,22 +1011,47 @@ async def place_trigger_order(payload: dict) -> dict:
             ref_price = payload.get("trigger_price") or 0
 
             if ref_price <= 0:
-                # Market order — no trigger price, derive from underlying price.
-                # Fallback chain:
-                #   1. Live spot tick (market open, normal case)
-                #   2. Snapshot last_close (after-hours, market holiday)
+                # Market order — derive from underlying price via fallback chain:
+                #   1. Live spot tick     (market hours)
+                #   2. Snapshot prev_day  (stocks only, seeded at 8:30 AM)
+                #   3. AngelOne REST      (indices or totally-fresh startup)
                 redis_tmp = await get_redis()
+
+                # 1. Live tick
                 spot = await redis_tmp.hgetall(f"tick:{payload['symbol']}")
                 ref_price = _safe_float(spot.get("ltp"))
 
+                # 2. Snapshot (stocks — JSON string, nested structure)
                 if ref_price <= 0:
-                    snap = await redis_tmp.hgetall(f"snapshot:{payload['symbol']}")
-                    ref_price = _safe_float(snap.get("last_close"))
-                    if ref_price > 0:
-                        logger.info(
-                            "[order_manager] Market closed — using snapshot last_close "
-                            "₹%.2f for strike resolution of %s",
-                            ref_price, payload['symbol'],
+                    snap_raw = await redis_tmp.get(f"snapshot:{payload['symbol']}")
+                    if snap_raw:
+                        try:
+                            snap_str = snap_raw if isinstance(snap_raw, str) else snap_raw.decode()
+                            snap = json.loads(snap_str)
+                            ref_price = _safe_float(snap.get("prev_day", {}).get("close"))
+                            if ref_price > 0:
+                                logger.info(
+                                    "[order_manager] Using snapshot prev_close ₹%.2f for %s",
+                                    ref_price, payload['symbol'],
+                                )
+                        except (json.JSONDecodeError, AttributeError, TypeError):
+                            pass
+
+                # 3. REST fallback (indices especially)
+                if ref_price <= 0:
+                    try:
+                        from execution.options_rest import fetch_underlying_ltp
+                        rest_ltp = await fetch_underlying_ltp(payload['symbol'])
+                        if rest_ltp and rest_ltp > 0:
+                            ref_price = rest_ltp
+                            logger.info(
+                                "[order_manager] Using REST underlying LTP ₹%.2f for %s",
+                                ref_price, payload['symbol'],
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "[order_manager] Underlying REST fetch failed for %s: %s",
+                            payload['symbol'], exc,
                         )
 
             if ref_price > 0:
