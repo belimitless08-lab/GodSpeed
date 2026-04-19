@@ -1063,11 +1063,30 @@ async def get_expiries(underlying: str):
             except Exception:
                 pass
 
+    # Compute strike_step from actual universe data (median gap between
+    # adjacent strikes in the nearest expiry). Robust against irregular
+    # gaps in deep OTM strikes. Same logic works for indices and stocks.
+    strike_step = None
+    if expiries:
+        try:
+            strike_raw = await redis.zrange(
+                f"universe:options:{underlying}:strikes:{expiries[0]}", 0, -1
+            )
+            strikes = sorted(
+                int(s if isinstance(s, str) else s.decode()) for s in strike_raw
+            )
+            if len(strikes) >= 2:
+                gaps = sorted(strikes[i] - strikes[i - 1] for i in range(1, len(strikes)))
+                strike_step = gaps[len(gaps) // 2]  # median
+        except Exception:
+            pass
+
     return {
         "underlying": underlying,
         "expiries": expiries,
         "atm": atm,
         "spot": spot_ltp if spot_ltp > 0 else None,
+        "strike_step": strike_step,
     }
 
 
