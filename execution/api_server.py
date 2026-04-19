@@ -993,30 +993,75 @@ async def get_pending_trades():
 @app.get("/api/expiries/{underlying}")
 async def get_expiries(underlying: str):
     """
-    Returns available expiry dates + suggested ATM strike.
+    Returns available expiry dates + suggested ATM strike for index/stock options.
+
     Reads unified universe: universe:options:{underlying}:expiries
-    ATM computed from current spot tick (live) or snapshot.last_close (off-hours).
+    ATM computed via fallback chain:
+      1. Live spot tick (market hours)
+      2. Snapshot prev_day.close (stocks, seeded at 8:30 AM)
+      3. AngelOne REST fetch (indices, or off-hours for stocks)
     """
+    import json as _json
     redis = await get_redis()
+
+    # --- Expiries ---
     expiries = await redis.zrange(f"universe:options:{underlying}:expiries", 0, -1)
     expiries = [e if isinstance(e, str) else e.decode() for e in expiries]
 
-    # Compute ATM from spot price with fallback to last_close
-    tick = await redis.hgetall(f"tick:{underlying}")
-    spot_ltp = float(tick.get("ltp") or 0)
-    if spot_ltp <= 0:
-        snap = await redis.hgetall(f"snapshot:{underlying}")
-        spot_ltp = float(snap.get("last_close") or 0)
+    # --- Spot price: 3-tier fallback ---
+    spot_ltp = 0.0
 
-    # Round to index strike interval (fallback to 50 for unknown symbols)
+    # 1. Live tick
+    try:
+        tick = await redis.hgetall(f"tick:{underlying}")
+        if tick:
+            spot_ltp = float(tick.get("ltp") or 0)
+    except Exception:
+        pass
+
+    # 2. Seeded snapshot (stocks only — indices aren't seeded)
+    if spot_ltp <= 0:
+        try:
+            snap_raw = await redis.get(f"snapshot:{underlying}")
+            if snap_raw:
+                snap_str = snap_raw if isinstance(snap_raw, str) else snap_raw.decode()
+                snap = _json.loads(snap_str)
+                spot_ltp = float(snap.get("prev_day", {}).get("close") or 0)
+        except Exception:
+            pass
+
+    # 3. AngelOne REST
+    if spot_ltp <= 0:
+        try:
+            from execution.options_rest import fetch_underlying_ltp
+            rest_ltp = await fetch_underlying_ltp(underlying)
+            if rest_ltp and rest_ltp > 0:
+                spot_ltp = rest_ltp
+        except Exception:
+            pass
+
+    # --- ATM strike computation ---
     _INTERVALS = {
         "NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50,
         "MIDCPNIFTY": 25, "SENSEX": 100, "BANKEX": 100,
     }
     atm = None
     if spot_ltp > 0:
-        interval = _INTERVALS.get(underlying, 50)
-        atm = round(spot_ltp / interval) * interval
+        if underlying in _INTERVALS:
+            # Index: round to fixed strike interval
+            interval = _INTERVALS[underlying]
+            atm = round(spot_ltp / interval) * interval
+        elif expiries:
+            # Stock: find nearest available strike in universe for nearest expiry
+            try:
+                strikes_raw = await redis.zrange(
+                    f"universe:options:{underlying}:strikes:{expiries[0]}", 0, -1
+                )
+                if strikes_raw:
+                    strikes = [int(s if isinstance(s, str) else s.decode()) for s in strikes_raw]
+                    atm = min(strikes, key=lambda s: abs(s - spot_ltp))
+            except Exception:
+                pass
 
     return {
         "underlying": underlying,
