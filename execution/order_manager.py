@@ -960,6 +960,41 @@ async def get_option_token(
 get_index_option_token = get_option_token
 
 
+async def get_option_lot_size(
+    symbol: str,
+    strike: int,
+    option_type: str,
+    expiry_date: str,
+) -> int:
+    """
+    Look up lot_size from the unified options universe for a specific contract.
+
+    Authoritative source — lot_size is stored per-contract by the universe
+    builder, read directly from AngelOne's instrument master. Don't use
+    snapshot.lot_size for options because:
+      - Indices have no snapshot at all
+      - Stock snapshots have equity lot_size (1), not option lot_size
+
+    Returns 1 if contract not found (defensive default).
+    """
+    if not expiry_date or not strike or option_type not in ("CE", "PE"):
+        return 1
+
+    expiry_norm = _normalise_expiry(expiry_date)
+    contract_key = f"{int(strike)}{option_type}:{expiry_norm}"
+
+    redis = await get_redis()
+    raw = await redis.hget(f"universe:options:{symbol}", contract_key)
+    if not raw:
+        return 1
+
+    try:
+        data = json.loads(raw)
+        return int(data.get("lot_size", 1))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return 1
+
+
 async def get_index_atm_strike(index: str) -> int:
     """
     Gets current ATM strike for an index from live tick.
@@ -1155,13 +1190,21 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
         )
         return {"status": "REJECTED", "reason": "NO_LTP"}
 
-    snap     = await redis.hgetall(f"snapshot:{symbol}")
-    lot_size = int(_safe_float(snap.get("lot_size"), 1))
-    if lot_size < 1:
-        lot_size = 1
+    # Lot size source differs by instrument type:
+    #   EQ — use 1 (quantity = number of shares user typed directly)
+    #   CE/PE — read from the option contract in the universe (authoritative)
     if instrument == "EQ":
+        lot_size = 1
         quantity = order["lots"]
     else:
+        lot_size = await get_option_lot_size(
+            symbol,
+            order.get("atm_strike"),
+            instrument,
+            order.get("expiry_date"),
+        )
+        if lot_size < 1:
+            lot_size = 1
         quantity = order["lots"] * lot_size
 
     if order["direction"] == "LONG":
