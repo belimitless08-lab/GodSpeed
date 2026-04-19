@@ -165,8 +165,10 @@ class TradeRecord(BaseModel):
     signal_type: str
     entry_price: float
     stop_loss: float
+    take_profit: Optional[float] = None
     lot_size: int
     quantity: int
+    lots: Optional[int] = None
     margin_used: float
     ici_score: float
     ici_grade: str
@@ -177,6 +179,15 @@ class TradeRecord(BaseModel):
     pnl_abs: Optional[float] = None
     pnl_pct: Optional[float] = None
     exit_reason: Optional[str] = None
+    # Options-specific — null for equity trades
+    instrument: Optional[str] = None
+    atm_strike: Optional[int] = None
+    expiry_date: Optional[str] = None
+    option_token: Optional[str] = None
+    # Pricing instrumentation (Session 2 additions)
+    price_source: Optional[str] = None
+    underlying_at_fill: Optional[float] = None
+    broker: Optional[str] = None
 
 
 class PaperAccount(BaseModel):
@@ -913,6 +924,15 @@ async def close_trade_endpoint(trade_id: str, exit_price: Optional[float] = None
 
 
 def _parse_trade(t: dict) -> TradeRecord:
+    # atm_strike is stored as int but may come back as float/string from Redis
+    atm_val = t.get("atm_strike")
+    atm_int = None
+    if atm_val is not None and atm_val != "":
+        try:
+            atm_int = int(float(atm_val))
+        except (TypeError, ValueError):
+            atm_int = None
+
     return TradeRecord(
         id=t.get("id", ""),
         symbol=t.get("symbol", ""),
@@ -920,8 +940,10 @@ def _parse_trade(t: dict) -> TradeRecord:
         signal_type=t.get("signal_type", ""),
         entry_price=_safe_float(t.get("entry_price")),
         stop_loss=_safe_float(t.get("stop_loss")),
+        take_profit=t.get("take_profit") and _safe_float(t.get("take_profit")),
         lot_size=int(_safe_float(t.get("lot_size", 1))),
         quantity=int(_safe_float(t.get("quantity", 1))),
+        lots=int(_safe_float(t.get("lots"))) if t.get("lots") else None,
         margin_used=_safe_float(t.get("margin_used")),
         ici_score=_safe_float(t.get("ici_score")),
         ici_grade=t.get("ici_grade", ""),
@@ -932,6 +954,15 @@ def _parse_trade(t: dict) -> TradeRecord:
         pnl_abs=t.get("pnl_abs"),
         pnl_pct=t.get("pnl_pct"),
         exit_reason=t.get("exit_reason"),
+        # Options metadata
+        instrument=t.get("instrument"),
+        atm_strike=atm_int,
+        expiry_date=t.get("expiry_date"),
+        option_token=t.get("option_token"),
+        # Pricing instrumentation
+        price_source=t.get("price_source"),
+        underlying_at_fill=t.get("underlying_at_fill") and _safe_float(t.get("underlying_at_fill")),
+        broker=t.get("broker"),
     )
 
 
