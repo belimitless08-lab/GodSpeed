@@ -1702,3 +1702,61 @@ async def debug_test_underlying_rest(symbol: str):
         result["traceback"] = traceback.format_exc()
 
     return result
+
+
+
+@app.get("/api/debug/trace-expiries/{underlying}")
+async def debug_trace_expiries(underlying: str):
+    """Trace exactly what /api/expiries does, step by step."""
+    import traceback
+    import json as _json
+    from core.redis_client import get_redis
+    redis = await get_redis()
+    trace = {"underlying": underlying, "steps": []}
+    
+    # Step 1: expiries
+    try:
+        expiries = await redis.zrange(f"universe:options:{underlying}:expiries", 0, -1)
+        expiries = [e if isinstance(e, str) else e.decode() for e in expiries]
+        trace["steps"].append({"step": "1_expiries", "count": len(expiries), "first": expiries[:3]})
+    except Exception as exc:
+        trace["steps"].append({"step": "1_expiries", "error": str(exc)})
+
+    # Step 2: tick
+    try:
+        tick = await redis.hgetall(f"tick:{underlying}")
+        spot_tick = float(tick.get("ltp") or 0) if tick else 0.0
+        trace["steps"].append({"step": "2_tick", "tick_exists": bool(tick), "spot_tick": spot_tick})
+    except Exception as exc:
+        trace["steps"].append({"step": "2_tick", "error": str(exc)})
+
+    # Step 3: snapshot
+    try:
+        snap_raw = await redis.get(f"snapshot:{underlying}")
+        if snap_raw:
+            snap = _json.loads(snap_raw if isinstance(snap_raw, str) else snap_raw.decode())
+            trace["steps"].append({
+                "step": "3_snapshot",
+                "exists": True,
+                "prev_day_close": snap.get("prev_day", {}).get("close"),
+            })
+        else:
+            trace["steps"].append({"step": "3_snapshot", "exists": False})
+    except Exception as exc:
+        trace["steps"].append({"step": "3_snapshot", "error": str(exc)})
+
+    # Step 4: REST fallback
+    try:
+        from execution.options_rest import fetch_underlying_ltp
+        rest_ltp = await fetch_underlying_ltp(underlying)
+        trace["steps"].append({"step": "4_rest", "ltp": rest_ltp})
+    except ImportError as exc:
+        trace["steps"].append({"step": "4_rest", "import_error": str(exc)})
+    except Exception as exc:
+        trace["steps"].append({
+            "step": "4_rest",
+            "exception": str(exc),
+            "traceback": traceback.format_exc(),
+        })
+
+    return trace
