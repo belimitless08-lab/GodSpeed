@@ -1881,3 +1881,37 @@ async def debug_trace_expiries(underlying: str):
         })
 
     return trace
+
+
+@app.post("/api/debug/wipe-stale-candles")
+async def wipe_stale_candles():
+    """
+    TEMPORARY — wipe stale candles:*:* STRING keys written by morning_seeder
+    (JSON-blob format). candle_builder uses LIST operations (lrange/rpush),
+    which fail with WRONGTYPE on these STRING keys.
+
+    Safe: only deletes STRING-type keys. Any existing LIST candles are preserved.
+    After wipe, candle_builder creates fresh LIST keys on next candle close.
+    """
+    redis = await get_redis()
+    deleted = {"candles_1m": 0, "candles_5m": 0, "candles_15m": 0, "errors": 0}
+
+    patterns = [
+        ("candles:1m:*", "candles_1m"),
+        ("candles:5m:*", "candles_5m"),
+        ("candles:15m:*", "candles_15m"),
+    ]
+
+    for pattern, bucket in patterns:
+        async for key in redis.scan_iter(match=pattern, count=100):
+            try:
+                key_str = key if isinstance(key, str) else key.decode()
+                key_type = await redis.type(key_str)
+                key_type_str = key_type if isinstance(key_type, str) else key_type.decode()
+                if key_type_str == "string":
+                    await redis.delete(key_str)
+                    deleted[bucket] += 1
+            except Exception:
+                deleted["errors"] += 1
+
+    return deleted
