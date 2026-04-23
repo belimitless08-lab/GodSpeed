@@ -402,226 +402,229 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
     """
     global _candles_closed_since_last_log
 
-    redis = await get_redis()
+    try:
+        redis = await get_redis()
 
-    # Fetch last 14 closed candles for choppiness window
-    raw_candles = await redis.lrange(f"candles:1m:{symbol}", -_CHOP_PERIOD, -1)
-    candles_14  = [json.loads(c) for c in raw_candles] if raw_candles else []
+        # Fetch last 14 closed candles for choppiness window
+        raw_candles = await redis.lrange(f"candles:1m:{symbol}", -_CHOP_PERIOD, -1)
+        candles_14  = [json.loads(c) for c in raw_candles] if raw_candles else []
 
-    # Current indicator state for this symbol
-    ind = indicators.get(symbol, {})
+        # Current indicator state for this symbol
+        ind = indicators.get(symbol, {})
 
-    c = closed["close"]
-    h = closed["high"]
-    l = closed["low"]
+        c = closed["close"]
+        h = closed["high"]
+        l = closed["low"]
 
-    prev_close = ind.get("last_close", c)
-    prev_atr   = ind.get("atr14", 1.0)
+        prev_close = ind.get("last_close", c)
+        prev_atr   = ind.get("atr14", 1.0)
 
-    # --- EMA (O(1) incremental) ---
-    new_ema9   = update_ema(c, ind.get("ema9",   c), 9)
-    new_ema16  = update_ema(c, ind.get("ema16",  c), _EMA16_PERIOD)
-    new_ema200 = update_ema(c, ind.get("ema200", c), _EMA200_PERIOD)
+        # --- EMA (O(1) incremental) ---
+        new_ema9   = update_ema(c, ind.get("ema9",   c), 9)
+        new_ema16  = update_ema(c, ind.get("ema16",  c), _EMA16_PERIOD)
+        new_ema200 = update_ema(c, ind.get("ema200", c), _EMA200_PERIOD)
 
-    # --- ATR (O(1) Wilder smoothing) ---
-    new_atr = update_atr(h, l, prev_close, prev_atr)
+        # --- ATR (O(1) Wilder smoothing) ---
+        new_atr = update_atr(h, l, prev_close, prev_atr)
 
-    # --- Supertrend ---
-    direction, band = _update_supertrend(
-        prev_direction = ind.get("supertrend_dir",  1),
-        prev_band      = ind.get("supertrend_band", c),
-        new_high  = h,
-        new_low   = l,
-        new_close = c,
-        new_atr   = new_atr,
-    )
+        # --- Supertrend ---
+        direction, band = _update_supertrend(
+            prev_direction = ind.get("supertrend_dir",  1),
+            prev_band      = ind.get("supertrend_band", c),
+            new_high  = h,
+            new_low   = l,
+            new_close = c,
+            new_atr   = new_atr,
+        )
 
-    # --- Choppiness (pure Python 14-item loop, ~1 µs, safe inline) ---
-    choppiness = _calc_choppiness(candles_14)
+        # --- Choppiness (pure Python 14-item loop, ~1 µs, safe inline) ---
+        choppiness = _calc_choppiness(candles_14)
 
-    # --- RSI14 (O(1) Wilder smoothing) ---
-    # NOTE: seeder must seed rsi_avg_gain and rsi_avg_loss into snapshot:{symbol}
-    rsi14, new_avg_gain, new_avg_loss = update_rsi(
-        current_close  = c,
-        prev_close     = prev_close,
-        prev_avg_gain  = ind.get("rsi_avg_gain", 0.0),
-        prev_avg_loss  = ind.get("rsi_avg_loss", 0.0),
-    )
+        # --- RSI14 (O(1) Wilder smoothing) ---
+        # NOTE: seeder must seed rsi_avg_gain and rsi_avg_loss into snapshot:{symbol}
+        rsi14, new_avg_gain, new_avg_loss = update_rsi(
+            current_close  = c,
+            prev_close     = prev_close,
+            prev_avg_gain  = ind.get("rsi_avg_gain", 0.0),
+            prev_avg_loss  = ind.get("rsi_avg_loss", 0.0),
+        )
 
-    # --- VWAP (O(1) incremental; resets at 09:15 each day) ---
-    # Use candle's own minute (derived from exchange timestamp) — not system clock
-    is_first_candle = (closed["minute"] == "09:15")
-    if is_first_candle:
-        # Day reset — start VWAP accumulators from zero
-        ind["vwap_cum_tp_vol"] = 0.0
-        ind["vwap_cum_vol"]    = 0.0
-        ind["vwap_history"]    = []
-        prev_cum_tp_vol = 0.0
-        prev_cum_vol    = 0.0
-    else:
-        prev_cum_tp_vol = ind.get("vwap_cum_tp_vol", 0.0)
-        prev_cum_vol    = ind.get("vwap_cum_vol",    0.0)
+        # --- VWAP (O(1) incremental; resets at 09:15 each day) ---
+        # Use candle's own minute (derived from exchange timestamp) — not system clock
+        is_first_candle = (closed["minute"] == "09:15")
+        if is_first_candle:
+            # Day reset — start VWAP accumulators from zero
+            ind["vwap_cum_tp_vol"] = 0.0
+            ind["vwap_cum_vol"]    = 0.0
+            ind["vwap_history"]    = []
+            prev_cum_tp_vol = 0.0
+            prev_cum_vol    = 0.0
+        else:
+            prev_cum_tp_vol = ind.get("vwap_cum_tp_vol", 0.0)
+            prev_cum_vol    = ind.get("vwap_cum_vol",    0.0)
 
-    new_vwap, new_cum_tp_vol, new_cum_vol = update_vwap(
-        prev_cum_tp_vol = prev_cum_tp_vol,
-        prev_cum_vol    = prev_cum_vol,
-        high   = h,
-        low    = l,
-        close  = c,
-        volume = closed["volume"],
-    )
+        new_vwap, new_cum_tp_vol, new_cum_vol = update_vwap(
+            prev_cum_tp_vol = prev_cum_tp_vol,
+            prev_cum_vol    = prev_cum_vol,
+            high   = h,
+            low    = l,
+            close  = c,
+            volume = closed["volume"],
+        )
 
-    # vwap_history: rolling list of last 5 VWAP values (oldest first)
-    vwap_history: list[float] = list(ind.get("vwap_history", []))
-    vwap_history.append(new_vwap)
-    if len(vwap_history) > 5:
-        vwap_history = vwap_history[-5:]
+        # vwap_history: rolling list of last 5 VWAP values (oldest first)
+        vwap_history: list[float] = list(ind.get("vwap_history", []))
+        vwap_history.append(new_vwap)
+        if len(vwap_history) > 5:
+            vwap_history = vwap_history[-5:]
 
-    # vwap_slope: % change over last 5 candles (or 0 if window not full yet)
-    if len(vwap_history) == 5 and vwap_history[0] != 0:
-        vwap_slope = (vwap_history[-1] - vwap_history[0]) / vwap_history[0] * 100
-    else:
-        vwap_slope = 0.0
+        # vwap_slope: % change over last 5 candles (or 0 if window not full yet)
+        if len(vwap_history) == 5 and vwap_history[0] != 0:
+            vwap_slope = (vwap_history[-1] - vwap_history[0]) / vwap_history[0] * 100
+        else:
+            vwap_slope = 0.0
 
-    # Assemble updated indicator dict
-    updated_ind: dict[str, Any] = {
-        "ema9":            new_ema9,
-        "ema16":           new_ema16,
-        "ema200":          new_ema200,
-        "atr14":           new_atr,
-        "choppiness14":    choppiness,
-        "supertrend_dir":  direction,
-        "supertrend_band": band,
-        "rsi14":           rsi14,
-        "rsi_avg_gain":    new_avg_gain,
-        "rsi_avg_loss":    new_avg_loss,
-        "vwap":            new_vwap,
-        "vwap_cum_tp_vol": new_cum_tp_vol,   # in-memory only
-        "vwap_cum_vol":    new_cum_vol,       # in-memory only
-        "vwap_history":    vwap_history,      # in-memory only
-        "vwap_slope":      vwap_slope,
-    }
+        # Assemble updated indicator dict
+        updated_ind: dict[str, Any] = {
+            "ema9":            new_ema9,
+            "ema16":           new_ema16,
+            "ema200":          new_ema200,
+            "atr14":           new_atr,
+            "choppiness14":    choppiness,
+            "supertrend_dir":  direction,
+            "supertrend_band": band,
+            "rsi14":           rsi14,
+            "rsi_avg_gain":    new_avg_gain,
+            "rsi_avg_loss":    new_avg_loss,
+            "vwap":            new_vwap,
+            "vwap_cum_tp_vol": new_cum_tp_vol,   # in-memory only
+            "vwap_cum_vol":    new_cum_vol,       # in-memory only
+            "vwap_history":    vwap_history,      # in-memory only
+            "vwap_slope":      vwap_slope,
+        }
 
-    # Persist to Redis (async I/O — back on event loop)
-    await _flush_candle_to_redis(symbol, closed, updated_ind)
+        # Persist to Redis (async I/O — back on event loop)
+        await _flush_candle_to_redis(symbol, closed, updated_ind)
 
-    # Update in-memory indicator state
-    indicators.setdefault(symbol, {}).update(updated_ind)
-    indicators[symbol]["last_close"] = c
-    indicators[symbol]["last_high"]  = h
-    indicators[symbol]["last_low"]   = l
+        # Update in-memory indicator state
+        indicators.setdefault(symbol, {}).update(updated_ind)
+        indicators[symbol]["last_close"] = c
+        indicators[symbol]["last_high"]  = h
+        indicators[symbol]["last_low"]   = l
 
-    # Higher-TF aggregation
-    _update_tf_accumulator(symbol, closed)
-    await _maybe_close_tf_candles(symbol, new_minute)
+        # Higher-TF aggregation
+        _update_tf_accumulator(symbol, closed)
+        await _maybe_close_tf_candles(symbol, new_minute)
 
-    _candles_closed_since_last_log += 1
+        _candles_closed_since_last_log += 1
 
-    # -----------------------------------------------------------------------
-    # Addition 1 — ORB tracking
-    # ORB is formed from the 09:15–09:29 candles and locked at 09:30.
-    # -----------------------------------------------------------------------
-    state = indicators  # alias for clarity in additions below
+        # -----------------------------------------------------------------------
+        # Addition 1 — ORB tracking
+        # ORB is formed from the 09:15–09:29 candles and locked at 09:30.
+        # -----------------------------------------------------------------------
+        state = indicators  # alias for clarity in additions below
 
-    if closed["minute"] == "09:15":
-        # First candle — initialise ORB tracking
-        state[symbol]["orb_high"] = closed["high"]
-        state[symbol]["orb_low"]  = closed["low"]
-        state[symbol]["orb_set"]  = False
-        state[symbol]["candles_since_orb"] = 0
+        if closed["minute"] == "09:15":
+            # First candle — initialise ORB tracking
+            state[symbol]["orb_high"] = closed["high"]
+            state[symbol]["orb_low"]  = closed["low"]
+            state[symbol]["orb_set"]  = False
+            state[symbol]["candles_since_orb"] = 0
 
-    elif not state[symbol].get("orb_set", False):
-        # Expand ORB until 9:30
-        if closed["minute"] <= "09:29":
-            state[symbol]["orb_high"] = max(
-                state[symbol].get("orb_high", closed["high"]),
+        elif not state[symbol].get("orb_set", False):
+            # Expand ORB until 9:30
+            if closed["minute"] <= "09:29":
+                state[symbol]["orb_high"] = max(
+                    state[symbol].get("orb_high", closed["high"]),
+                    closed["high"],
+                )
+                state[symbol]["orb_low"] = min(
+                    state[symbol].get("orb_low", closed["low"]),
+                    closed["low"],
+                )
+            elif closed["minute"] == "09:30":
+                # Lock ORB at 9:30
+                state[symbol]["orb_set"] = True
+                orb_range = state[symbol]["orb_high"] - state[symbol]["orb_low"]
+                state[symbol]["orb_range_pct"] = (
+                    orb_range / max(state[symbol]["orb_low"], 0.01) * 100
+                )
+
+        if state[symbol].get("orb_set", False):
+            state[symbol]["candles_since_orb"] = (
+                state[symbol].get("candles_since_orb", 0) + 1
+            )
+
+        # Write ORB fields to snapshot
+        await redis.hset(f"snapshot:{symbol}", mapping={
+            "orb_high":         str(state[symbol].get("orb_high", 0)),
+            "orb_low":          str(state[symbol].get("orb_low", 0)),
+            "orb_range_pct":    str(state[symbol].get("orb_range_pct", 0)),
+            "candles_since_orb": str(state[symbol].get("candles_since_orb", 0)),
+        })
+
+        # -----------------------------------------------------------------------
+        # Addition 2 — Rolling 1H high/low (deque of last 60 x 1m candles)
+        # -----------------------------------------------------------------------
+        if "rolling_highs" not in state[symbol]:
+            state[symbol]["rolling_highs"]       = deque(maxlen=60)
+            state[symbol]["rolling_lows"]        = deque(maxlen=60)
+            state[symbol]["prev_rolling_1h_high"] = 0.0
+
+        state[symbol]["prev_rolling_1h_high"] = state[symbol].get("rolling_1h_high", 0)
+        state[symbol]["rolling_highs"].append(closed["high"])
+        state[symbol]["rolling_lows"].append(closed["low"])
+
+        rolling_1h_high = max(state[symbol]["rolling_highs"])
+        rolling_1h_low  = min(state[symbol]["rolling_lows"])
+        state[symbol]["rolling_1h_high"] = rolling_1h_high
+        state[symbol]["rolling_1h_low"]  = rolling_1h_low
+
+        # Write to snapshot
+        await redis.hset(f"snapshot:{symbol}", mapping={
+            "rolling_1h_high":      str(rolling_1h_high),
+            "rolling_1h_low":       str(rolling_1h_low),
+            "prev_rolling_1h_high": str(state[symbol]["prev_rolling_1h_high"]),
+        })
+
+        # -----------------------------------------------------------------------
+        # Addition 3 — Consecutive choppy candles + choppy range high/low
+        # choppiness_class derived from the choppiness14 value computed above.
+        # -----------------------------------------------------------------------
+        if choppiness >= 61.8:
+            choppiness_class = "CHOPPY"
+        elif choppiness <= 38.2:
+            choppiness_class = "TRENDING"
+        else:
+            choppiness_class = "NEUTRAL"
+
+        if choppiness_class == "CHOPPY":
+            state[symbol]["consecutive_choppy_candles"] = (
+                state[symbol].get("consecutive_choppy_candles", 0) + 1
+            )
+            # Track highest high / lowest low during choppy period
+            state[symbol]["choppy_range_high"] = max(
+                state[symbol].get("choppy_range_high", closed["high"]),
                 closed["high"],
             )
-            state[symbol]["orb_low"] = min(
-                state[symbol].get("orb_low", closed["low"]),
+            state[symbol]["choppy_range_low"] = min(
+                state[symbol].get("choppy_range_low", closed["low"]),
                 closed["low"],
             )
-        elif closed["minute"] == "09:30":
-            # Lock ORB at 9:30
-            state[symbol]["orb_set"] = True
-            orb_range = state[symbol]["orb_high"] - state[symbol]["orb_low"]
-            state[symbol]["orb_range_pct"] = (
-                orb_range / max(state[symbol]["orb_low"], 0.01) * 100
-            )
+        else:
+            # Reset when choppiness breaks
+            state[symbol]["consecutive_choppy_candles"] = 0
+            state[symbol]["choppy_range_high"]          = 0.0
+            state[symbol]["choppy_range_low"]           = 0.0
 
-    if state[symbol].get("orb_set", False):
-        state[symbol]["candles_since_orb"] = (
-            state[symbol].get("candles_since_orb", 0) + 1
-        )
-
-    # Write ORB fields to snapshot
-    await redis.hset(f"snapshot:{symbol}", mapping={
-        "orb_high":         str(state[symbol].get("orb_high", 0)),
-        "orb_low":          str(state[symbol].get("orb_low", 0)),
-        "orb_range_pct":    str(state[symbol].get("orb_range_pct", 0)),
-        "candles_since_orb": str(state[symbol].get("candles_since_orb", 0)),
-    })
-
-    # -----------------------------------------------------------------------
-    # Addition 2 — Rolling 1H high/low (deque of last 60 x 1m candles)
-    # -----------------------------------------------------------------------
-    if "rolling_highs" not in state[symbol]:
-        state[symbol]["rolling_highs"]       = deque(maxlen=60)
-        state[symbol]["rolling_lows"]        = deque(maxlen=60)
-        state[symbol]["prev_rolling_1h_high"] = 0.0
-
-    state[symbol]["prev_rolling_1h_high"] = state[symbol].get("rolling_1h_high", 0)
-    state[symbol]["rolling_highs"].append(closed["high"])
-    state[symbol]["rolling_lows"].append(closed["low"])
-
-    rolling_1h_high = max(state[symbol]["rolling_highs"])
-    rolling_1h_low  = min(state[symbol]["rolling_lows"])
-    state[symbol]["rolling_1h_high"] = rolling_1h_high
-    state[symbol]["rolling_1h_low"]  = rolling_1h_low
-
-    # Write to snapshot
-    await redis.hset(f"snapshot:{symbol}", mapping={
-        "rolling_1h_high":      str(rolling_1h_high),
-        "rolling_1h_low":       str(rolling_1h_low),
-        "prev_rolling_1h_high": str(state[symbol]["prev_rolling_1h_high"]),
-    })
-
-    # -----------------------------------------------------------------------
-    # Addition 3 — Consecutive choppy candles + choppy range high/low
-    # choppiness_class derived from the choppiness14 value computed above.
-    # -----------------------------------------------------------------------
-    if choppiness >= 61.8:
-        choppiness_class = "CHOPPY"
-    elif choppiness <= 38.2:
-        choppiness_class = "TRENDING"
-    else:
-        choppiness_class = "NEUTRAL"
-
-    if choppiness_class == "CHOPPY":
-        state[symbol]["consecutive_choppy_candles"] = (
-            state[symbol].get("consecutive_choppy_candles", 0) + 1
-        )
-        # Track highest high / lowest low during choppy period
-        state[symbol]["choppy_range_high"] = max(
-            state[symbol].get("choppy_range_high", closed["high"]),
-            closed["high"],
-        )
-        state[symbol]["choppy_range_low"] = min(
-            state[symbol].get("choppy_range_low", closed["low"]),
-            closed["low"],
-        )
-    else:
-        # Reset when choppiness breaks
-        state[symbol]["consecutive_choppy_candles"] = 0
-        state[symbol]["choppy_range_high"]          = 0.0
-        state[symbol]["choppy_range_low"]           = 0.0
-
-    # Write to snapshot
-    await redis.hset(f"snapshot:{symbol}", mapping={
-        "consecutive_choppy_candles": str(state[symbol]["consecutive_choppy_candles"]),
-        "choppy_range_high":          str(state[symbol].get("choppy_range_high", 0)),
-        "choppy_range_low":           str(state[symbol].get("choppy_range_low", 0)),
-    })
+        # Write to snapshot
+        await redis.hset(f"snapshot:{symbol}", mapping={
+            "consecutive_choppy_candles": str(state[symbol]["consecutive_choppy_candles"]),
+            "choppy_range_high":          str(state[symbol].get("choppy_range_high", 0)),
+            "choppy_range_low":           str(state[symbol].get("choppy_range_low", 0)),
+        })
+    except Exception as e:
+        logger.exception("[candle_builder] _on_candle_close failed for %s: %s", symbol, e)
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +713,13 @@ async def _route_tick(symbol: str, ltp: float, volume: int, ts: str) -> None:
     # because _on_candle_close itself is async and we await it here;
     # the I/O + thread dispatch is still non-blocking relative to other symbols
     # handled by separate subscription tasks)
-    asyncio.create_task(_on_candle_close(symbol, closed, minute))
+    task = asyncio.create_task(_on_candle_close(symbol, closed, minute))
+    task.add_done_callback(
+        lambda t: logger.error(
+            "[candle_builder] candle close task failed for %s: %s",
+            symbol, t.exception()
+        ) if t.exception() else None
+    )
 
 
 # ---------------------------------------------------------------------------
