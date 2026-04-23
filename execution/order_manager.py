@@ -67,7 +67,7 @@ _MKT_STATUS_KEY   = "market:status"
 _TICK_MAX_AGE_S: int = 60
 
 # SL monitor / unrealised-PnL intervals
-_SL_MONITOR_INTERVAL_S:  int = 5
+_SL_MONITOR_INTERVAL_S:  int = 1
 _UNRL_UPDATE_INTERVAL_S: int = 10
 
 
@@ -165,6 +165,28 @@ async def _get_execution_ltp(
 
         # Tier 2: Stale but usable (market closed or old tick but data present)
         return ltp, "LAST_CLOSE"
+
+    # ── Tier 1.5: Wait for fresh WS tick on CE/PE during market hours ───
+    # Rationale: place_trigger_order just published options:subscribe; tick
+    # typically arrives in 300-500ms. Poll at 50ms intervals up to 800ms
+    # before falling through to REST. In 95% of cases no REST call is needed.
+    if instrument in ("CE", "PE") and atm_strike:
+        market_is_open = await check_market_open()
+        if market_is_open:
+            for _ in range(16):  # 16 × 50ms = 800ms maximum wait
+                await asyncio.sleep(0.05)
+                tick = await redis.hgetall(tick_key)
+                ltp = _safe_float(tick.get("ltp"))
+                if ltp > 0:
+                    ts_raw = tick.get("ts", "")
+                    age_sec = (_now_ist() - _parse_ts(ts_raw)).total_seconds() if ts_raw else 999999
+                    if age_sec < 10:
+                        logger.info(
+                            "[order_manager] Tier 1.5 hit — fresh WS tick for "
+                            "%s %s%d ltp=%.2f",
+                            symbol, instrument, atm_strike, ltp,
+                        )
+                        return ltp, "LIVE_WS"
 
     # ── Tier 3: REST fallback for options only ────────────────────────
     # For equity (EQ), no REST fallback — we require live tick data.
@@ -839,6 +861,94 @@ async def monitor_stop_losses() -> None:
         await asyncio.sleep(_SL_MONITOR_INTERVAL_S)
 
 
+async def monitor_stop_losses_event_driven() -> None:
+    """
+    Event-driven complement to monitor_stop_losses poller.
+    Listens to tick pub/sub and checks SL/TG on each tick for open positions.
+    Gives sub-second SL/TG firing vs the 1s poll interval.
+    Runs in parallel with monitor_stop_losses; close_trade is idempotent so
+    double-fire is safe (second call sees status != "OPEN" and skips).
+    """
+    logger.info("[order_manager] Event-driven SL monitor started.")
+    while True:
+        try:
+            redis = await get_redis()
+            pubsub = redis.pubsub()
+            await pubsub.subscribe("ticks", "options:ticks")
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                try:
+                    raw = message["data"]
+                    if isinstance(raw, bytes):
+                        raw = raw.decode()
+                    tick = json.loads(raw)
+                    tick_symbol = tick.get("symbol")
+                    tick_ltp = _safe_float(tick.get("ltp"))
+                    if not tick_symbol or tick_ltp <= 0:
+                        continue
+
+                    tick_strike = tick.get("strike")
+                    tick_type = tick.get("type")   # "CE" / "PE" if option
+
+                    open_ids = await redis.smembers("paper:trades:open")
+                    for trade_id in open_ids:
+                        trade_raw = await redis.get(f"paper:trade:{trade_id}")
+                        if not trade_raw:
+                            continue
+                        try:
+                            trade = json.loads(trade_raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if trade.get("status") != "OPEN":
+                            continue
+                        if trade.get("symbol") != tick_symbol:
+                            continue
+
+                        # Option tick must match strike AND type
+                        trade_inst = trade.get("instrument", "EQ")
+                        if trade_inst in ("CE", "PE"):
+                            if tick_type != trade_inst:
+                                continue
+                            if int(tick_strike or 0) != int(trade.get("atm_strike") or 0):
+                                continue
+                        else:
+                            # EQ trade — ignore option ticks
+                            if tick_type in ("CE", "PE"):
+                                continue
+
+                        sl = _safe_float(trade.get("stop_loss"))
+                        tp = _safe_float(trade.get("take_profit"))
+                        direction = trade.get("direction", "LONG")
+
+                        sl_hit = (
+                            (direction == "LONG"  and tick_ltp <= sl) or
+                            (direction == "SHORT" and tick_ltp >= sl)
+                        )
+                        tp_hit = tp > 0 and (
+                            (direction == "LONG"  and tick_ltp >= tp) or
+                            (direction == "SHORT" and tick_ltp <= tp)
+                        )
+
+                        if sl_hit:
+                            logger.info(
+                                "[order_manager] SL hit (event) — %s %s ltp=%.2f sl=%.2f trade_id=%s",
+                                trade["symbol"], direction, tick_ltp, sl, trade_id,
+                            )
+                            await close_trade(trade_id, tick_ltp, reason="STOP_LOSS")
+                        elif tp_hit:
+                            logger.info(
+                                "[order_manager] TP hit (event) — %s %s ltp=%.2f tp=%.2f trade_id=%s",
+                                trade["symbol"], direction, tick_ltp, tp, trade_id,
+                            )
+                            await close_trade(trade_id, tick_ltp, reason="TAKE_PROFIT")
+                except Exception as e:
+                    logger.error("[order_manager] Event monitor processing error: %s", e)
+        except Exception as e:
+            logger.warning("[order_manager] Event monitor reconnecting: %s", e)
+            await asyncio.sleep(2)
+
+
 async def update_unrealised_pnl() -> None:
     """
     Background task — recalculates total unrealised PnL every 10 seconds
@@ -1132,6 +1242,32 @@ async def place_trigger_order(payload: dict) -> dict:
                 payload["expiry_date"],
             )
         payload["option_token"] = token
+
+        # Force-subscribe options WS to this strike so SL/TG monitoring uses
+        # LIVE_WS ticks instead of REST fallback. Fire-and-forget — REST fallback
+        # still works if the feed is down. Payload shape must match what
+        # angel_ws_options._command_listener expects (JSON with symbol + contracts).
+        if token and payload.get("atm_strike"):
+            try:
+                subscribe_payload = json.dumps({
+                    "symbol": payload["symbol"],
+                    "contracts": [{
+                        "token": str(token),
+                        "strike": int(payload["atm_strike"]),
+                        "type": payload["instrument"],   # "CE" or "PE"
+                    }],
+                })
+                await redis.publish("options:subscribe", subscribe_payload)
+                logger.info(
+                    "[order_manager] Force-subscribed options WS for %s %s%d token=%s",
+                    payload["symbol"], payload["instrument"],
+                    payload["atm_strike"], token,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[order_manager] Could not publish options:subscribe for %s: %s",
+                    payload["symbol"], exc,
+                )
 
     order_id = str(uuid4())
 
