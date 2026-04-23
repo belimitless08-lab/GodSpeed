@@ -595,7 +595,12 @@ async def _seed_equity_symbol(
         redis = await get_redis()
         # Store raw candles
         raw_candles = [[c[0], c[1], c[2], c[3], c[4], c[5]] for c in candles]
-        await redis.set(f"candles:1m:{symbol}", json.dumps(raw_candles))
+        pipe = redis.pipeline()
+        pipe.delete(f"candles:1m:{symbol}")
+        for entry in raw_candles:
+            pipe.rpush(f"candles:1m:{symbol}", json.dumps(entry))
+        pipe.ltrim(f"candles:1m:{symbol}", -500, -1)
+        await pipe.execute()
         # Store snapshot key by key (never wipe — set each field)
         await redis.set(f"snapshot:{symbol}", json.dumps(snapshot))
 
