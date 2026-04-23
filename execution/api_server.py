@@ -379,27 +379,65 @@ async def get_tick(symbol: str):
     )
 
 
-@app.get("/api/candles/{symbol}/{timeframe}")
-async def get_candles(symbol: str, timeframe: str):
-    """
-    OHLCV candle list for the LightweightCharts frontend.
-    timeframe: 1m | 5m | 15m
-    """
+async def _fetch_candles_internal(symbol: str, timeframe: str) -> dict:
+    """Shared candle-fetch logic — used by both query-param and path-param endpoints."""
     if timeframe not in {"1m", "5m", "15m"}:
         raise HTTPException(400, "timeframe must be one of: 1m, 5m, 15m")
 
     redis = await get_redis()
     key   = f"candles:{timeframe}:{symbol}"
-    raw   = await redis.lrange(key, 0, -1)   # oldest → newest
+    raw   = await redis.lrange(key, 0, -1)
 
+    # Each entry = JSON-serialized [ts, o, h, l, c, v]
+    # Frontend (lightweight-charts) wants objects with unix-second `time`.
     candles = []
     for entry in raw:
         try:
-            candles.append(json.loads(entry))
-        except json.JSONDecodeError:
+            arr = json.loads(entry)
+            if not isinstance(arr, list) or len(arr) < 6:
+                continue
+            ts, o, h, l, c, v = arr[0], arr[1], arr[2], arr[3], arr[4], arr[5]
+            # Convert ISO timestamp to UNIX seconds
+            if isinstance(ts, str):
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    ts_unix = int(dt.timestamp())
+                except Exception:
+                    continue
+            elif isinstance(ts, (int, float)):
+                ts_unix = int(ts)
+            else:
+                continue
+            candles.append({
+                "time":   ts_unix,
+                "open":   float(o),
+                "high":   float(h),
+                "low":    float(l),
+                "close":  float(c),
+                "volume": float(v),
+            })
+        except (json.JSONDecodeError, ValueError, TypeError):
             continue
 
     return {"symbol": symbol, "timeframe": timeframe, "candles": candles}
+
+
+@app.get("/api/candles/{symbol}")
+async def get_candles_query(symbol: str, tf: str = "1m"):
+    """
+    OHLCV candle list — query-param form used by frontend.
+    Example: /api/candles/RELIANCE?tf=5m
+    """
+    return await _fetch_candles_internal(symbol, tf)
+
+
+@app.get("/api/candles/{symbol}/{timeframe}")
+async def get_candles_path(symbol: str, timeframe: str):
+    """
+    OHLCV candle list — path-param form (legacy / alternate).
+    Example: /api/candles/RELIANCE/5m
+    """
+    return await _fetch_candles_internal(symbol, timeframe)
 
 
 @app.get("/api/pivots/{symbol}", response_model=PivotData)
