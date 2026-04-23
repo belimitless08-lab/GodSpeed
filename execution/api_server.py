@@ -1286,15 +1286,24 @@ async def broadcast_ticks() -> None:
         try:
             redis = await get_redis()
             pubsub = redis.pubsub()
-            await pubsub.subscribe("ticks")
+            await pubsub.subscribe("ticks", "options:ticks")
             async for message in pubsub.listen():
                 if message["type"] != "message":
                     continue
                 try:
+                    channel = message["channel"]
+                    if isinstance(channel, bytes):
+                        channel = channel.decode()
+                    raw_data = message["data"]
+                    if isinstance(raw_data, bytes):
+                        raw_data = raw_data.decode()
+                    payload = json.loads(raw_data)
+                    payload["_source"] = "options" if channel == "options:ticks" else "equity"
+                    serialized = json.dumps(payload)
                     dead: set[WebSocket] = set()
                     for ws in tick_clients.copy():
                         try:
-                            await ws.send_text(message["data"])
+                            await ws.send_text(serialized)
                         except Exception:
                             dead.add(ws)
                     # Use in-place update (not rebinding) to avoid making
