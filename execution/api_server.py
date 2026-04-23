@@ -50,6 +50,7 @@ from execution.order_manager import (
     place_paper_order,
     eod_close_all,
     monitor_stop_losses,
+    monitor_stop_losses_event_driven,
     update_unrealised_pnl,
     run_execution_listener,
     # trigger-order system
@@ -274,7 +275,8 @@ async def lifespan(app: FastAPI):
     await init_paper_account()
 
     # Launch background tasks
-    asyncio.create_task(monitor_stop_losses(),     name="sl_monitor")
+    asyncio.create_task(monitor_stop_losses(),               name="sl_monitor")
+    asyncio.create_task(monitor_stop_losses_event_driven(),  name="monitor_stop_losses_event_driven")
     asyncio.create_task(update_unrealised_pnl(),   name="unrealised_updater")
     asyncio.create_task(run_execution_listener(),  name="execution_listener")
     asyncio.create_task(_scheduler(),              name="scheduler")
