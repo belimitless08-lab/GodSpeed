@@ -1624,10 +1624,18 @@ document.getElementById('chart-popup').addEventListener('mouseleave', () => {
 /* Tick update */
 function handleTickUpdate(data) {
   if (!data) return;
-  // Store into state for live LTP in positions drawer
+
+  // Route option ticks separately from equity ticks
+  if (data._source === "options" && data.symbol && data.strike && data.type) {
+    const key = `${data.symbol}:${data.strike}${data.type}`;
+    state.optionTicks[key] = data;
+    return;  // option ticks don't participate in equity state / chart / tiles
+  }
+
+  // Equity / index tick (existing behavior preserved)
   if (data.symbol) state.ticks[data.symbol] = data;
   if (data.symbol === currentChartSymbol) {
-    state.currentChartLTP = data.ltp  // just store it; chart updated in 100ms loop
+    state.currentChartLTP = data.ltp;  // just store it; chart updated in 100ms loop
   }
   // Update index tiles
   const tile = document.querySelector(`[data-sym="${data.symbol}"]`);
@@ -1638,7 +1646,14 @@ function handleTickUpdate(data) {
 setInterval(() => {
   if (document.getElementById('positions-drawer').style.transform === 'translateY(0%)') {
     state.openTrades.forEach(t => {
-      const tick = state.ticks[t.symbol];
+      let tick;
+      if ((t.instrument === 'CE' || t.instrument === 'PE') && (t.atm_strike || t.strike)) {
+        const strikeVal = t.atm_strike || t.strike;
+        const key = `${t.symbol}:${strikeVal}${t.instrument}`;
+        tick = state.optionTicks?.[key];
+      } else {
+        tick = state.ticks[t.symbol];
+      }
       if (!tick) return;
       const ltp = tick.ltp;
 
@@ -2225,6 +2240,7 @@ refreshHealthDot()
 ══════════════════════════════════════════ */
 const state = {
     ticks: {},
+    optionTicks: {},
     openTrades: [],
     currentChartLTP: null,
 };
