@@ -56,12 +56,14 @@ _MARKET_HALT_H,  _MARKET_HALT_M  = 15, 30   # 15:30 IST — stop processing
 # Higher-timeframe close minutes
 _5M_MINUTES  = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}
 _15M_MINUTES = {0, 15, 30, 45}
+_1HR_MINUTES = {0}  # hourly bar closes at :00
 
 # Redis channel / key names
 _CH_TICKS    = "ticks"
 _CH_1M       = "candles:1m"
 _CH_5M       = "candles:5m"
 _CH_15M      = "candles:15m"
+_CH_1HR      = "candles:1hr"
 _KEY_STATUS  = "candle_builder:status"
 
 # Indicator periods
@@ -328,43 +330,69 @@ def _tf_minute_closed(minute_str: str, tf: str) -> bool:
         return m in _5M_MINUTES
     if tf == "15m":
         return m in _15M_MINUTES
+    if tf == "1hr":
+        return m in _1HR_MINUTES
     return False
 
 
 async def _maybe_close_tf_candles(symbol: str, new_minute: str) -> None:
     """
     Called whenever a 1m candle closes (we have the new minute boundary).
-    If the new_minute aligns to a 5m or 15m boundary, flush in-memory TF candle
-    and publish to the appropriate channel.
+    If the new_minute aligns to a 5m/15m/1hr boundary: flush in-memory TF
+    candle, append to `candles:{tf}:{symbol}` LIST, and publish to
+    `candles:{tf}` pub/sub channel.
+
+    List writes enable chart reads via /api/candles.
+    Pub/sub publishes preserve the trigger monitor and brain consumers.
     """
     redis = await get_redis()
 
-    for tf, ch in (("5m", _CH_5M), ("15m", _CH_15M)):
+    for tf, ch in (("5m", _CH_5M), ("15m", _CH_15M), ("1hr", _CH_1HR)):
         sym_tf = tf_accumulators.get(symbol, {}).get(tf)
         if sym_tf is None:
             continue
 
-        if _tf_minute_closed(new_minute, tf):
-            payload = json.dumps({
-                "symbol": symbol,
-                "tf":     tf,
-                "ts":     sym_tf["ts"],
-                "open":   sym_tf["open"],
-                "high":   sym_tf["high"],
-                "low":    sym_tf["low"],
-                "close":  sym_tf["close"],
-                "volume": sym_tf["volume"],
-            })
-            await redis.publish(ch, payload)
-            # Reset TF accumulator for this symbol + tf
-            tf_accumulators[symbol][tf] = None  # will re-open on next tick
+        if not _tf_minute_closed(new_minute, tf):
+            continue
+
+        # Serialize list entry in same [ts, o, h, l, c, v] shape as 1m list
+        candle_arr = json.dumps([
+            sym_tf["ts"],
+            sym_tf["open"],
+            sym_tf["high"],
+            sym_tf["low"],
+            sym_tf["close"],
+            sym_tf["volume"],
+        ])
+        list_key = f"candles:{tf}:{symbol}"
+
+        # Also build pub/sub payload (unchanged shape so consumers don't break)
+        pub_payload = json.dumps({
+            "symbol": symbol,
+            "tf":     tf,
+            "ts":     sym_tf["ts"],
+            "open":   sym_tf["open"],
+            "high":   sym_tf["high"],
+            "low":    sym_tf["low"],
+            "close":  sym_tf["close"],
+            "volume": sym_tf["volume"],
+        })
+
+        async with redis.pipeline(transaction=False) as pipe:
+            pipe.rpush(list_key, candle_arr)
+            pipe.ltrim(list_key, -500, -1)
+            pipe.publish(ch, pub_payload)
+            await pipe.execute()
+
+        # Reset accumulator — will re-open on next 1m candle
+        tf_accumulators[symbol][tf] = None
 
 
 def _update_tf_accumulator(symbol: str, candle: dict[str, Any]) -> None:
-    """Merge a closed 1m candle into 5m and 15m in-memory accumulators."""
-    tf_accumulators.setdefault(symbol, {"5m": None, "15m": None})
+    """Merge a closed 1m candle into 5m, 15m, and 1hr in-memory accumulators."""
+    tf_accumulators.setdefault(symbol, {"5m": None, "15m": None, "1hr": None})
 
-    for tf in ("5m", "15m"):
+    for tf in ("5m", "15m", "1hr"):
         acc = tf_accumulators[symbol][tf]
         if acc is None:
             # Start fresh TF candle from this 1m candle
@@ -932,7 +960,7 @@ async def _seed_indicators() -> None:
         }
 
         # Also initialise TF accumulator slots
-        tf_accumulators.setdefault(symbol, {"5m": None, "15m": None})
+        tf_accumulators.setdefault(symbol, {"5m": None, "15m": None, "1hr": None})
 
         seeded += 1
 
