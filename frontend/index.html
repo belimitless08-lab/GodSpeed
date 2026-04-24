@@ -914,6 +914,7 @@
   <div class="popup-header">
     <span class="popup-sym" id="cp-sym">—</span>
     <span class="popup-ltp" id="cp-ltp">—</span>
+    <span id="cp-ohlc" style="font-size:9px; color:var(--muted); font-family:'JetBrains Mono',monospace; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></span>
     <div class="live-dot"></div>
     <div style="flex:1;"></div>
     <div style="display:flex; gap:4px; align-items:center;">
@@ -937,13 +938,12 @@
 
   <!-- Legend -->
   <div class="legend-strip">
-    <div class="legend-item"><div class="legend-line" style="background:#a855f7;"></div><span style="color:#a855f7;">E16</span></div>
-    <div class="legend-item"><div class="legend-line" style="background:#3b82f6;"></div><span style="color:#3b82f6;">E200</span></div>
-    <div class="legend-item"><div class="legend-line" style="background:#eab308; border-top: 2px dashed #eab308; height:0;width:18px;"></div><span style="color:#eab308;">PP</span></div>
-    <div class="legend-item"><div class="legend-line" style="background:#22c55e; border-top: 2px dashed #22c55e; height:0;width:18px;"></div><span style="color:#22c55e;">R1</span></div>
-    <div class="legend-item"><div class="legend-line" style="background:#ef4444; border-top: 2px dashed #ef4444; height:0;width:18px;"></div><span style="color:#ef4444;">S1</span></div>
-    <div class="legend-item"><div class="legend-line" style="background:#f97316;"></div><span style="color:#f97316;">LTP</span></div>
-    <div class="legend-item" style="color:var(--muted); font-size:8px;">| prev</div>
+    <div class="legend-item"><div class="legend-line" style="background:#a855f7;height:2px;width:18px;"></div><span style="color:#a855f7;">E16</span></div>
+    <div class="legend-item"><div class="legend-line" style="background:#3b82f6;height:1px;width:18px;"></div><span style="color:#3b82f6;">E200</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed #eab308;"></span><span style="color:#eab308;">PP</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed #22c55e;"></span><span style="color:#22c55e;">R1</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed #ef4444;"></span><span style="color:#ef4444;">S1</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px solid #f97316;"></span><span style="color:#f97316;">LTP</span></div>
   </div>
 
   <!-- Embedded order ticket — pre-filled for current chart symbol -->
@@ -1458,22 +1458,29 @@ function createChart() {
   });
   ema16Series = chart.addLineSeries({ color: '#a855f7', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
   ema200Series = chart.addLineSeries({ color: '#3b82f6', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
-  ltpLine = chart.addLineSeries({ color: '#f97316', lineWidth: 1, priceLineVisible: true, lastValueVisible: true,
-    priceLineStyle: LightweightCharts.LineStyle.Solid });
+  ltpLine = candleSeries.createPriceLine({
+    price: 0,
+    color: '#f97316',
+    lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Solid,
+    axisLabelVisible: true,
+    title: 'LTP',
+  });
 }
 
 async function loadChart(symbol, tf) {
-  if (!chart) createChart();
+  createChart();
   currentChartSymbol = symbol;
   currentTF = tf;
   document.getElementById('cp-sym').textContent = symbol;
   document.getElementById('cp-ltp').textContent = '…';
 
-  // Standardised URL: query-param form, same as stock.html
-  const data = await apiFetch(`/api/candles/${symbol}?tf=${tf}`);
+  // Fetch candles and pivots in parallel
+  const [data, pivots] = await Promise.all([
+    apiFetch(`/api/candles/${symbol}?tf=${tf}`),
+    apiFetch(`/api/pivots/${symbol}`),
+  ]);
 
-  // Response shape: {candles:[...], ema9:[...], ema16:[...], ema200:[...], vwap:[...]}
-  // or legacy bare array — handle both
   const rawCandles = data && data.candles ? data.candles
                    : (Array.isArray(data) ? data : null);
 
@@ -1482,9 +1489,9 @@ async function loadChart(symbol, tf) {
       time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
     }));
     candleSeries.setData(mapped);
-    lastCandleTime = mapped.length ? mapped[mapped.length - 1].time : null;
+    lastCandleTime = mapped[mapped.length - 1].time;
 
-    // EMAs — prefer backend-computed, fall back to client-side
+    // EMAs
     if (data && data.ema16) {
       ema16Series.setData(data.ema16.map((v, i) => ({ time: rawCandles[i].time, value: v })).filter(x => x.value));
     } else {
@@ -1498,23 +1505,40 @@ async function loadChart(symbol, tf) {
 
     const last = mapped[mapped.length - 1];
     document.getElementById('cp-ltp').textContent = fmt(last.close);
-    ltpLine.setData([{ time: last.time, value: last.close }]);
-    chart.timeScale().fitContent();
+    ltpLine.applyOptions({ price: last.close });
+
+    // Show last ~80 candles with right margin
+    chart.timeScale().scrollToPosition(-3, false);
+
+    // Pivots
+    if (pivots) renderPivotLines(pivots);
+
+    // OHLC crosshair readout
+    const ohlcEl = document.getElementById('cp-ohlc');
+    chart.subscribeCrosshairMove(param => {
+      if (!ohlcEl) return;
+      if (!param || !param.time) { ohlcEl.textContent = ''; return; }
+      const d = param.seriesData && param.seriesData.get(candleSeries);
+      if (!d) { ohlcEl.textContent = ''; return; }
+      const chg = d.close - d.open;
+      const chgPct = d.open > 0 ? (chg / d.open * 100).toFixed(2) : '0.00';
+      const col = chg >= 0 ? 'var(--green)' : 'var(--red)';
+      ohlcEl.innerHTML =
+        `O <span style="color:var(--text)">${d.open.toFixed(2)}</span> ` +
+        `H <span style="color:var(--green)">${d.high.toFixed(2)}</span> ` +
+        `L <span style="color:var(--red)">${d.low.toFixed(2)}</span> ` +
+        `C <span style="color:${col}">${d.close.toFixed(2)}</span> ` +
+        `<span style="color:${col}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgPct}%)</span>`;
+    });
+
   } else {
-    // No data — clear chart and show placeholder, never show fake candles
     candleSeries.setData([]);
-    lastCandleTime = null;
     ema16Series.setData([]);
     ema200Series.setData([]);
-    ltpLine.setData([]);
+    lastCandleTime = null;
     document.getElementById('cp-ltp').textContent = '—';
   }
-
-  // Pivots
-  const pivots = await apiFetch(`/api/pivots/${symbol}`);
-  if (pivots) renderPivotLines(pivots);
 }
-
 function computeEMA(candles, period) {
   const k = 2 / (period + 1);
   let ema = null;
@@ -1574,6 +1598,8 @@ function closePopup() {
   pivotPriceLines.forEach(pl => { try { candleSeries && candleSeries.removePriceLine(pl); } catch(e) {} });
   pivotPriceLines = [];
   lastCandleTime = null;
+  const ohlcEl = document.getElementById('cp-ohlc');
+  if (ohlcEl) ohlcEl.textContent = '';
   const popup = document.getElementById('chart-popup');
   popup.classList.remove('visible', 'pinned');
   currentChartSymbol = null;
@@ -1697,10 +1723,10 @@ setInterval(() => {
     });
   }
   // Deferred chart LTP update (stutter fix)
-  if (state.currentChartLTP !== null && currentChartSymbol && ltpLine && lastCandleTime) {
+  if (state.currentChartLTP !== null && currentChartSymbol && ltpLine) {
     const ltpEl = document.getElementById('cp-ltp');
     if (ltpEl) ltpEl.textContent = fmt(state.currentChartLTP);
-    ltpLine.setData([{ time: lastCandleTime, value: state.currentChartLTP }]);
+    ltpLine.applyOptions({ price: state.currentChartLTP });
     state.currentChartLTP = null;
   }
 }, 100);
