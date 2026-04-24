@@ -31,7 +31,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, time as dtime
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -78,6 +78,13 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 
 def _now_ist() -> datetime:
     return datetime.now(_IST)
+
+
+def _is_market_hours_ist() -> bool:
+    now = _now_ist()
+    if now.weekday() >= 5:  # Sat/Sun
+        return False
+    return dtime(9, 15) <= now.time() <= dtime(15, 30)
 
 
 def _safe_float(v, default: float = 0.0) -> float:
@@ -1359,8 +1366,14 @@ async def get_health():
 # ===========================================================================
 
 @app.post("/api/admin/run-seeder")
-async def manual_run_seeder():
+async def manual_run_seeder(force: bool = False):
     """Manually trigger the morning seeder — use only for initialization."""
+    if _is_market_hours_ist() and not force:
+        raise HTTPException(
+            409,
+            "Seeder cannot run during market hours (09:15-15:30 IST). "
+            "Pass force=true to override.",
+        )
     try:
         from scripts.morning_seeder import run_seeder
         asyncio.create_task(run_seeder())
@@ -1370,12 +1383,18 @@ async def manual_run_seeder():
 
 
 @app.get("/api/debug/run-seeder")
-async def debug_run_seeder():
+async def debug_run_seeder(force: bool = False):
     """
     DEBUG (GET): Same as POST /api/admin/run-seeder but usable from a
     browser URL. Triggers the morning seeder to build snapshot:{symbol}
     entries so the cruncher can start accumulating ticks.
     """
+    if _is_market_hours_ist() and not force:
+        raise HTTPException(
+            409,
+            "Seeder cannot run during market hours (09:15-15:30 IST). "
+            "Use /api/debug/run-seeder?force=true to override.",
+        )
     try:
         from scripts.morning_seeder import run_seeder
         asyncio.create_task(run_seeder())

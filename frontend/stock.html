@@ -952,7 +952,18 @@ const chart = LightweightCharts.createChart(chartEl, {
   grid:   { vertLines:{color:'#1e293b'}, horzLines:{color:'#1e293b'} },
   crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   rightPriceScale: { borderColor:'#334155' },
-  timeScale: { borderColor:'#334155', timeVisible:true, secondsVisible:false, offset:330 },
+  timeScale: { borderColor:'#334155', timeVisible:true, secondsVisible:false },
+  localization: {
+    timeFormatter: (unixSec) => {
+      const d = new Date(unixSec * 1000);
+      return d.toLocaleTimeString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+    },
+  },
   handleScroll: true, handleScale: true
 });
 

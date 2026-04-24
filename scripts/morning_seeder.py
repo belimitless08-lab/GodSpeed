@@ -641,7 +641,7 @@ async def _seed_equity_symbol(
             pipe.delete(candle_key_1m)
             for candle in raw_candles:
                 pipe.rpush(candle_key_1m, json.dumps(candle))
-            pipe.ltrim(candle_key_1m, -500, -1)
+            pipe.ltrim(candle_key_1m, -2800, -1)
             await pipe.execute()
 
         # Aggregate 1m → 5m, 15m, 1hr so chart tabs work immediately at seeder time.

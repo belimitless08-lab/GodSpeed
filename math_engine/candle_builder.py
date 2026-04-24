@@ -270,7 +270,7 @@ async def _flush_candle_to_redis(
     async with redis.pipeline(transaction=False) as pipe:
         # 1. Append + trim candle history
         pipe.rpush(candle_key, candle_arr)
-        pipe.ltrim(candle_key, -500, -1)
+        pipe.ltrim(candle_key, -2800, -1)
 
         # 2. Update snapshot
         pipe.hset(snapshot_key, mapping={

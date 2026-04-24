@@ -40,6 +40,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import uuid4
 
 from core.config import cfg, validate
 from core.redis_client import get_redis
@@ -347,6 +348,7 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
 
             # ── AI alignment (non-blocking best-effort) ────────────────
             ai_alignment = None
+            snapshot = {}
             try:
                 snapshot = await _load_snapshot(symbol)
                 news     = await _maybe_scrape_stock_news(symbol)
@@ -368,6 +370,24 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
 
             try:
                 await redis.publish("trade_execution", json.dumps(payload))
+                # Backing store for /api/signals endpoint (auto-expire in 5 min)
+                signal_id = str(uuid4())
+                await redis.set(
+                    f"signal:active:{symbol}:{signal_id}",
+                    json.dumps({
+                        "symbol": symbol,
+                        "signal_type": signal.get("type", ""),
+                        "direction": signal.get("direction", ""),
+                        "ici_score": score_result.get("score", 0),
+                        "ici_grade": score_result.get("grade", ""),
+                        "entry_price": signal.get("entry_price", 0),
+                        "stop_loss": signal.get("stop_loss", 0),
+                        "choppiness_class": snapshot.get("choppiness_class", "NEUTRAL"),
+                        "supertrend_dir": snapshot.get("supertrend_dir", "BULL"),
+                        "detected_at": _now_ist().isoformat(),
+                    }),
+                    ex=300,
+                )
                 logger.info(
                     "[brain] ★ EXECUTION PUBLISHED — %s %s grade=%s action=%s",
                     symbol, signal["type"],
@@ -431,8 +451,10 @@ async def _subscribe_candles() -> None:
                     continue
 
                 try:
+                    if isinstance(channel, bytes):
+                        channel = channel.decode()
                     symbol = data.get("symbol")
-                    candle = data.get("candle", {})
+                    candle = data  # cruncher publishes flat candle payload
 
                     if not symbol:
                         continue
