@@ -773,7 +773,7 @@ async def get_market_breadth():
     ad_ratio  = round(advances / max(total, 1), 3)
 
     above_ema200 = int(_sf(raw, "above_ema200"))
-    universe_size = int(_sf(raw, "universe_size", 1))
+    universe_size = int(_sf(raw, "total", 1))
 
     return MarketBreadth(
         advances=advances,

@@ -102,7 +102,9 @@ async def _compute() -> dict:
                 continue
 
             last_close = _safe_float(snap.get("last_close") or snap.get("ltp"))
-            prev_close = _safe_float(snap.get("prev_close"), 1.0)
+            prev_close = _safe_float(snap.get("prev_close"))
+            if prev_close <= 0:
+                continue
             ema200     = _safe_float(snap.get("ema200"))
 
             change_pct = _safe_divide(last_close - prev_close, prev_close) * 100
