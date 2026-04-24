@@ -595,12 +595,75 @@ async def _seed_equity_symbol(
         redis = await get_redis()
         # Store raw candles
         raw_candles = [[c[0], c[1], c[2], c[3], c[4], c[5]] for c in candles]
-        pipe = redis.pipeline()
-        pipe.delete(f"candles:1m:{symbol}")
-        for entry in raw_candles:
-            pipe.rpush(f"candles:1m:{symbol}", json.dumps(entry))
-        pipe.ltrim(f"candles:1m:{symbol}", -500, -1)
-        await pipe.execute()
+        candle_key_1m = f"candles:1m:{symbol}"
+        async with redis.pipeline(transaction=False) as pipe:
+            pipe.delete(candle_key_1m)
+            for candle in raw_candles:
+                pipe.rpush(candle_key_1m, json.dumps(candle))
+            pipe.ltrim(candle_key_1m, -500, -1)
+            await pipe.execute()
+
+        # Aggregate 1m → 5m, 15m, 1hr so chart tabs work immediately at seeder time.
+        # Cruncher will continue appending live on top of these during market hours.
+        def _aggregate_candles(one_min_candles: list, window_seconds: int) -> list:
+            """
+            Bucket 1m candles into windows of `window_seconds`.
+            Each bucket: open=first.open, high=max high, low=min low,
+                         close=last.close, volume=sum.
+            Preserves timestamp format (ISO string or epoch int) from source.
+            """
+            if not one_min_candles:
+                return []
+            buckets: dict[int, list] = {}
+            bucket_order: list[int] = []
+            sample_ts = one_min_candles[0][0]
+            use_iso = isinstance(sample_ts, str)
+
+            for cdl in one_min_candles:
+                ts_raw = cdl[0]
+                if isinstance(ts_raw, str):
+                    try:
+                        epoch = int(datetime.fromisoformat(ts_raw).timestamp())
+                    except Exception:
+                        continue
+                elif isinstance(ts_raw, (int, float)):
+                    epoch = int(ts_raw)
+                else:
+                    continue
+                floored = (epoch // window_seconds) * window_seconds
+                try:
+                    o = float(cdl[1]); h = float(cdl[2]); l = float(cdl[3])
+                    c = float(cdl[4]); v = float(cdl[5])
+                except (ValueError, TypeError):
+                    continue
+                if floored not in buckets:
+                    buckets[floored] = [o, h, l, c, v]
+                    bucket_order.append(floored)
+                else:
+                    b = buckets[floored]
+                    if h > b[1]: b[1] = h
+                    if l < b[2]: b[2] = l
+                    b[3] = c
+                    b[4] += v
+
+            out = []
+            for floored in bucket_order:
+                b = buckets[floored]
+                ts_out = datetime.fromtimestamp(floored).isoformat() if use_iso else floored
+                out.append([ts_out, b[0], b[1], b[2], b[3], b[4]])
+            return out
+
+        for tf_label, tf_seconds in (("5m", 300), ("15m", 900), ("1hr", 3600)):
+            tf_candles = _aggregate_candles(raw_candles, tf_seconds)
+            if not tf_candles:
+                continue
+            tf_key = f"candles:{tf_label}:{symbol}"
+            async with redis.pipeline(transaction=False) as pipe:
+                pipe.delete(tf_key)
+                for candle in tf_candles:
+                    pipe.rpush(tf_key, json.dumps(candle))
+                pipe.ltrim(tf_key, -500, -1)
+                await pipe.execute()
         # Store snapshot key by key (never wipe — set each field)
         await redis.set(f"snapshot:{symbol}", json.dumps(snapshot))
 
