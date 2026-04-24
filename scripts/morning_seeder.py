@@ -611,30 +611,49 @@ async def _seed_equity_symbol(
             Each bucket: open=first.open, high=max high, low=min low,
                          close=last.close, volume=sum.
             Preserves timestamp format (ISO string or epoch int) from source.
+
+            DIAGNOSTIC: logs sample + parse-failure counts when bucket count is zero.
             """
             if not one_min_candles:
+                logger.warning(
+                    "[aggregate] %s tf_window=%ds: got ZERO input candles",
+                    symbol, window_seconds,
+                )
                 return []
             buckets: dict[int, list] = {}
             bucket_order: list[int] = []
             sample_ts = one_min_candles[0][0]
             use_iso = isinstance(sample_ts, str)
+            ts_parse_fails = 0
+            numeric_parse_fails = 0
+            total_processed = 0
 
             for cdl in one_min_candles:
+                total_processed += 1
                 ts_raw = cdl[0]
                 if isinstance(ts_raw, str):
                     try:
                         epoch = int(datetime.fromisoformat(ts_raw).timestamp())
-                    except Exception:
+                    except Exception as _exc:
+                        ts_parse_fails += 1
+                        if ts_parse_fails == 1:
+                            logger.warning(
+                                "[aggregate] %s: fromisoformat FAILED on sample "
+                                "ts_raw=%r type=%s err=%s",
+                                symbol, ts_raw, type(ts_raw).__name__, _exc,
+                            )
                         continue
                 elif isinstance(ts_raw, (int, float)):
                     epoch = int(ts_raw)
                 else:
+                    ts_parse_fails += 1
                     continue
                 floored = (epoch // window_seconds) * window_seconds
                 try:
                     o = float(cdl[1]); h = float(cdl[2]); l = float(cdl[3])
                     c = float(cdl[4]); v = float(cdl[5])
                 except (ValueError, TypeError):
+                    numeric_parse_fails += 1
                     continue
                 if floored not in buckets:
                     buckets[floored] = [o, h, l, c, v]
@@ -651,19 +670,47 @@ async def _seed_equity_symbol(
                 b = buckets[floored]
                 ts_out = datetime.fromtimestamp(floored).isoformat() if use_iso else floored
                 out.append([ts_out, b[0], b[1], b[2], b[3], b[4]])
+
+            if not out:
+                logger.warning(
+                    "[aggregate] %s tf_window=%ds: ZERO buckets. "
+                    "processed=%d ts_fails=%d numeric_fails=%d sample_ts=%r sample_type=%s",
+                    symbol, window_seconds, total_processed, ts_parse_fails,
+                    numeric_parse_fails, sample_ts, type(sample_ts).__name__,
+                )
+            elif window_seconds == 300:
+                # Log success once per symbol (5m only to avoid log spam)
+                logger.info(
+                    "[aggregate] %s 5m: produced %d buckets from %d 1m candles",
+                    symbol, len(out), total_processed,
+                )
             return out
 
         for tf_label, tf_seconds in (("5m", 300), ("15m", 900), ("1hr", 3600)):
             tf_candles = _aggregate_candles(raw_candles, tf_seconds)
             if not tf_candles:
+                logger.warning(
+                    "[aggregate] %s: SKIPPING write for tf=%s (aggregator returned empty)",
+                    symbol, tf_label,
+                )
                 continue
             tf_key = f"candles:{tf_label}:{symbol}"
-            async with redis.pipeline(transaction=False) as pipe:
-                pipe.delete(tf_key)
-                for candle in tf_candles:
-                    pipe.rpush(tf_key, json.dumps(candle))
-                pipe.ltrim(tf_key, -500, -1)
-                await pipe.execute()
+            try:
+                async with redis.pipeline(transaction=False) as pipe:
+                    pipe.delete(tf_key)
+                    for candle in tf_candles:
+                        pipe.rpush(tf_key, json.dumps(candle))
+                    pipe.ltrim(tf_key, -500, -1)
+                    await pipe.execute()
+                logger.info(
+                    "[aggregate] %s: wrote %d candles to %s",
+                    symbol, len(tf_candles), tf_key,
+                )
+            except Exception as _exc:
+                logger.error(
+                    "[aggregate] %s: write FAILED for %s — %s",
+                    symbol, tf_key, _exc,
+                )
         # Store snapshot key by key (never wipe — set each field)
         await redis.set(f"snapshot:{symbol}", json.dumps(snapshot))
 
