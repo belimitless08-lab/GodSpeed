@@ -733,7 +733,22 @@ async def debug_inspect_snapshot(symbol: str):
 async def get_market_breadth():
     """Market breadth — advances, declines, sector performance."""
     redis = await get_redis()
-    raw   = await redis.hgetall("market:breadth")
+    raw: dict = {}
+    # Preferred format (current producer): JSON string in market:breadth
+    raw_json = await redis.get("market:breadth")
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                raw = parsed
+        except (json.JSONDecodeError, TypeError):
+            raw = {}
+    # Backward compatibility: older deployments may have used Redis HASH
+    if not raw:
+        try:
+            raw = await redis.hgetall("market:breadth")
+        except Exception:
+            raw = {}
     if not raw:
         raise HTTPException(503, "Market breadth data not yet available")
 
@@ -828,12 +843,33 @@ async def get_indices():
 async def get_world_indices():
     """Dow futures, Nasdaq futures, Hang Seng, SGX Nifty, Crude."""
     redis = await get_redis()
-    raw   = await redis.hgetall("market:world_indices")
-    if not raw:
+    # Support both potential storage formats:
+    # 1) JSON string array/object at key market:world_indices
+    # 2) Redis hash field->json entries at key market:world_indices
+    raw_json = await redis.get("market:world_indices")
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, list):
+                return {"indices": parsed}
+            if isinstance(parsed, dict):
+                # Accept {"indices":[...]} envelope or key->payload mapping
+                if isinstance(parsed.get("indices"), list):
+                    return {"indices": parsed["indices"]}
+                return {"indices": list(parsed.values())}
+        except json.JSONDecodeError:
+            pass
+
+    raw_hash: dict = {}
+    try:
+        raw_hash = await redis.hgetall("market:world_indices")
+    except Exception:
+        raw_hash = {}
+    if not raw_hash:
         raise HTTPException(503, "World indices data not yet available")
 
     indices = []
-    for key, value in raw.items():
+    for _, value in raw_hash.items():
         try:
             indices.append(json.loads(value))
         except json.JSONDecodeError:
@@ -1119,11 +1155,27 @@ async def get_expiries(underlying: str):
     # 2. Seeded snapshot (stocks only — indices aren't seeded)
     if spot_ltp <= 0:
         try:
-            snap_raw = await redis.get(f"snapshot:{underlying}")
-            if snap_raw:
-                snap_str = snap_raw if isinstance(snap_raw, str) else snap_raw.decode()
-                snap = _json.loads(snap_str)
-                spot_ltp = float(snap.get("prev_day", {}).get("close") or 0)
+            # Current runtime format is HASH. Seeder may temporarily leave STRING.
+            snap_hash = await redis.hgetall(f"snapshot:{underlying}")
+            if snap_hash:
+                spot_ltp = float(
+                    snap_hash.get("prev_close")
+                    or snap_hash.get("last_close")
+                    or snap_hash.get("ltp")
+                    or 0
+                )
+            if spot_ltp <= 0:
+                snap_raw = await redis.get(f"snapshot:{underlying}")
+                if snap_raw:
+                    snap_str = snap_raw if isinstance(snap_raw, str) else snap_raw.decode()
+                    snap = _json.loads(snap_str)
+                    spot_ltp = float(
+                        snap.get("prev_close")
+                        or snap.get("last_close")
+                        or snap.get("ltp")
+                        or snap.get("prev_day", {}).get("close")
+                        or 0
+                    )
         except Exception:
             pass
 
@@ -1195,7 +1247,10 @@ async def get_expiries(underlying: str):
 async def get_premarket_sentiment():
     """Pre-market AI sentiment and top 10 positive/negative stocks."""
     redis = await get_redis()
-    raw   = await redis.get("ai:premarket:summary")
+    # Current writer stores at ai:premarket; keep legacy summary fallback.
+    raw = await redis.get("ai:premarket")
+    if not raw:
+        raw = await redis.get("ai:premarket:summary")
     if not raw:
         raise HTTPException(503, "Pre-market AI analysis not yet available")
     try:
@@ -1208,7 +1263,22 @@ async def get_premarket_sentiment():
 async def get_alignment(symbol: str):
     """News vs technicals alignment for a symbol."""
     redis = await get_redis()
-    raw   = await redis.hgetall(f"ai:alignment:{symbol}")
+    raw: dict = {}
+    # Preferred format (current writer): JSON string
+    raw_json = await redis.get(f"ai:alignment:{symbol}")
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                raw = parsed
+        except (json.JSONDecodeError, TypeError):
+            raw = {}
+    # Backward compatibility: hash format
+    if not raw:
+        try:
+            raw = await redis.hgetall(f"ai:alignment:{symbol}")
+        except Exception:
+            raw = {}
     if not raw:
         raise HTTPException(404, f"No AI alignment data for symbol '{symbol}'")
 
@@ -1524,21 +1594,6 @@ if __name__ == "__main__":
         log_level=cfg.LOG_LEVEL.lower(),
     )
 
-
-# ===========================================================================
-# Admin endpoints
-# ===========================================================================
-
-@app.post("/api/admin/run-seeder")
-async def manual_run_seeder():
-    """Manually trigger the morning seeder — for initialization only."""
-    try:
-        from scripts.morning_seeder import run_seeder
-        asyncio.create_task(run_seeder())
-        return {"status": "started", "message": "Seeder running in background — check logs"}
-    except Exception as e:
-        logger.error(f"[admin] Seeder trigger failed: {e}")
-        raise HTTPException(500, str(e))
 
 @app.post("/api/admin/build-universe")
 async def manual_build_universe():
