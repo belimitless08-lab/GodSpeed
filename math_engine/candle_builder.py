@@ -66,6 +66,10 @@ _CH_15M      = "candles:15m"
 _CH_1HR      = "candles:1hr"
 _KEY_STATUS  = "candle_builder:status"
 
+# Index symbols to build candles for even when they are not part of the
+# equity F&O symbol universe seeded by get_symbols().
+_INDICES_WITH_CANDLES = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"}
+
 # Indicator periods
 _EMA16_PERIOD  = 16
 _EMA200_PERIOD = 200
@@ -270,7 +274,7 @@ async def _flush_candle_to_redis(
     async with redis.pipeline(transaction=False) as pipe:
         # 1. Append + trim candle history
         pipe.rpush(candle_key, candle_arr)
-        pipe.ltrim(candle_key, -500, -1)
+        pipe.ltrim(candle_key, -2800, -1)
 
         # 2. Update snapshot
         pipe.hset(snapshot_key, mapping={
@@ -695,8 +699,10 @@ async def _route_tick(symbol: str, ltp: float, volume: int, ts: str) -> None:
     if not _within_session(minute):
         return
 
-    if symbol not in indicators:
-        # Snapshot not seeded at startup — skip until seeder runs
+    if symbol not in indicators and symbol not in _INDICES_WITH_CANDLES:
+        # Snapshot not seeded at startup — skip until seeder runs.
+        # Indices are allowed through even without seeded snapshot so we can
+        # build their 1m/5m/15m/1hr candles for trigger logic.
         logger.debug("[candle_builder] %s has no snapshot — skipping.", symbol)
         return
 
@@ -822,15 +828,16 @@ async def _seed_indicators() -> None:
     Load snapshot:{symbol} data from Redis into the in-memory `indicators`
     dict so the first candle close can do incremental updates.
 
-    The morning_seeder writes snapshot:{symbol} as a Redis STRING containing
-    a JSON-encoded dict. But this cruncher writes further updates via HSET
-    (Redis HASH). Redis doesn't allow mixing types on the same key, so on
-    startup we:
+    Canonical runtime format is Redis HASH for snapshot:{symbol}.  Older
+    deployments may still have legacy Redis STRING JSON snapshots. To stay
+    backward-compatible, startup will auto-convert legacy STRING snapshots
+    into HASH format:
       1. Read the string value
-      2. Parse the JSON
-      3. Delete the string key
-      4. Re-write the same data as a hash (flattened, all values as strings)
-    This converts seeder output to hash format so later hsets don't crash.
+      2. Parse JSON
+      3. Delete string key
+      4. Re-write as flattened HASH (string values)
+
+    If the key is already a HASH, it is used as-is.
 
     Symbols without a snapshot are logged as warnings and skipped.
     """

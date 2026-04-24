@@ -1437,6 +1437,17 @@ function createChart() {
       rightOffset: 12,
       barSpacing: 6,
     },
+    localization: {
+      timeFormatter: (unixSec) => {
+        const d = new Date(unixSec * 1000);
+        return d.toLocaleTimeString('en-IN', {
+          timeZone: 'Asia/Kolkata',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+      },
+    },
   });
   candleSeries = chart.addCandlestickSeries({
     upColor: '#22c55e', downColor: '#ef4444',
