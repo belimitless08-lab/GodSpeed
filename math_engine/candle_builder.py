@@ -822,15 +822,16 @@ async def _seed_indicators() -> None:
     Load snapshot:{symbol} data from Redis into the in-memory `indicators`
     dict so the first candle close can do incremental updates.
 
-    The morning_seeder writes snapshot:{symbol} as a Redis STRING containing
-    a JSON-encoded dict. But this cruncher writes further updates via HSET
-    (Redis HASH). Redis doesn't allow mixing types on the same key, so on
-    startup we:
+    Canonical runtime format is Redis HASH for snapshot:{symbol}.  Older
+    deployments may still have legacy Redis STRING JSON snapshots. To stay
+    backward-compatible, startup will auto-convert legacy STRING snapshots
+    into HASH format:
       1. Read the string value
-      2. Parse the JSON
-      3. Delete the string key
-      4. Re-write the same data as a hash (flattened, all values as strings)
-    This converts seeder output to hash format so later hsets don't crash.
+      2. Parse JSON
+      3. Delete string key
+      4. Re-write as flattened HASH (string values)
+
+    If the key is already a HASH, it is used as-is.
 
     Symbols without a snapshot are logged as warnings and skipped.
     """

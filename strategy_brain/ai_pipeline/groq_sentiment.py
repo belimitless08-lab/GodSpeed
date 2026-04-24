@@ -177,9 +177,12 @@ Headlines:
 
             parsed["analyzed_at"] = datetime.now(_IST).isoformat()
 
-            # Write to Redis
+            # Write to Redis.
+            # Keep both keys during migration so older dashboards/endpoints
+            # that still read ai:premarket:summary continue to work.
             redis = await get_redis()
             await redis.set("ai:premarket", json.dumps(parsed), ex=_PREMARKET_TTL)
+            await redis.set("ai:premarket:summary", json.dumps(parsed), ex=_PREMARKET_TTL)
 
             logger.info(
                 "[groq_sentiment] premarket sentiment=%s score=%.2f themes=%s",

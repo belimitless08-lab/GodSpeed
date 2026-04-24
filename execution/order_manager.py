@@ -1166,21 +1166,42 @@ async def place_trigger_order(payload: dict) -> dict:
                 spot = await redis_tmp.hgetall(f"tick:{payload['symbol']}")
                 ref_price = _safe_float(spot.get("ltp"))
 
-                # 2. Snapshot (stocks — JSON string, nested structure)
+                # 2. Snapshot fallback (hash-first, legacy string fallback)
                 if ref_price <= 0:
-                    snap_raw = await redis_tmp.get(f"snapshot:{payload['symbol']}")
-                    if snap_raw:
-                        try:
-                            snap_str = snap_raw if isinstance(snap_raw, str) else snap_raw.decode()
-                            snap = json.loads(snap_str)
-                            ref_price = _safe_float(snap.get("prev_day", {}).get("close"))
-                            if ref_price > 0:
-                                logger.info(
-                                    "[order_manager] Using snapshot prev_close ₹%.2f for %s",
-                                    ref_price, payload['symbol'],
+                    # Current canonical runtime format: HASH
+                    snap_hash = await redis_tmp.hgetall(f"snapshot:{payload['symbol']}")
+                    if snap_hash:
+                        ref_price = _safe_float(
+                            snap_hash.get("prev_close")
+                            or snap_hash.get("last_close")
+                            or snap_hash.get("ltp")
+                        )
+                        if ref_price > 0:
+                            logger.info(
+                                "[order_manager] Using snapshot-hash ref ₹%.2f for %s",
+                                ref_price, payload['symbol'],
+                            )
+
+                    # Legacy format: JSON string
+                    if ref_price <= 0:
+                        snap_raw = await redis_tmp.get(f"snapshot:{payload['symbol']}")
+                        if snap_raw:
+                            try:
+                                snap_str = snap_raw if isinstance(snap_raw, str) else snap_raw.decode()
+                                snap = json.loads(snap_str)
+                                ref_price = _safe_float(
+                                    snap.get("prev_close")
+                                    or snap.get("last_close")
+                                    or snap.get("ltp")
+                                    or snap.get("prev_day", {}).get("close")
                                 )
-                        except (json.JSONDecodeError, AttributeError, TypeError):
-                            pass
+                                if ref_price > 0:
+                                    logger.info(
+                                        "[order_manager] Using snapshot-string ref ₹%.2f for %s",
+                                        ref_price, payload['symbol'],
+                                    )
+                            except (json.JSONDecodeError, AttributeError, TypeError):
+                                pass
 
                 # 3. REST fallback (indices especially)
                 if ref_price <= 0:
