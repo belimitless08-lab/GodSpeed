@@ -1111,7 +1111,7 @@ function updateChartLiveTick(ltp) {
     if (!data || !data.length) return;
 
     // Current minute bucket in UTC seconds (floored to minute)
-    const nowBucket = Math.floor(Date.now() / 60000) * 60;
+    const nowBucket = Math.floor((Date.now() + 19800000) / 60000) * 60 - 19800;
     const last = data[data.length - 1];
 
     if (last.time === nowBucket) {
