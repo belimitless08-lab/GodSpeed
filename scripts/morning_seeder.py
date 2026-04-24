@@ -61,6 +61,47 @@ PROBE_TOKEN  = "1594"   # NIFTYBEES NSE EQ token in AngelOne instrument master
 PROBE_SYMBOL = "NIFTYBEES"
 
 
+def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
+    """
+    Flatten seeder snapshot payload into Redis HASH-compatible fields.
+
+    NOTE:
+    - Keeps nested blocks as JSON strings for debug/backward compatibility.
+    - Also emits key top-level fields consumed by API/brain/order_manager.
+    """
+    prev_day = snapshot.get("prev_day", {}) if isinstance(snapshot.get("prev_day"), dict) else {}
+    supertrend = snapshot.get("supertrend", {}) if isinstance(snapshot.get("supertrend"), dict) else {}
+
+    mapping: dict[str, str] = {
+        "ema9": str(snapshot.get("ema9", 0.0)),
+        "ema16": str(snapshot.get("ema16", 0.0)),
+        "ema200": str(snapshot.get("ema200", 0.0)),
+        "atr14": str(snapshot.get("atr14", 0.0)),
+        "avg_volume_5d": str(snapshot.get("avg_volume_5d", 0.0)),
+        "rsi14": str(snapshot.get("rsi14", 50.0)),
+        "rsi_avg_gain": str(snapshot.get("rsi_avg_gain", 0.0)),
+        "rsi_avg_loss": str(snapshot.get("rsi_avg_loss", 0.0)),
+        "choppiness14": "" if snapshot.get("choppiness14") is None else str(snapshot.get("choppiness14")),
+        "lot_size": str(snapshot.get("lot_size", 1)),
+        "token": str(snapshot.get("token", "")),
+        "seeded_at": str(snapshot.get("seeded_at", "")),
+        # Commonly consumed by breadth / risk / price fallbacks
+        "prev_open": str(prev_day.get("open", 0.0)),
+        "prev_high": str(prev_day.get("high", 0.0)),
+        "prev_low": str(prev_day.get("low", 0.0)),
+        "prev_close": str(prev_day.get("close", 0.0)),
+        "prev_volume": str(prev_day.get("volume", 0.0)),
+        "last_close": str(prev_day.get("close", 0.0)),
+        # Supertrend fields consumed by signal engines
+        "supertrend_dir": str(supertrend.get("direction", "BULL")),
+        "supertrend_band": str(supertrend.get("band", 0.0)),
+        # Keep nested payloads for diagnostics/backward compatibility
+        "prev_day": json.dumps(prev_day),
+        "supertrend": json.dumps(supertrend),
+    }
+    return mapping
+
+
 # ---------------------------------------------------------------------------
 # AngelOne session
 # ---------------------------------------------------------------------------
@@ -600,7 +641,7 @@ async def _seed_equity_symbol(
             pipe.delete(candle_key_1m)
             for candle in raw_candles:
                 pipe.rpush(candle_key_1m, json.dumps(candle))
-            pipe.ltrim(candle_key_1m, -500, -1)
+            pipe.ltrim(candle_key_1m, -2800, -1)
             await pipe.execute()
 
         # Aggregate 1m → 5m, 15m, 1hr so chart tabs work immediately at seeder time.
@@ -711,8 +752,12 @@ async def _seed_equity_symbol(
                     "[aggregate] %s: write FAILED for %s — %s",
                     symbol, tf_key, _exc,
                 )
-        # Store snapshot key by key (never wipe — set each field)
-        await redis.set(f"snapshot:{symbol}", json.dumps(snapshot))
+        # Store snapshot as Redis HASH (canonical runtime format).
+        # This avoids STRING/HASH type flips and WRONGTYPE races at startup.
+        await redis.hset(
+            f"snapshot:{symbol}",
+            mapping=_snapshot_to_hash_mapping(snapshot),
+        )
 
         return True
 
@@ -892,13 +937,15 @@ async def run_seeder() -> None:
         fno_symbols = []
         fno_prev_closes = []
         for sym in symbols:
-            snap_raw = await redis.get(f"snapshot:{sym}")
-            if not snap_raw:
+            snap_hash = await redis.hgetall(f"snapshot:{sym}")
+            if not snap_hash:
                 logger.warning("Phase B: %s — no equity snapshot, skipping options.", sym)
                 options_results.append(False)
                 continue
-            snap = json.loads(snap_raw)
-            prev_close = snap.get("prev_day", {}).get("close", 0.0)
+            try:
+                prev_close = float(snap_hash.get("prev_close") or 0.0)
+            except (TypeError, ValueError):
+                prev_close = 0.0
             if not prev_close:
                 logger.warning("Phase B: %s — zero prev_close, skipping.", sym)
                 options_results.append(False)
