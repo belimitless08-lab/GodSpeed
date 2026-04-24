@@ -92,7 +92,7 @@ async def _gate2_vwap(snap: dict, direction: str) -> tuple[bool, str]:
 
 async def _gate3_nifty_trend(direction: str) -> tuple[bool, str]:
     """Gate 3 — Nifty trend veto: don't fight the index supertrend."""
-    nifty_snap = await _load_snapshot("NIFTY50")
+    nifty_snap = await _load_snapshot("NIFTY")
     st_dir = nifty_snap.get("supertrend_dir", "BULL")
 
     if st_dir == "BEAR" and direction == "LONG":

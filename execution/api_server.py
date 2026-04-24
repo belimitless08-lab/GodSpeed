@@ -769,8 +769,7 @@ async def get_market_breadth():
 
     advances = int(_sf(raw, "advances"))
     declines  = int(_sf(raw, "declines"))
-    total     = advances + declines
-    ad_ratio  = round(advances / max(total, 1), 3)
+    ad_ratio  = round(advances / max(declines, 1), 3)
 
     above_ema200 = int(_sf(raw, "above_ema200"))
     universe_size = int(_sf(raw, "total", 1))
@@ -897,11 +896,10 @@ async def get_active_signals():
 
     signals = []
     for k in keys:
-        raw = await redis.hgetall(k)
-        if not raw:
-            continue
         try:
-            signals.append(_parse_signal(raw))
+            parsed = await _read_signal_payload(redis, k)
+            if parsed:
+                signals.append(_parse_signal(parsed))
         except Exception:
             continue
 
@@ -917,14 +915,35 @@ async def get_symbol_signals(symbol: str):
 
     signals = []
     for k in keys:
-        raw = await redis.hgetall(k)
-        if raw:
-            try:
-                signals.append(_parse_signal(raw))
-            except Exception:
-                continue
+        try:
+            parsed = await _read_signal_payload(redis, k)
+            if parsed:
+                signals.append(_parse_signal(parsed))
+        except Exception:
+            continue
 
     return signals
+
+
+async def _read_signal_payload(redis, key: str) -> dict:
+    """
+    Read active signal payload from Redis, supporting both:
+      1) STRING JSON (current brain writer), and
+      2) HASH fields (legacy format).
+    """
+    raw_json = await redis.get(key)
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    raw_hash = await redis.hgetall(key)
+    if raw_hash:
+        return raw_hash
+    return {}
 
 
 def _parse_signal(raw: dict) -> SignalData:

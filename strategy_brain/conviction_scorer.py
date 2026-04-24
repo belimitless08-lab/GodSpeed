@@ -327,7 +327,7 @@ async def calculate_ici_score(
         return _zero_result(symbol, signal_type, _now)
 
     # ── Load reference data ──────────────────────────────────────────────
-    nifty_snap_raw = await redis.hgetall("snapshot:NIFTY50")
+    nifty_snap_raw = await redis.hgetall("snapshot:NIFTY")
     nifty_snap = nifty_snap_raw or {}
     nifty_prev  = _safe_float(nifty_snap.get("prev_close"), 1.0)
     nifty_ltp   = _safe_float(nifty_snap.get("ltp"), nifty_prev)
