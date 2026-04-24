@@ -66,6 +66,10 @@ _CH_15M      = "candles:15m"
 _CH_1HR      = "candles:1hr"
 _KEY_STATUS  = "candle_builder:status"
 
+# Index symbols to build candles for even when they are not part of the
+# equity F&O symbol universe seeded by get_symbols().
+_INDICES_WITH_CANDLES = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"}
+
 # Indicator periods
 _EMA16_PERIOD  = 16
 _EMA200_PERIOD = 200
@@ -695,8 +699,10 @@ async def _route_tick(symbol: str, ltp: float, volume: int, ts: str) -> None:
     if not _within_session(minute):
         return
 
-    if symbol not in indicators:
-        # Snapshot not seeded at startup — skip until seeder runs
+    if symbol not in indicators and symbol not in _INDICES_WITH_CANDLES:
+        # Snapshot not seeded at startup — skip until seeder runs.
+        # Indices are allowed through even without seeded snapshot so we can
+        # build their 1m/5m/15m/1hr candles for trigger logic.
         logger.debug("[candle_builder] %s has no snapshot — skipping.", symbol)
         return
 
