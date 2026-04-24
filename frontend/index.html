@@ -938,12 +938,14 @@
 
   <!-- Legend -->
   <div class="legend-strip">
-    <div class="legend-item"><div class="legend-line" style="background:#a855f7;height:2px;width:18px;"></div><span style="color:#a855f7;">E16</span></div>
-    <div class="legend-item"><div class="legend-line" style="background:#3b82f6;height:1px;width:18px;"></div><span style="color:#3b82f6;">E200</span></div>
-    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed #eab308;"></span><span style="color:#eab308;">PP</span></div>
-    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed #22c55e;"></span><span style="color:#22c55e;">R1</span></div>
-    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed #ef4444;"></span><span style="color:#ef4444;">S1</span></div>
-    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px solid #f97316;"></span><span style="color:#f97316;">LTP</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;height:2px;background:#a855f7;border-radius:1px;"></span><span style="color:#a855f7;">E16</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;height:1px;background:#3b82f6;"></span><span style="color:#3b82f6;">E200</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed rgba(234,179,8,0.9);"></span><span style="color:#eab308;">PP</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed rgba(34,197,94,0.9);"></span><span style="color:#22c55e;">R1</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed rgba(34,197,94,0.6);"></span><span style="color:rgba(34,197,94,0.7);">R2</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed rgba(239,68,68,0.9);"></span><span style="color:#ef4444;">S1</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px dashed rgba(239,68,68,0.6);"></span><span style="color:rgba(239,68,68,0.7);">S2</span></div>
+    <div class="legend-item"><span style="display:inline-block;width:18px;border-top:1px solid rgba(249,115,22,0.9);"></span><span style="color:#f97316;">LTP</span></div>
   </div>
 
   <!-- Embedded order ticket — pre-filled for current chart symbol -->
@@ -1414,7 +1416,7 @@ function createChart() {
   if (chart) { chart.remove(); chart = null; }
   const container = document.getElementById('chart-container');
   chart = LightweightCharts.createChart(container, {
-    width: container.clientWidth,
+    width: container.clientWidth || 660,
     height: 300,
     layout: {
       background: { color: '#0f172a' },
@@ -1438,6 +1440,22 @@ function createChart() {
       visible: true,
       rightOffset: 12,
       barSpacing: 6,
+      tickMarkFormatter: (unixSec, tickMarkType) => {
+        const d = new Date(unixSec * 1000);
+        if (tickMarkType === 0 || tickMarkType === 1 || tickMarkType === 2) {
+          return d.toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: 'numeric',
+            month: 'short',
+          });
+        }
+        return d.toLocaleTimeString('en-IN', {
+          timeZone: 'Asia/Kolkata',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+      },
     },
     localization: {
       timeFormatter: (unixSec) => {
@@ -1455,6 +1473,8 @@ function createChart() {
     upColor: '#22c55e', downColor: '#ef4444',
     borderUpColor: '#22c55e', borderDownColor: '#ef4444',
     wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+    lastValueVisible: false,
+    priceLineVisible: false,
   });
   ema16Series = chart.addLineSeries({ color: '#a855f7', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
   ema200Series = chart.addLineSeries({ color: '#3b82f6', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
@@ -1475,11 +1495,7 @@ async function loadChart(symbol, tf) {
   document.getElementById('cp-sym').textContent = symbol;
   document.getElementById('cp-ltp').textContent = '…';
 
-  // Fetch candles and pivots in parallel
-  const [data, pivots] = await Promise.all([
-    apiFetch(`/api/candles/${symbol}?tf=${tf}`),
-    apiFetch(`/api/pivots/${symbol}`),
-  ]);
+  const data = await apiFetch(`/api/candles/${symbol}?tf=${tf}`);
 
   const rawCandles = data && data.candles ? data.candles
                    : (Array.isArray(data) ? data : null);
@@ -1488,7 +1504,21 @@ async function loadChart(symbol, tf) {
     const mapped = rawCandles.map(c => ({
       time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
     }));
-    candleSeries.setData(mapped);
+
+    // Dim previous-day candles while keeping current-day candles fully visible (IST boundary).
+    const nowIST = new Date(Date.now() + 19800000);
+    const todayStr = nowIST.toISOString().slice(0, 10);
+    const todayStartIST = new Date(`${todayStr}T00:00:00+05:30`).getTime() / 1000;
+    const coloredCandles = mapped.map(c => {
+      const isToday = c.time >= todayStartIST;
+      return isToday ? c : {
+        ...c,
+        color: c.close >= c.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)',
+        borderColor: c.close >= c.open ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)',
+        wickColor: c.close >= c.open ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)',
+      };
+    });
+    candleSeries.setData(coloredCandles);
     lastCandleTime = mapped[mapped.length - 1].time;
 
     // EMAs
@@ -1509,9 +1539,19 @@ async function loadChart(symbol, tf) {
 
     // Show last ~80 candles with right margin
     chart.timeScale().scrollToPosition(-3, false);
+    requestAnimationFrame(() => {
+      const el = document.getElementById('chart-container');
+      if (el && chart && el.clientWidth > 0) {
+        chart.applyOptions({ width: el.clientWidth });
+      }
+    });
 
-    // Pivots
-    if (pivots) renderPivotLines(pivots);
+    if (data.pivots) {
+      renderPivotLines(data.pivots);
+    } else {
+      // Fallback: fetch separately (same endpoint stock.html uses)
+      apiFetch(`/api/pivots/${symbol}`).then(d => { if (d) renderPivotLines(d); });
+    }
 
     // OHLC crosshair readout
     const ohlcEl = document.getElementById('cp-ohlc');
@@ -1550,22 +1590,28 @@ function computeEMA(candles, period) {
 }
 
 function renderPivotLines(pivots) {
-  if (!chart || !candleSeries) return;
+  if (!chart || !candleSeries || !pivots) return;
   pivotPriceLines.forEach(pl => { try { candleSeries.removePriceLine(pl); } catch(e) {} });
   pivotPriceLines = [];
   const defs = [
-    { key: 'pp', color: '#eab308', label: 'PP' },
-    { key: 'r1', color: '#22c55e', label: 'R1' },
-    { key: 'r2', color: 'rgba(34,197,94,0.5)', label: 'R2' },
-    { key: 's1', color: '#ef4444', label: 'S1' },
-    { key: 's2', color: 'rgba(239,68,68,0.5)', label: 'S2' },
+    { key: 'pp',     color: 'rgba(234,179,8,0.9)',    label: 'PP'   },
+    { key: 'r1',     color: 'rgba(34,197,94,0.9)',    label: 'R1'   },
+    { key: 'r2',     color: 'rgba(34,197,94,0.6)',    label: 'R2'   },
+    { key: 's1',     color: 'rgba(239,68,68,0.9)',    label: 'S1'   },
+    { key: 's2',     color: 'rgba(239,68,68,0.6)',    label: 'S2'   },
+    { key: 'cam_r3', color: 'rgba(74,222,128,0.6)',   label: 'C-R3' },
+    { key: 'cam_s3', color: 'rgba(248,113,113,0.6)',  label: 'C-S3' },
   ];
   defs.forEach(d => {
-    if (pivots[d.key] == null) return;
+    const price = pivots[d.key];
+    if (!price || price <= 0) return;
     pivotPriceLines.push(candleSeries.createPriceLine({
-      price: pivots[d.key], color: d.color,
-      lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed,
-      axisLabelVisible: true, title: d.label,
+      price,
+      color: d.color,
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: d.label,
     }));
   });
 }
