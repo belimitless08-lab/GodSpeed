@@ -383,8 +383,8 @@ async def get_tick(symbol: str):
 
 async def _fetch_candles_internal(symbol: str, timeframe: str) -> dict:
     """Shared candle-fetch logic — used by both query-param and path-param endpoints."""
-    if timeframe not in {"1m", "5m", "15m"}:
-        raise HTTPException(400, "timeframe must be one of: 1m, 5m, 15m")
+    if timeframe not in {"1m", "5m", "15m", "1hr"}:
+        raise HTTPException(400, "timeframe must be one of: 1m, 5m, 15m, 1hr")
 
     redis = await get_redis()
     key   = f"candles:{timeframe}:{symbol}"
