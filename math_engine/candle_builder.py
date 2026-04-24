@@ -436,6 +436,37 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
 
     try:
         redis = await get_redis()
+        is_index = symbol in _INDICES_WITH_CANDLES
+
+        if is_index:
+            # Indices are candle-only symbols (no full indicator surface).
+            # Keep minimal snapshot fields for API/trigger consumers.
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await redis.hset(f"snapshot:{symbol}", mapping={
+                "last_close": str(closed["close"]),
+                "last_high": str(closed["high"]),
+                "last_low": str(closed["low"]),
+                "last_volume": str(closed["volume"]),
+                "last_candle_ts": closed["ts"],
+                "is_index": "1",
+                "updated_at": now_iso,
+            })
+
+            pub_payload = json.dumps({
+                "symbol": symbol,
+                "ts": closed["ts"],
+                "open": closed["open"],
+                "high": closed["high"],
+                "low": closed["low"],
+                "close": closed["close"],
+                "volume": closed["volume"],
+            })
+            await redis.publish(_CH_1M, pub_payload)
+
+            _update_tf_accumulator(symbol, closed)
+            await _maybe_close_tf_candles(symbol, new_minute)
+            _candles_closed_since_last_log += 1
+            return
 
         # Fetch last 14 closed candles for choppiness window
         raw_candles = await redis.lrange(f"candles:1m:{symbol}", -_CHOP_PERIOD, -1)
@@ -970,6 +1001,12 @@ async def _seed_indicators() -> None:
         tf_accumulators.setdefault(symbol, {"5m": None, "15m": None, "1hr": None})
 
         seeded += 1
+
+    # Ensure index symbols can flow through _route_tick even though they do not
+    # have full seeded indicator snapshots like equities.
+    for idx in _INDICES_WITH_CANDLES:
+        indicators.setdefault(idx, {"is_index": True})
+        tf_accumulators.setdefault(idx, {"5m": None, "15m": None, "1hr": None})
 
     logger.info(
         "[candle_builder] Seeded %d symbols from snapshots "
