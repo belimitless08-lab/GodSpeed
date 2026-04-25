@@ -987,26 +987,47 @@ let ltpPriceLine = candleSeries.createPriceLine({
 });
 
 // Pivot lines
-let pivotLines = [];
+let pivotSeries = [];
 function setPivotLines(pivots) {
-  pivotLines.forEach(l => candleSeries.removePriceLine(l));
-  pivotLines = [];
-  const add = (price, color, title) => {
-    if (!price) return;
-    pivotLines.push(candleSeries.createPriceLine({
-      price, color, lineWidth:1, lineStyle:1,
-      axisLabelVisible:true, title
-    }));
-  };
-  if (pivots) {
-    add(pivots.pp,     '#eab308', 'PP');
-    add(pivots.r1,     '#22c55e', 'R1');
-    add(pivots.r2,     '#16a34a', 'R2');
-    add(pivots.s1,     '#ef4444', 'S1');
-    add(pivots.s2,     '#dc2626', 'S2');
-    add(pivots.cam_r3, '#4ade80', 'C-R3');
-    add(pivots.cam_s3, '#f87171', 'C-S3');
-  }
+  if (!chart || !candleSeries || !pivots) return;
+
+  pivotSeries.forEach(s => { try { chart.removeSeries(s); } catch(e) {} });
+  pivotSeries = [];
+
+  const nowIST = new Date(Date.now() + 19800000);
+  const todayStr = nowIST.toISOString().slice(0, 10);
+  const sessionStart = Math.floor(new Date(`${todayStr}T09:15:00+05:30`).getTime() / 1000);
+  const sessionEnd   = Math.floor(new Date(`${todayStr}T15:30:00+05:30`).getTime() / 1000);
+
+  const defs = [
+    { key: 'pp', color: '#eab308', label: 'PP' },
+    { key: 'r1', color: '#22c55e', label: 'R1' },
+    { key: 'r2', color: '#16a34a', label: 'R2' },
+    { key: 's1', color: '#ef4444', label: 'S1' },
+    { key: 's2', color: '#dc2626', label: 'S2' },
+  ];
+
+  defs.forEach(d => {
+    const price = pivots[d.key];
+    if (!price || price <= 0) return;
+
+    const series = chart.addLineSeries({
+      color: d.color,
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      title: d.label,
+      crosshairMarkerVisible: false,
+    });
+
+    series.setData([
+      { time: sessionStart, value: price },
+      { time: sessionEnd,   value: price },
+    ]);
+
+    pivotSeries.push(series);
+  });
 }
 
 // User-drawn lines
@@ -1053,7 +1074,10 @@ function applyIndState() {
   ema200Series.applyOptions({visible: !!s.ema200});
   vwapSeries.applyOptions({visible: !!s.vwap});
   volSeries.applyOptions({visible: !!s.vol});
-  if (!s.pivots) { pivotLines.forEach(l => candleSeries.removePriceLine(l)); pivotLines = []; }
+  if (!s.pivots) {
+    pivotSeries.forEach(srs => { try { chart.removeSeries(srs); } catch(e) {} });
+    pivotSeries = [];
+  }
   document.querySelectorAll('.ind-toggle').forEach(btn => {
     const ind = btn.dataset.ind;
     btn.classList.toggle('active', s[ind] !== false);
