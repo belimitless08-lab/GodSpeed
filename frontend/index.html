@@ -1603,14 +1603,21 @@ function computeEMA(candles, period) {
 }
 
 function renderPivotLines(pivots) {
-  if (!chart || !candleSeries || !pivots) return;
+  if (!chart || !candleSeries || !pivots || !lastCandleTime) return;
   pivotSeries.forEach(s => { try { chart.removeSeries(s); } catch(e) {} });
   pivotSeries = [];
 
-  const nowIST = new Date(Date.now() + 19800000);
-  const todayStr = nowIST.toISOString().slice(0, 10);
-  const sessionStart = Math.floor(new Date(`${todayStr}T09:15:00+05:30`).getTime() / 1000);
-  const sessionEnd   = Math.floor(new Date(`${todayStr}T15:30:00+05:30`).getTime() / 1000);
+  // Use last candle's date — not system clock — so weekends/holidays work correctly
+  const lastDate = new Date(lastCandleTime * 1000);
+  const activeDayStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(lastDate);
+
+  const sessionStart = Math.floor(new Date(`${activeDayStr}T09:15:00+05:30`).getTime() / 1000);
+  const sessionEnd   = Math.floor(new Date(`${activeDayStr}T15:30:00+05:30`).getTime() / 1000);
 
   const defs = [
     { key: 'pp', color: '#eab308', label: 'PP' },
