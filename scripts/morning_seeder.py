@@ -879,7 +879,7 @@ async def _seed_options_symbol(
 # Main runner
 # ---------------------------------------------------------------------------
 
-async def run_seeder() -> None:
+async def run_seeder(force: bool = False) -> None:
     t_total_start = time.monotonic()
 
     validate()
@@ -909,10 +909,16 @@ async def run_seeder() -> None:
     # -----------------------------------------------------------------------
     market_open = await probe_market_open(session, from_dt, to_dt)
     if not market_open:
-        logger.warning(
-            "Market appears closed today — seeder skipping, Redis data preserved."
-        )
-        return  # exit without writing anything to Redis
+        if force:
+            logger.warning(
+                "Market appears closed today — but force=True, continuing with last available data."
+            )
+        else:
+            logger.warning(
+                "Market appears closed today — seeder skipping, Redis data preserved. "
+                "Use force=True to override."
+            )
+            return  # exit without writing anything to Redis
 
     # -----------------------------------------------------------------------
     # PHASE A — Equity Snapshots
