@@ -57,6 +57,27 @@ INDEX_UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
 # How many calendar days forward we keep option contracts for.
 INDEX_OPTIONS_LOOKAHEAD_DAYS = 45
 
+# AMXIDX spot-index lookup hints.
+# Each symbol can map to multiple possible "name" variants in AngelOne's
+# instrument master; first case-insensitive partial match wins.
+INDEX_SPOT_SEARCH = [
+    {"symbol": "NIFTY",      "exch_seg": "NSE",
+     "search_names": ["Nifty 50", "NIFTY 50", "Nifty50"]},
+
+    {"symbol": "BANKNIFTY",  "exch_seg": "NSE",
+     "search_names": ["Nifty Bank", "BANKNIFTY", "Bank Nifty", "Nifty BANK"]},
+
+    {"symbol": "FINNIFTY",   "exch_seg": "NSE",
+     "search_names": ["Nifty Fin Service", "FINNIFTY", "Nifty Financial"]},
+
+    {"symbol": "MIDCPNIFTY", "exch_seg": "NSE",
+     "search_names": ["Nifty Midcap", "MIDCPNIFTY", "Nifty Mid Cap",
+                      "Nifty MidCap Select", "Mid Cap Select"]},
+
+    {"symbol": "SENSEX",     "exch_seg": "BSE",
+     "search_names": ["Sensex", "SENSEX", "BSE Sensex"]},
+]
+
 # Regex: strip the trailing expiry/series suffix from NFO FUTSTK symbols.
 # AngelOne futures symbols look like:  RELIANCE28APR26FUT  (DD MON YY FUT)
 # The 2-digit year field was previously missing from this pattern, causing
@@ -166,6 +187,67 @@ async def _download_master() -> list[dict]:
 
     logger.info("Downloaded %d instrument entries.", len(data))
     return data
+
+
+def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, str]:
+    """
+    Extract spot-index AMXIDX tokens for configured symbols.
+
+    Matching rules:
+      * instrumenttype must be "AMXIDX"
+      * exch_seg must match the configured exch_seg
+      * case-insensitive partial match on ``name`` against configured
+        ``search_names`` list (plural)
+      * first match wins per symbol
+    """
+    amxidx_entries = [
+        inst for inst in instruments
+        if str(inst.get("instrumenttype", "")).upper() == "AMXIDX"
+    ]
+
+    for inst in amxidx_entries:
+        logger.info(
+            "[universe] AMXIDX entries found: %s | %s | %s",
+            str(inst.get("token", "")),
+            str(inst.get("name", "")),
+            str(inst.get("exch_seg", "")),
+        )
+
+    out: dict[str, str] = {}
+    for cfg in INDEX_SPOT_SEARCH:
+        symbol = str(cfg.get("symbol", "")).strip().upper()
+        exch_seg = str(cfg.get("exch_seg", "")).strip().upper()
+        search_names = [str(s).strip().lower() for s in cfg.get("search_names", []) if str(s).strip()]
+        if not symbol or not exch_seg or not search_names:
+            continue
+
+        for inst in amxidx_entries:
+            if str(inst.get("exch_seg", "")).strip().upper() != exch_seg:
+                continue
+            name_field = str(inst.get("name", "")).strip()
+            if not name_field:
+                continue
+            name_l = name_field.lower()
+            if any(search_name in name_l for search_name in search_names):
+                out[symbol] = str(inst.get("token", ""))
+                logger.info(
+                    "[universe] Index spot token resolved: %s -> %s (name=%s, exch_seg=%s)",
+                    symbol,
+                    out[symbol],
+                    name_field,
+                    str(inst.get("exch_seg", "")),
+                )
+                break
+
+        if symbol not in out:
+            logger.warning(
+                "[universe] Index spot token not found for %s (exch_seg=%s, search_names=%s)",
+                symbol,
+                exch_seg,
+                cfg.get("search_names", []),
+            )
+
+    return out
 
 
 def _build_maps(instruments: list[dict]) -> tuple[list[str], dict[str, str], dict[str, int]]:
@@ -284,6 +366,10 @@ def _build_maps(instruments: list[dict]) -> tuple[list[str], dict[str, str], dic
             ", ".join(no_token[:10]),
             "…" if len(no_token) > 10 else "",
         )
+
+    # Add spot-index AMXIDX tokens so indices can be resolved by token users
+    # of universe:token_map (e.g. NIFTY/BANKNIFTY/SENSEX).
+    token_map.update(_extract_index_spot_tokens(instruments))
 
     # ------------------------------------------------------------------
     # Final universe — include ALL F&O underlyings regardless of EQ token.
