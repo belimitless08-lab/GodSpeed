@@ -1477,6 +1477,10 @@ function createChart() {
     lastValueVisible: false,
     priceLineVisible: false,
   });
+  chart.priceScale('sessionSep').applyOptions({
+    visible: false,
+    scaleMargins: { top: 0, bottom: 0 },
+  });
   ema16Series = chart.addLineSeries({ color: '#a855f7', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
   ema200Series = chart.addLineSeries({ color: '#3b82f6', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
   ltpLine = candleSeries.createPriceLine({
@@ -1518,7 +1522,9 @@ async function loadChart(symbol, tf) {
       sessionSepSeries = chart.addHistogramSeries({
         color: 'rgba(148,163,184,0.15)',
         priceFormat: { type: 'volume' },
-        priceScaleId: '',
+        priceScaleId: 'sessionSep',
+        lastValueVisible: false,
+        priceLineVisible: false,
         scaleMargins: { top: 0, bottom: 0 },
       });
       sessionSepSeries.setData([{ time: sessionOpenTs, value: 1 }]);
