@@ -1452,7 +1452,7 @@ async def get_health():
 
 @app.post("/api/admin/run-seeder")
 async def manual_run_seeder(force: bool = False):
-    """Manually trigger the morning seeder — use only for initialization."""
+    """Manually trigger the morning seeder — runs as isolated subprocess."""
     if _is_market_hours_ist() and not force:
         raise HTTPException(
             409,
@@ -1460,47 +1460,37 @@ async def manual_run_seeder(force: bool = False):
             "Pass force=true to override.",
         )
     try:
-        from scripts.morning_seeder import run_seeder
-
-        async def _run_seeder_logged():
-            try:
-                await run_seeder(force=force)
-            except Exception as exc:
-                logger.error("[seeder] CRASHED: %s", exc, exc_info=True)
-
-        asyncio.create_task(_run_seeder_logged())
-        return {"status": "started", "message": "Seeder running in background"}
+        import subprocess, sys
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "scripts.morning_seeder"],
+            env={**__import__("os").environ, "SEEDER_FORCE": "1" if force else "0"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        logger.info("[seeder] Started as subprocess PID=%d", proc.pid)
+        return {"status": "started", "pid": proc.pid, "message": "Seeder running as isolated subprocess"}
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 @app.get("/api/debug/run-seeder")
 async def debug_run_seeder(force: bool = False):
-    """
-    DEBUG (GET): Same as POST /api/admin/run-seeder but usable from a
-    browser URL. Triggers the morning seeder to build snapshot:{symbol}
-    entries so the cruncher can start accumulating ticks.
-    """
+    """DEBUG: Trigger morning seeder as isolated subprocess."""
     if _is_market_hours_ist() and not force:
         raise HTTPException(
             409,
-            "Seeder cannot run during market hours (09:15-15:30 IST). "
-            "Use /api/debug/run-seeder?force=true to override.",
+            "Seeder cannot run during market hours. Use ?force=true to override.",
         )
     try:
-        from scripts.morning_seeder import run_seeder
-
-        async def _run_seeder_logged():
-            try:
-                await run_seeder(force=force)
-            except Exception as exc:
-                logger.error("[seeder] CRASHED: %s", exc, exc_info=True)
-
-        asyncio.create_task(_run_seeder_logged())
-        return {
-            "status":  "started",
-            "message": "Seeder running in background. Check logs and re-run /api/debug/live-ticks in ~2 minutes.",
-        }
+        import subprocess, sys
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "scripts.morning_seeder"],
+            env={**__import__("os").environ, "SEEDER_FORCE": "1" if force else "0"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        logger.info("[seeder] Started as subprocess PID=%d", proc.pid)
+        return {"status": "started", "pid": proc.pid, "message": f"Seeder running as subprocess PID={proc.pid}"}
     except Exception as e:
         raise HTTPException(500, str(e))
 

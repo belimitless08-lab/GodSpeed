@@ -1038,4 +1038,6 @@ async def run_seeder(force: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    asyncio.run(run_seeder())
+    import os
+    _force = os.environ.get("SEEDER_FORCE", "0") == "1"
+    asyncio.run(run_seeder(force=_force))
