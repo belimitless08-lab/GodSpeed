@@ -1461,7 +1461,14 @@ async def manual_run_seeder(force: bool = False):
         )
     try:
         from scripts.morning_seeder import run_seeder
-        asyncio.create_task(run_seeder(force=force))
+
+        async def _run_seeder_logged():
+            try:
+                await run_seeder(force=force)
+            except Exception as exc:
+                logger.error("[seeder] run_seeder crashed: %s", exc, exc_info=True)
+
+        asyncio.create_task(_run_seeder_logged())
         return {"status": "started", "message": "Seeder running in background"}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -1482,7 +1489,14 @@ async def debug_run_seeder(force: bool = False):
         )
     try:
         from scripts.morning_seeder import run_seeder
-        asyncio.create_task(run_seeder(force=force))
+
+        async def _run_seeder_logged():
+            try:
+                await run_seeder(force=force)
+            except Exception as exc:
+                logger.error("[seeder] run_seeder crashed: %s", exc, exc_info=True)
+
+        asyncio.create_task(_run_seeder_logged())
         return {
             "status":  "started",
             "message": "Seeder running in background. Check logs and re-run /api/debug/live-ticks in ~2 minutes.",
