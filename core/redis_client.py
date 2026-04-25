@@ -22,16 +22,17 @@ async def get_redis() -> aioredis.Redis:
     global _pool
     if _pool is None:
         url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+        max_conns = int(os.environ.get("REDIS_MAX_CONNECTIONS", "20"))
         _pool = aioredis.from_url(
             url,
             encoding="utf-8",
             decode_responses=True,
-            max_connections=20,      # strict limit per service
+            max_connections=max_conns,
             socket_keepalive=True,
             socket_connect_timeout=5,
             retry_on_timeout=True,
         )
-        log.info(f"[redis] Connection pool created (max_connections=20)")
+        log.info(f"[redis] Connection pool created (max_connections={max_conns})")
     return _pool
 
 

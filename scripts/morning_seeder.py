@@ -25,7 +25,12 @@ import numpy as np
 import pyotp
 
 from core.config import cfg, validate
-from core.redis_client import get_redis
+
+import os as _os
+if _os.environ.get("SEEDER_STANDALONE"):
+    from core.redis_seeder_client import get_seeder_redis as get_redis
+else:
+    from core.redis_client import get_redis
 from core.universe_builder import (
     build_universe,
     get_lot_sizes,
@@ -1039,5 +1044,6 @@ async def run_seeder(force: bool = False) -> None:
 
 if __name__ == "__main__":
     import os
+    os.environ["SEEDER_STANDALONE"] = "1"
     _force = os.environ.get("SEEDER_FORCE", "0") == "1"
     asyncio.run(run_seeder(force=_force))
