@@ -1466,7 +1466,7 @@ async def manual_run_seeder(force: bool = False):
             try:
                 await run_seeder(force=force)
             except Exception as exc:
-                logger.error("[seeder] run_seeder crashed: %s", exc, exc_info=True)
+                logger.error("[seeder] CRASHED: %s", exc, exc_info=True)
 
         asyncio.create_task(_run_seeder_logged())
         return {"status": "started", "message": "Seeder running in background"}
@@ -1494,7 +1494,7 @@ async def debug_run_seeder(force: bool = False):
             try:
                 await run_seeder(force=force)
             except Exception as exc:
-                logger.error("[seeder] run_seeder crashed: %s", exc, exc_info=True)
+                logger.error("[seeder] CRASHED: %s", exc, exc_info=True)
 
         asyncio.create_task(_run_seeder_logged())
         return {
