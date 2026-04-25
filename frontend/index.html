@@ -1,4 +1,4 @@
-\<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8"/>
@@ -1511,12 +1511,19 @@ async function loadChart(symbol, tf) {
     const todayStartIST = new Date(`${todayStr}T00:00:00+05:30`).getTime() / 1000;
     const coloredCandles = mapped.map(c => {
       const isToday = c.time >= todayStartIST;
-      return isToday ? c : {
-        ...c,
-        color: c.close >= c.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)',
-        borderColor: c.close >= c.open ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)',
-        wickColor: c.close >= c.open ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)',
-      };
+      return isToday
+        ? {
+            ...c,
+            color:       c.close >= c.open ? 'rgba(34,197,94,0.9)'  : 'rgba(239,68,68,0.9)',
+            borderColor: c.close >= c.open ? 'rgba(34,197,94,0.95)' : 'rgba(239,68,68,0.95)',
+            wickColor:   c.close >= c.open ? 'rgba(34,197,94,0.9)'  : 'rgba(239,68,68,0.9)',
+          }
+        : {
+            ...c,
+            color:       c.close >= c.open ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)',
+            borderColor: c.close >= c.open ? 'rgba(34,197,94,0.3)'  : 'rgba(239,68,68,0.3)',
+            wickColor:   c.close >= c.open ? 'rgba(34,197,94,0.3)'  : 'rgba(239,68,68,0.3)',
+          };
     });
     candleSeries.setData(coloredCandles);
     lastCandleTime = mapped[mapped.length - 1].time;
@@ -1546,13 +1553,14 @@ async function loadChart(symbol, tf) {
       }
     });
 
-    // Pivots
-    if (data.pivots) {
-      renderPivotLines(data.pivots);
-    } else {
-      // Fallback: fetch separately (same endpoint stock.html uses)
-      apiFetch(`/api/pivots/${symbol}`).then(d => { if (d) renderPivotLines(d); });
-    }
+    // Pivots — always fetch from dedicated endpoint (candle response doesn't embed pivots)
+    apiFetch(`/api/pivots/${symbol}`).then(d => {
+      if (d) {
+        renderPivotLines(d);
+      } else {
+        console.warn('[pivots] no data returned for', symbol);
+      }
+    });
 
     // OHLC crosshair readout
     const ohlcEl = document.getElementById('cp-ohlc');
@@ -1591,9 +1599,16 @@ function computeEMA(candles, period) {
 }
 
 function renderPivotLines(pivots) {
-  if (!chart || !candleSeries || !pivots) return;
+  if (!chart || !candleSeries || !pivots) {
+    console.warn('[pivots] renderPivotLines called with invalid state', { chart: !!chart, candleSeries: !!candleSeries, pivots });
+    return;
+  }
   pivotPriceLines.forEach(pl => { try { candleSeries.removePriceLine(pl); } catch(e) {} });
   pivotPriceLines = [];
+
+  // Log what keys actually came back from the API
+  console.log('[pivots] received keys:', Object.keys(pivots), pivots);
+
   const defs = [
     { key: 'pp',     color: 'rgba(234,179,8,0.9)',    label: 'PP'   },
     { key: 'r1',     color: 'rgba(34,197,94,0.9)',    label: 'R1'   },
@@ -1603,6 +1618,8 @@ function renderPivotLines(pivots) {
     { key: 'cam_r3', color: 'rgba(74,222,128,0.6)',   label: 'C-R3' },
     { key: 'cam_s3', color: 'rgba(248,113,113,0.6)',  label: 'C-S3' },
   ];
+
+  let drawn = 0;
   defs.forEach(d => {
     const price = pivots[d.key];
     if (!price || price <= 0) return;
@@ -1614,7 +1631,10 @@ function renderPivotLines(pivots) {
       axisLabelVisible: true,
       title: d.label,
     }));
+    drawn++;
   });
+
+  console.log(`[pivots] drew ${drawn} lines for keys: ${defs.filter(d => pivots[d.key] > 0).map(d => d.key).join(', ')}`);
 }
 
 // generateDemoCandles removed — never show fake data
