@@ -1403,6 +1403,7 @@ let ema16Series = null;
 let ema200Series = null;
 let ltpLine = null;
 let pivotSeries = [];
+let sessionSepSeries = null;
 let lastCandleTime = null;
 let currentChartSymbol = null;
 let currentTF = '5m';
@@ -1506,6 +1507,22 @@ async function loadChart(symbol, tf) {
     }));
 
     candleSeries.setData(mapped);
+
+    // Session separator — vertical column at today's 9:15 open
+    if (sessionSepSeries) { try { chart.removeSeries(sessionSepSeries); } catch(e) {} sessionSepSeries = null; }
+    const nowISTsep = new Date(Date.now() + 19800000);
+    const todayStrSep = nowISTsep.toISOString().slice(0, 10);
+    const sessionOpenTs = Math.floor(new Date(`${todayStrSep}T09:15:00+05:30`).getTime() / 1000);
+    const hasMultiDay = mapped.length > 0 && mapped[0].time < sessionOpenTs;
+    if (hasMultiDay) {
+      sessionSepSeries = chart.addHistogramSeries({
+        color: 'rgba(148,163,184,0.15)',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0, bottom: 0 },
+      });
+      sessionSepSeries.setData([{ time: sessionOpenTs, value: 1 }]);
+    }
     lastCandleTime = mapped[mapped.length - 1].time;
 
     // EMAs
@@ -1584,14 +1601,10 @@ function renderPivotLines(pivots) {
   pivotSeries.forEach(s => { try { chart.removeSeries(s); } catch(e) {} });
   pivotSeries = [];
 
-  console.log('[pivots] received:', pivots);
-
-  // Today's session start and end in unix seconds (IST)
   const nowIST = new Date(Date.now() + 19800000);
   const todayStr = nowIST.toISOString().slice(0, 10);
   const sessionStart = Math.floor(new Date(`${todayStr}T09:15:00+05:30`).getTime() / 1000);
-  const hardEnd    = Math.floor(new Date(`${todayStr}T15:30:00+05:30`).getTime() / 1000);
-  const sessionEnd = Math.max(hardEnd, (lastCandleTime || hardEnd) + 300);
+  const sessionEnd   = Math.floor(new Date(`${todayStr}T15:30:00+05:30`).getTime() / 1000);
 
   const defs = [
     { key: 'pp', color: '#eab308', label: 'PP' },
@@ -1601,31 +1614,24 @@ function renderPivotLines(pivots) {
     { key: 's2', color: '#dc2626', label: 'S2' },
   ];
 
-  let drawn = 0;
   defs.forEach(d => {
     const price = pivots[d.key];
     if (!price || price <= 0) return;
-
-    const series = chart.addLineSeries({
+    const s = chart.addLineSeries({
       color: d.color,
-      lineWidth: 1,
+      lineWidth: 2,
       lineStyle: LightweightCharts.LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: true,
       title: d.label,
       crosshairMarkerVisible: false,
     });
-
-    series.setData([
+    s.setData([
       { time: sessionStart, value: price },
       { time: sessionEnd,   value: price },
     ]);
-
-    pivotSeries.push(series);
-    drawn++;
+    pivotSeries.push(s);
   });
-
-  console.log(`[pivots] drew ${drawn} session-scoped lines`);
 }
 
 // generateDemoCandles removed — never show fake data
@@ -1653,6 +1659,7 @@ function openPopup(symbol, e) {
 }
 
 function closePopup() {
+  if (sessionSepSeries) { try { chart.removeSeries(sessionSepSeries); } catch(e) {} sessionSepSeries = null; }
   pivotSeries.forEach(s => { try { chart.removeSeries(s); } catch(e) {} });
   pivotSeries = [];
   lastCandleTime = null;
