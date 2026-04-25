@@ -1462,13 +1462,17 @@ async def manual_run_seeder(force: bool = False):
     try:
         import subprocess, sys
         proc = subprocess.Popen(
-            [sys.executable, "-m", "scripts.morning_seeder"],
-            env={**__import__("os").environ, "SEEDER_FORCE": "1" if force else "0"},
+            [sys.executable, "-m", "scripts.seeder_worker"],
+            env={
+                **__import__("os").environ,
+                "SEEDER_FORCE": "1" if force else "0",
+                "SEEDER_STANDALONE": "1",
+            },
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
         logger.info("[seeder] Started as subprocess PID=%d", proc.pid)
-        return {"status": "started", "pid": proc.pid, "message": "Seeder running as isolated subprocess"}
+        return {"status": "started", "pid": proc.pid, "message": "Seeder worker running as isolated subprocess"}
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -1479,18 +1483,22 @@ async def debug_run_seeder(force: bool = False):
     if _is_market_hours_ist() and not force:
         raise HTTPException(
             409,
-            "Seeder cannot run during market hours. Use ?force=true to override.",
+            "Seeder cannot run during market hours. Use ?force=true.",
         )
     try:
         import subprocess, sys
         proc = subprocess.Popen(
-            [sys.executable, "-m", "scripts.morning_seeder"],
-            env={**__import__("os").environ, "SEEDER_FORCE": "1" if force else "0"},
+            [sys.executable, "-m", "scripts.seeder_worker"],
+            env={
+                **__import__("os").environ,
+                "SEEDER_FORCE": "1" if force else "0",
+                "SEEDER_STANDALONE": "1",
+            },
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
         logger.info("[seeder] Started as subprocess PID=%d", proc.pid)
-        return {"status": "started", "pid": proc.pid, "message": f"Seeder running as subprocess PID={proc.pid}"}
+        return {"status": "started", "pid": proc.pid, "message": f"Seeder worker running as subprocess PID={proc.pid}"}
     except Exception as e:
         raise HTTPException(500, str(e))
 

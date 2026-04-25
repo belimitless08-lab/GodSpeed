@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 async def main():
+    os.environ["SEEDER_STANDALONE"] = "1"
     force = os.environ.get("SEEDER_FORCE", "0") == "1"
     logger.info("[seeder_worker] Starting — force=%s", force)
 
