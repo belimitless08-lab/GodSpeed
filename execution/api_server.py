@@ -2135,3 +2135,22 @@ async def wipe_stale_candles():
                 deleted["errors"] += 1
 
     return deleted
+
+
+@app.get("/api/debug/index-tokens")
+async def debug_index_tokens():
+    """Temporary debug endpoint — check if index tokens resolved correctly."""
+    try:
+        redis = await get_redis()
+        tokens = await redis.hgetall("index:tokens")
+        meta = {}
+        for symbol in tokens:
+            m = await redis.hgetall(f"index:meta:{symbol}")
+            meta[symbol] = m
+        return {
+            "index_tokens": tokens,
+            "index_meta": meta,
+            "count": len(tokens)
+        }
+    except Exception as e:
+        return {"error": str(e), "index_tokens": {}, "count": 0}
