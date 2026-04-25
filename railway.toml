@@ -5,11 +5,6 @@ builder = "NIXPACKS"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
-# ──────────────────────────────────────────────────────────────
-# Service-specific start commands
-# Railway picks the right block based on the service name.
-# ──────────────────────────────────────────────────────────────
-
 [services.web]
 startCommand = "uvicorn execution.api_server:app --host 0.0.0.0 --port $PORT"
 
@@ -24,3 +19,7 @@ startCommand = "python -m math_engine.candle_builder"
 
 [services.brain]
 startCommand = "python -m strategy_brain.brain"
+
+[services.seeder]
+startCommand = "python -m scripts.seeder_worker"
+restartPolicyType = "NEVER"
