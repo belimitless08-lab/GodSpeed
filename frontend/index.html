@@ -1506,26 +1506,6 @@ async function loadChart(symbol, tf) {
     }));
 
     candleSeries.setData(mapped);
-    // Draw vertical day separator at today's 9:15 IST session open
-    const nowIST2 = new Date(Date.now() + 19800000);
-    const todayStr2 = nowIST2.toISOString().slice(0, 10);
-    const sessionOpenTs = Math.floor(new Date(`${todayStr2}T09:15:00+05:30`).getTime() / 1000);
-
-    // Check if we have candles from a previous day (multi-day data)
-    const hasMultiDay = mapped.length > 0 && mapped[0].time < sessionOpenTs;
-    if (hasMultiDay) {
-      chart.addLineSeries({
-        color: 'rgba(148,163,184,0.3)',
-        lineWidth: 1,
-        lineStyle: LightweightCharts.LineStyle.Solid,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      }).setData([
-        { time: sessionOpenTs, value: mapped.reduce((min, c) => Math.min(min, c.low), Infinity) },
-        { time: sessionOpenTs, value: mapped.reduce((max, c) => Math.max(max, c.high), -Infinity) },
-      ]);
-    }
     lastCandleTime = mapped[mapped.length - 1].time;
 
     // EMAs
@@ -1610,7 +1590,8 @@ function renderPivotLines(pivots) {
   const nowIST = new Date(Date.now() + 19800000);
   const todayStr = nowIST.toISOString().slice(0, 10);
   const sessionStart = Math.floor(new Date(`${todayStr}T09:15:00+05:30`).getTime() / 1000);
-  const sessionEnd   = Math.floor(new Date(`${todayStr}T15:30:00+05:30`).getTime() / 1000);
+  const hardEnd    = Math.floor(new Date(`${todayStr}T15:30:00+05:30`).getTime() / 1000);
+  const sessionEnd = Math.max(hardEnd, (lastCandleTime || hardEnd) + 300);
 
   const defs = [
     { key: 'pp', color: '#eab308', label: 'PP' },
