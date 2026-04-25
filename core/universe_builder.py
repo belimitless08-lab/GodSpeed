@@ -58,24 +58,13 @@ INDEX_UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
 INDEX_OPTIONS_LOOKAHEAD_DAYS = 45
 
 # AMXIDX spot-index lookup hints.
-# Each symbol can map to multiple possible "name" variants in AngelOne's
-# instrument master; first case-insensitive partial match wins.
+# Match by exact ``name`` only to avoid false positives.
 INDEX_SPOT_SEARCH = [
-    {"symbol": "NIFTY",      "exch_seg": "NSE",
-     "search_names": ["Nifty 50", "NIFTY 50", "Nifty50"]},
-
-    {"symbol": "BANKNIFTY",  "exch_seg": "NSE",
-     "search_names": ["Nifty Bank", "BANKNIFTY", "Bank Nifty", "Nifty BANK"]},
-
-    {"symbol": "FINNIFTY",   "exch_seg": "NSE",
-     "search_names": ["Nifty Fin Service", "FINNIFTY", "Nifty Financial"]},
-
-    {"symbol": "MIDCPNIFTY", "exch_seg": "NSE",
-     "search_names": ["Nifty Midcap", "MIDCPNIFTY", "Nifty Mid Cap",
-                      "Nifty MidCap Select", "Mid Cap Select"]},
-
-    {"symbol": "SENSEX",     "exch_seg": "BSE",
-     "search_names": ["Sensex", "SENSEX", "BSE Sensex"]},
+    {"symbol": "NIFTY",      "exch_seg": "NSE", "name": "NIFTY"},
+    {"symbol": "BANKNIFTY",  "exch_seg": "NSE", "name": "BANKNIFTY"},
+    {"symbol": "FINNIFTY",   "exch_seg": "NSE", "name": "FINNIFTY"},
+    {"symbol": "MIDCPNIFTY", "exch_seg": "NSE", "name": "MIDCPNIFTY"},
+    {"symbol": "SENSEX",     "exch_seg": "BSE", "name": "SENSEX"},
 ]
 
 # Regex: strip the trailing expiry/series suffix from NFO FUTSTK symbols.
@@ -196,8 +185,7 @@ def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, str]:
     Matching rules:
       * instrumenttype must be "AMXIDX"
       * exch_seg must match the configured exch_seg
-      * case-insensitive partial match on ``name`` against configured
-        ``search_names`` list (plural)
+      * exact ``name`` match against configured ``name``
       * first match wins per symbol
     """
     amxidx_entries = [
@@ -217,34 +205,31 @@ def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, str]:
     for cfg in INDEX_SPOT_SEARCH:
         symbol = str(cfg.get("symbol", "")).strip().upper()
         exch_seg = str(cfg.get("exch_seg", "")).strip().upper()
-        search_names = [str(s).strip().lower() for s in cfg.get("search_names", []) if str(s).strip()]
-        if not symbol or not exch_seg or not search_names:
+        exact_name = str(cfg.get("name", "")).strip()
+        if not symbol or not exch_seg or not exact_name:
             continue
 
         for inst in amxidx_entries:
             if str(inst.get("exch_seg", "")).strip().upper() != exch_seg:
                 continue
-            name_field = str(inst.get("name", "")).strip()
-            if not name_field:
-                continue
-            name_l = name_field.lower()
-            if any(search_name in name_l for search_name in search_names):
+            name = str(inst.get("name", "")).strip()
+            if name == exact_name:
                 out[symbol] = str(inst.get("token", ""))
                 logger.info(
                     "[universe] Index spot token resolved: %s -> %s (name=%s, exch_seg=%s)",
                     symbol,
                     out[symbol],
-                    name_field,
+                    name,
                     str(inst.get("exch_seg", "")),
                 )
                 break
 
         if symbol not in out:
             logger.warning(
-                "[universe] Index spot token not found for %s (exch_seg=%s, search_names=%s)",
+                "[universe] Index spot token not found for %s (exch_seg=%s, name=%s)",
                 symbol,
                 exch_seg,
-                cfg.get("search_names", []),
+                cfg.get("name", ""),
             )
 
     return out
