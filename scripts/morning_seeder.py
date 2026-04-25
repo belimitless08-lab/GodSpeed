@@ -99,6 +99,36 @@ def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
         "prev_day": json.dumps(prev_day),
         "supertrend": json.dumps(supertrend),
     }
+
+    # Flatten pivot levels as top-level fields — consumed by signal_engines,
+    # api_server /api/pivots endpoint, and frontend chart
+    prev_day_raw = snapshot.get("prev_day", {})
+    if isinstance(prev_day_raw, dict):
+        classic   = prev_day_raw.get("classic", {})
+        camarilla = prev_day_raw.get("camarilla", {})
+    else:
+        classic   = {}
+        camarilla = {}
+
+    if classic:
+        mapping["pp"] = str(classic.get("pp", 0.0))
+        mapping["r1"] = str(classic.get("r1", 0.0))
+        mapping["r2"] = str(classic.get("r2", 0.0))
+        mapping["r3"] = str(classic.get("r3", 0.0))
+        mapping["s1"] = str(classic.get("s1", 0.0))
+        mapping["s2"] = str(classic.get("s2", 0.0))
+        mapping["s3"] = str(classic.get("s3", 0.0))
+
+    if camarilla:
+        mapping["cam_r1"] = str(camarilla.get("r1", 0.0))
+        mapping["cam_r2"] = str(camarilla.get("r2", 0.0))
+        mapping["cam_r3"] = str(camarilla.get("r3", 0.0))
+        mapping["cam_r4"] = str(camarilla.get("r4", 0.0))
+        mapping["cam_s1"] = str(camarilla.get("s1", 0.0))
+        mapping["cam_s2"] = str(camarilla.get("s2", 0.0))
+        mapping["cam_s3"] = str(camarilla.get("s3", 0.0))
+        mapping["cam_s4"] = str(camarilla.get("s4", 0.0))
+
     return mapping
 
 

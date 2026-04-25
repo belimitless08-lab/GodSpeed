@@ -439,17 +439,97 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
         is_index = symbol in _INDICES_WITH_CANDLES
 
         if is_index:
-            # Indices are candle-only symbols (no full indicator surface).
-            # Keep minimal snapshot fields for API/trigger consumers.
+            # Indices: compute full price-based indicators, skip volume-based ones.
+            ind = indicators.get(symbol, {})
+            c = closed["close"]
+            h = closed["high"]
+            l = closed["low"]
+
+            prev_close_idx = ind.get("last_close", c)
+            prev_atr_idx = ind.get("atr14", 1.0)
+
+            # Price-based indicators (same as equities)
+            new_ema9 = update_ema(c, ind.get("ema9", c), 9)
+            new_ema16 = update_ema(c, ind.get("ema16", c), _EMA16_PERIOD)
+            new_ema200 = update_ema(c, ind.get("ema200", c), _EMA200_PERIOD)
+            new_atr = update_atr(h, l, prev_close_idx, prev_atr_idx)
+
+            direction_idx, band_idx = _update_supertrend(
+                prev_direction=ind.get("supertrend_dir", 1),
+                prev_band=ind.get("supertrend_band", c),
+                new_high=h,
+                new_low=l,
+                new_close=c,
+                new_atr=new_atr,
+            )
+
+            # RSI14 (O(1) Wilder smoothing)
+            rsi_idx, new_avg_gain_idx, new_avg_loss_idx = update_rsi(
+                current_close=c,
+                prev_close=prev_close_idx,
+                prev_avg_gain=ind.get("rsi_avg_gain", 0.0),
+                prev_avg_loss=ind.get("rsi_avg_loss", 0.0),
+            )
+
+            # Choppiness
+            raw_chop = await redis.lrange(f"candles:1m:{symbol}", -_CHOP_PERIOD, -1)
+            chop_candles = [json.loads(x) for x in raw_chop] if raw_chop else []
+            chop14_idx = _calc_choppiness(chop_candles) if len(chop_candles) >= 2 else ind.get("choppiness14", 50.0)
+
+            if isinstance(chop14_idx, float) and chop14_idx == chop14_idx:
+                if chop14_idx < 38.2:
+                    chop_class_idx = "TRENDING"
+                elif chop14_idx > 61.8:
+                    chop_class_idx = "CHOPPY"
+                else:
+                    chop_class_idx = "NEUTRAL"
+            else:
+                chop_class_idx = "NEUTRAL"
+
+            # Rolling 1h high/low
+            raw_1h = await redis.lrange(f"candles:1m:{symbol}", -60, -1)
+            candles_1h = [json.loads(x) for x in raw_1h] if raw_1h else []
+            rolling_1h_high = max((float(x[2]) for x in candles_1h), default=h)
+            rolling_1h_low = min((float(x[3]) for x in candles_1h), default=l)
+
+            st_dir_str = "BULL" if direction_idx == 1 else "BEAR"
+
+            # Update in-memory state
+            indicators.setdefault(symbol, {})
+            indicators[symbol].update({
+                "ema9": new_ema9,
+                "ema16": new_ema16,
+                "ema200": new_ema200,
+                "atr14": new_atr,
+                "supertrend_dir": direction_idx,
+                "supertrend_band": band_idx,
+                "rsi14": rsi_idx,
+                "rsi_avg_gain": new_avg_gain_idx,
+                "rsi_avg_loss": new_avg_loss_idx,
+                "choppiness14": chop14_idx,
+                "last_close": c,
+            })
+
             now_iso = datetime.now(timezone.utc).isoformat()
             await redis.hset(f"snapshot:{symbol}", mapping={
-                "last_close": str(closed["close"]),
-                "last_high": str(closed["high"]),
-                "last_low": str(closed["low"]),
+                "last_close": str(c),
+                "last_high": str(h),
+                "last_low": str(l),
                 "last_volume": str(closed["volume"]),
                 "last_candle_ts": closed["ts"],
                 "is_index": "1",
                 "updated_at": now_iso,
+                "ema9": str(round(new_ema9, 4)),
+                "ema16": str(round(new_ema16, 4)),
+                "ema200": str(round(new_ema200, 4)),
+                "atr14": str(round(new_atr, 4)),
+                "rsi14": str(round(rsi_idx, 2)),
+                "supertrend_dir": st_dir_str,
+                "supertrend_band": str(round(band_idx, 4)),
+                "choppiness14": str(round(chop14_idx, 4)),
+                "choppiness_class": chop_class_idx,
+                "rolling_1h_high": str(round(rolling_1h_high, 2)),
+                "rolling_1h_low": str(round(rolling_1h_low, 2)),
             })
 
             pub_payload = json.dumps({
@@ -462,7 +542,6 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 "volume": closed["volume"],
             })
             await redis.publish(_CH_1M, pub_payload)
-
             _update_tf_accumulator(symbol, closed)
             await _maybe_close_tf_candles(symbol, new_minute)
             _candles_closed_since_last_log += 1

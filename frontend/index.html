@@ -1553,14 +1553,15 @@ async function loadChart(symbol, tf) {
       }
     });
 
-    // Pivots — always fetch from dedicated endpoint (candle response doesn't embed pivots)
-    apiFetch(`/api/pivots/${symbol}`).then(d => {
-      if (d) {
-        renderPivotLines(d);
-      } else {
-        console.warn('[pivots] no data returned for', symbol);
-      }
-    });
+    // Pivots — embedded in candle response from backend
+    if (data.pivots) {
+      renderPivotLines(data.pivots);
+    } else {
+      // Fallback: read from snapshot endpoint
+      apiFetch(`/api/snapshot/${symbol}`).then(snap => {
+        if (snap && snap.pp > 0) renderPivotLines(snap);
+      });
+    }
 
     // OHLC crosshair readout
     const ohlcEl = document.getElementById('cp-ohlc');
