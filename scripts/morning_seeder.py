@@ -907,13 +907,13 @@ async def run_seeder(force: bool = False) -> None:
     # -----------------------------------------------------------------------
     # MARKET-CLOSED GUARD — probe before touching any Redis key
     # -----------------------------------------------------------------------
-    market_open = await probe_market_open(session, from_dt, to_dt)
-    if not market_open:
-        if force:
-            logger.warning(
-                "Market appears closed today — but force=True, continuing with last available data."
-            )
-        else:
+    if force:
+        logger.warning(
+            "force=True — skipping market probe, proceeding with last available data."
+        )
+    else:
+        market_open = await probe_market_open(session, from_dt, to_dt)
+        if not market_open:
             logger.warning(
                 "Market appears closed today — seeder skipping, Redis data preserved. "
                 "Use force=True to override."
