@@ -22,9 +22,11 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import numpy as np
+import pandas as pd
 import pyotp
 
 from core.config import cfg, validate
+from core.instrument_registry import resolve_index_tokens, store_index_tokens
 
 import os as _os
 if _os.environ.get("SEEDER_STANDALONE"):
@@ -898,6 +900,20 @@ async def run_seeder(force: bool = False) -> None:
     # Step 2: Build universe (always refresh at 8:30 AM)
     logger.info("Building universe from instrument master…")
     await build_universe()
+    instruments = await get_instrument_master()
+    master_df = pd.DataFrame(instruments)
+
+    resolved = await resolve_index_tokens(master_df)
+    await store_index_tokens(resolved)
+    logger.info(
+        f"[seeder] Resolved {len(resolved)}/5 index tokens: "
+        f"{list(resolved.keys())}"
+    )
+    if len(resolved) < 4:
+        logger.error(
+            "[seeder] Too few index tokens resolved — "
+            "macro gating will be degraded today"
+        )
 
     symbols   = await get_symbols()
     token_map = await get_token_map()
@@ -965,9 +981,6 @@ async def run_seeder(force: bool = False) -> None:
     # -----------------------------------------------------------------------
     logger.info("--- PHASE B: Options Baseline ---")
     t_b_start = time.monotonic()
-
-    # Load instrument master once for all symbols
-    instruments = await get_instrument_master()
 
     # Get prev_close from Phase A results (from Redis)
     redis = await get_redis()
