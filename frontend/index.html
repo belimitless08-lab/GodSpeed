@@ -1402,7 +1402,7 @@ let candleSeries = null;
 let ema16Series = null;
 let ema200Series = null;
 let ltpLine = null;
-let pivotPriceLines = [];
+let pivotSeries = [];
 let lastCandleTime = null;
 let currentChartSymbol = null;
 let currentTF = '5m';
@@ -1505,27 +1505,27 @@ async function loadChart(symbol, tf) {
       time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
     }));
 
-    // Dim previous-day candles while keeping current-day candles fully visible (IST boundary).
-    const nowIST = new Date(Date.now() + 19800000);
-    const todayStr = nowIST.toISOString().slice(0, 10);
-    const todayStartIST = new Date(`${todayStr}T00:00:00+05:30`).getTime() / 1000;
-    const coloredCandles = mapped.map(c => {
-      const isToday = c.time >= todayStartIST;
-      return isToday
-        ? {
-            ...c,
-            color:       c.close >= c.open ? 'rgba(34,197,94,0.9)'  : 'rgba(239,68,68,0.9)',
-            borderColor: c.close >= c.open ? 'rgba(34,197,94,0.95)' : 'rgba(239,68,68,0.95)',
-            wickColor:   c.close >= c.open ? 'rgba(34,197,94,0.9)'  : 'rgba(239,68,68,0.9)',
-          }
-        : {
-            ...c,
-            color:       c.close >= c.open ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)',
-            borderColor: c.close >= c.open ? 'rgba(34,197,94,0.3)'  : 'rgba(239,68,68,0.3)',
-            wickColor:   c.close >= c.open ? 'rgba(34,197,94,0.3)'  : 'rgba(239,68,68,0.3)',
-          };
-    });
-    candleSeries.setData(coloredCandles);
+    candleSeries.setData(mapped);
+    // Draw vertical day separator at today's 9:15 IST session open
+    const nowIST2 = new Date(Date.now() + 19800000);
+    const todayStr2 = nowIST2.toISOString().slice(0, 10);
+    const sessionOpenTs = Math.floor(new Date(`${todayStr2}T09:15:00+05:30`).getTime() / 1000);
+
+    // Check if we have candles from a previous day (multi-day data)
+    const hasMultiDay = mapped.length > 0 && mapped[0].time < sessionOpenTs;
+    if (hasMultiDay) {
+      chart.addLineSeries({
+        color: 'rgba(148,163,184,0.3)',
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Solid,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      }).setData([
+        { time: sessionOpenTs, value: mapped.reduce((min, c) => Math.min(min, c.low), Infinity) },
+        { time: sessionOpenTs, value: mapped.reduce((max, c) => Math.max(max, c.high), -Infinity) },
+      ]);
+    }
     lastCandleTime = mapped[mapped.length - 1].time;
 
     // EMAs
@@ -1600,42 +1600,51 @@ function computeEMA(candles, period) {
 }
 
 function renderPivotLines(pivots) {
-  if (!chart || !candleSeries || !pivots) {
-    console.warn('[pivots] renderPivotLines called with invalid state', { chart: !!chart, candleSeries: !!candleSeries, pivots });
-    return;
-  }
-  pivotPriceLines.forEach(pl => { try { candleSeries.removePriceLine(pl); } catch(e) {} });
-  pivotPriceLines = [];
+  if (!chart || !candleSeries || !pivots) return;
+  pivotSeries.forEach(s => { try { chart.removeSeries(s); } catch(e) {} });
+  pivotSeries = [];
 
-  // Log what keys actually came back from the API
-  console.log('[pivots] received keys:', Object.keys(pivots), pivots);
+  console.log('[pivots] received:', pivots);
+
+  // Today's session start and end in unix seconds (IST)
+  const nowIST = new Date(Date.now() + 19800000);
+  const todayStr = nowIST.toISOString().slice(0, 10);
+  const sessionStart = Math.floor(new Date(`${todayStr}T09:15:00+05:30`).getTime() / 1000);
+  const sessionEnd   = Math.floor(new Date(`${todayStr}T15:30:00+05:30`).getTime() / 1000);
 
   const defs = [
-    { key: 'pp',     color: 'rgba(234,179,8,0.9)',    label: 'PP'   },
-    { key: 'r1',     color: 'rgba(34,197,94,0.9)',    label: 'R1'   },
-    { key: 'r2',     color: 'rgba(34,197,94,0.6)',    label: 'R2'   },
-    { key: 's1',     color: 'rgba(239,68,68,0.9)',    label: 'S1'   },
-    { key: 's2',     color: 'rgba(239,68,68,0.6)',    label: 'S2'   },
-    { key: 'cam_r3', color: 'rgba(74,222,128,0.6)',   label: 'C-R3' },
-    { key: 'cam_s3', color: 'rgba(248,113,113,0.6)',  label: 'C-S3' },
+    { key: 'pp', color: '#eab308', label: 'PP' },
+    { key: 'r1', color: '#22c55e', label: 'R1' },
+    { key: 'r2', color: '#16a34a', label: 'R2' },
+    { key: 's1', color: '#ef4444', label: 'S1' },
+    { key: 's2', color: '#dc2626', label: 'S2' },
   ];
 
   let drawn = 0;
   defs.forEach(d => {
     const price = pivots[d.key];
     if (!price || price <= 0) return;
-    pivotPriceLines.push(candleSeries.createPriceLine({
-      price,
+
+    const series = chart.addLineSeries({
       color: d.color,
       lineWidth: 1,
       lineStyle: LightweightCharts.LineStyle.Dashed,
-      axisLabelVisible: true,
+      priceLineVisible: false,
+      lastValueVisible: true,
       title: d.label,
-    }));
+      crosshairMarkerVisible: false,
+    });
+
+    series.setData([
+      { time: sessionStart, value: price },
+      { time: sessionEnd,   value: price },
+    ]);
+
+    pivotSeries.push(series);
     drawn++;
   });
 
-  console.log(`[pivots] drew ${drawn} lines for keys: ${defs.filter(d => pivots[d.key] > 0).map(d => d.key).join(', ')}`);
+  console.log(`[pivots] drew ${drawn} session-scoped lines`);
 }
 
 // generateDemoCandles removed — never show fake data
@@ -1663,8 +1672,8 @@ function openPopup(symbol, e) {
 }
 
 function closePopup() {
-  pivotPriceLines.forEach(pl => { try { candleSeries && candleSeries.removePriceLine(pl); } catch(e) {} });
-  pivotPriceLines = [];
+  pivotSeries.forEach(s => { try { chart.removeSeries(s); } catch(e) {} });
+  pivotSeries = [];
   lastCandleTime = null;
   const ohlcEl = document.getElementById('cp-ohlc');
   if (ohlcEl) ohlcEl.textContent = '';
