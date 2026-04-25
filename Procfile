@@ -3,3 +3,4 @@ feed: python -m data_feed.angel_ws_equities
 options: python -m data_feed.angel_ws_options
 cruncher: python -m math_engine.candle_builder
 brain: python -m strategy_brain.brain
+seeder: python -m scripts.seeder_worker
