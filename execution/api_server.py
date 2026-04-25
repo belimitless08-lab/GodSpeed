@@ -127,6 +127,15 @@ class SnapshotData(BaseModel):
     lot_size: int
     sector: str
     updated_at: str
+    # Pivot levels — populated by morning seeder, zero if not yet available
+    pp: float = 0.0
+    r1: float = 0.0
+    r2: float = 0.0
+    s1: float = 0.0
+    s2: float = 0.0
+    cam_r3: float = 0.0
+    cam_s3: float = 0.0
+    prev_close: float = 0.0
 
 
 class PivotData(BaseModel):
@@ -370,6 +379,14 @@ async def get_snapshot(symbol: str):
         lot_size=int(_sf(raw, "lot_size", 1)),
         sector=raw.get("sector", "UNKNOWN"),
         updated_at=raw.get("updated_at", ""),
+        pp=_sf(raw, "pp") or _sf(raw, "pivot_pp"),
+        r1=_sf(raw, "r1") or _sf(raw, "pivot_r1"),
+        r2=_sf(raw, "r2") or _sf(raw, "pivot_r2"),
+        s1=_sf(raw, "s1") or _sf(raw, "pivot_s1"),
+        s2=_sf(raw, "s2") or _sf(raw, "pivot_s2"),
+        cam_r3=_sf(raw, "cam_r3") or _sf(raw, "pivot_cam_r3"),
+        cam_s3=_sf(raw, "cam_s3") or _sf(raw, "pivot_cam_s3"),
+        prev_close=_sf(raw, "prev_close"),
     )
 
 
@@ -428,7 +445,34 @@ async def _fetch_candles_internal(symbol: str, timeframe: str) -> dict:
         except (json.JSONDecodeError, ValueError, TypeError):
             continue
 
-    return {"symbol": symbol, "timeframe": timeframe, "candles": candles}
+    # Embed pivot data from snapshot so frontend gets everything in one call
+    snap_raw = await redis.hgetall(f"snapshot:{symbol}")
+    pivots = None
+    if snap_raw:
+        def _pf(k: str, alt: str = "") -> float:
+            v = _sf(snap_raw, k)
+            if v == 0.0 and alt:
+                v = _sf(snap_raw, alt)
+            return v
+
+        pp = _pf("pp", "pivot_pp")
+        if pp > 0:
+            pivots = {
+                "pp": pp,
+                "r1": _pf("r1", "pivot_r1"),
+                "r2": _pf("r2", "pivot_r2"),
+                "s1": _pf("s1", "pivot_s1"),
+                "s2": _pf("s2", "pivot_s2"),
+                "cam_r3": _pf("cam_r3", "pivot_cam_r3"),
+                "cam_s3": _pf("cam_s3", "pivot_cam_s3"),
+            }
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "candles": candles,
+        "pivots": pivots,
+    }
 
 
 @app.get("/api/candles/{symbol}")
@@ -453,21 +497,34 @@ async def get_candles_path(symbol: str, timeframe: str):
 async def get_pivots(symbol: str):
     """Classic and Camarilla pivot levels."""
     redis = await get_redis()
-    raw   = await redis.hgetall(f"pivots:{symbol}")
+    raw = await redis.hgetall(f"pivots:{symbol}")
+    if not raw:
+        raw = await redis.hgetall(f"snapshot:{symbol}")
     if not raw:
         raise HTTPException(404, f"No pivot data for symbol '{symbol}'")
 
-    def pf(k: str) -> float:
-        return _sf(raw, k)
+    def pf(k: str, alt: str = "") -> float:
+        v = _sf(raw, k)
+        if v == 0.0 and alt:
+            v = _sf(raw, alt)
+        return v
+
+    pp = pf("pp", "pivot_pp")
+    if pp == 0.0:
+        raise HTTPException(404, f"No pivot data for symbol '{symbol}'")
 
     return PivotData(
-        pp=pf("pp"),
-        r1=pf("r1"), r2=pf("r2"),
-        s1=pf("s1"), s2=pf("s2"),
-        cam_r1=pf("cam_r1"), cam_r2=pf("cam_r2"),
-        cam_r3=pf("cam_r3"), cam_r4=pf("cam_r4"),
-        cam_s1=pf("cam_s1"), cam_s2=pf("cam_s2"),
-        cam_s3=pf("cam_s3"), cam_s4=pf("cam_s4"),
+        pp=pp,
+        r1=pf("r1", "pivot_r1"),   r2=pf("r2", "pivot_r2"),
+        s1=pf("s1", "pivot_s1"),   s2=pf("s2", "pivot_s2"),
+        cam_r1=pf("cam_r1", "pivot_cam_r1"),
+        cam_r2=pf("cam_r2", "pivot_cam_r2"),
+        cam_r3=pf("cam_r3", "pivot_cam_r3"),
+        cam_r4=pf("cam_r4", "pivot_cam_r4"),
+        cam_s1=pf("cam_s1", "pivot_cam_s1"),
+        cam_s2=pf("cam_s2", "pivot_cam_s2"),
+        cam_s3=pf("cam_s3", "pivot_cam_s3"),
+        cam_s4=pf("cam_s4", "pivot_cam_s4"),
     )
 
 
@@ -475,9 +532,18 @@ async def get_pivots(symbol: str):
 async def get_options(symbol: str):
     """Live options data and tradability badges for a symbol."""
     redis = await get_redis()
-    raw   = await redis.hgetall(f"options:summary:{symbol}")
+    raw = await redis.hgetall(f"options:summary:{symbol}")
     if not raw:
-        raise HTTPException(404, f"No options data for symbol '{symbol}'")
+        return OptionsData(
+            atm_strike=0,
+            ce_ltp=0.0, pe_ltp=0.0,
+            ce_volume_ratio=0.0, pe_volume_ratio=0.0,
+            ce_oi_ratio=0.0, pe_oi_ratio=0.0,
+            ce_badge=OptionsBadge(badge="UNAVAILABLE", score=0.0),
+            pe_badge=OptionsBadge(badge="UNAVAILABLE", score=0.0),
+            primary_side="CE",
+            options_explosion=False,
+        )
 
     def _badge(prefix: str) -> OptionsBadge:
         return OptionsBadge(
@@ -872,7 +938,7 @@ async def get_world_indices():
     except Exception:
         raw_hash = {}
     if not raw_hash:
-        raise HTTPException(503, "World indices data not yet available")
+        return {"indices": []}
 
     indices = []
     for _, value in raw_hash.items():

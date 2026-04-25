@@ -121,7 +121,7 @@ def _detect_opening_drive(snapshot: dict, candles_5m: list[dict]) -> Optional[di
     candle_range = h - lo
     body_ratio  = body / max(candle_range, 0.01)
 
-    pivot_r1   = _safe_float(snapshot.get("pivot_r1"))
+    pivot_r1   = _safe_float(snapshot.get("r1")) or _safe_float(snapshot.get("pivot_r1"))
     rvol_open  = _safe_float(snapshot.get("rvol_open"),  _safe_float(snapshot.get("rvol")))
     gap_pct    = abs(_safe_float(snapshot.get("gap_pct")))
     atr14      = _safe_float(snapshot.get("atr14"), 1.0)
