@@ -38,9 +38,9 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from uuid import uuid4
 
 from core.config import cfg, validate
 from core.redis_client import get_redis
@@ -369,25 +369,14 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
             }
 
             try:
-                await redis.publish("trade_execution", json.dumps(payload))
-                # Backing store for /api/signals endpoint (auto-expire in 5 min)
-                signal_id = str(uuid4())
-                await redis.set(
-                    f"signal:active:{symbol}:{signal_id}",
-                    json.dumps({
-                        "symbol": symbol,
-                        "signal_type": signal.get("type", ""),
-                        "direction": signal.get("direction", ""),
-                        "ici_score": score_result.get("score", 0),
-                        "ici_grade": score_result.get("grade", ""),
-                        "entry_price": signal.get("entry_price", 0),
-                        "stop_loss": signal.get("stop_loss", 0),
-                        "choppiness_class": snapshot.get("choppiness_class", "NEUTRAL"),
-                        "supertrend_dir": snapshot.get("supertrend_dir", "BULL"),
-                        "detected_at": _now_ist().isoformat(),
-                    }),
-                    ex=300,
+                signal_id = uuid.uuid4().hex[:8]
+                signal_key = f"signal:active:{symbol}:{signal_id}"
+                await redis.setex(signal_key, 300, json.dumps(payload))
+                logger.debug(
+                    "[brain] Stored signal %s for %s (TTL 300s)",
+                    signal_id, symbol
                 )
+                await redis.publish("trade_execution", json.dumps(payload))
                 logger.info(
                     "[brain] ★ EXECUTION PUBLISHED — %s %s grade=%s action=%s",
                     symbol, signal["type"],
