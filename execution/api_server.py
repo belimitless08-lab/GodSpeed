@@ -41,6 +41,7 @@ from pydantic import BaseModel
 from core.config import cfg, validate
 from core.redis_client import get_redis, close, ping as redis_ping
 from core.universe_builder import build_universe, get_symbols, get_lot_sizes
+from strategy_brain.global_indices_scraper import scrape_and_store as _scrape_global_indices, REDIS_TTL_SEED as _GLOBAL_TTL
 from execution.order_manager import (
     init_paper_account,
     get_paper_account,
@@ -302,6 +303,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(broadcast_account(),       name="broadcast_account")
     asyncio.create_task(monitor_trigger_orders(),  name="trigger_monitor")
     asyncio.create_task(broadcast_order_fills(),   name="broadcast_order_fills")
+    asyncio.create_task(_global_indices_refresh(), name="global_indices_refresh")
 
     logger.info("[api_server] All background tasks started.")
     yield
@@ -1698,6 +1700,90 @@ async def ws_account(websocket: WebSocket):
             await websocket.receive_text()
     except Exception:
         account_clients.discard(websocket)
+
+
+# ===========================================================================
+# Global indices refresh — hourly background task + REST endpoint
+# ===========================================================================
+
+async def _global_indices_refresh() -> None:
+    """
+    Refresh Groww global indices into Redis once per hour during market hours.
+    Runs as an asyncio task — uses run_in_executor so the blocking
+    requests.Session() call doesn't stall the event loop.
+
+    Schedule:
+      8:30 AM  → morning_seeder seeds it first (TTL 3600s)
+      9:30 AM  → this task takes over, refreshing every 60 min
+      4:30 PM  → stops fetching; Redis key expires naturally
+    """
+    loop = asyncio.get_event_loop()
+    logger.info("[global_indices] background refresh task started (1-hr cadence)")
+
+    while True:
+        await asyncio.sleep(3600)   # wait 1 hour between refreshes
+        now = _now_ist()
+        if now.weekday() < 5 and dtime(8, 0) <= now.time() <= dtime(16, 30):
+            try:
+                redis = await get_redis()
+                ok = await loop.run_in_executor(
+                    None, lambda: _scrape_global_indices(redis, ttl=_GLOBAL_TTL)
+                )
+                if ok:
+                    logger.info("[global_indices] hourly refresh OK")
+                else:
+                    logger.warning("[global_indices] hourly refresh failed (will retry in 1hr)")
+            except Exception as exc:
+                logger.error("[global_indices] refresh error: %s", exc)
+        else:
+            logger.debug("[global_indices] outside market window — skipping refresh")
+
+
+@app.get("/api/global-indices")
+async def get_global_indices():
+    """
+    Cached global index data (Groww CFD prices, refreshed hourly).
+
+    Response:
+    {
+        "status":     "ok" | "stale" | "unavailable",
+        "source":     "groww_cfd",
+        "disclaimer": "CFD prices — market maker prices, not direct exchange feeds",
+        "fetched_at": 1714285000,
+        "indices": [
+            {"name": "GIFT Nifty", "symbol": "SGX NIFTY",
+             "ltp": 23954.0, "change": 0.0, "pct": 0.0, "trend": "flat"},
+            ...
+        ]
+    }
+    status = "stale"       if data older than 90 min
+    status = "unavailable" if Redis key missing (first boot / outside hours)
+    """
+    redis = await get_redis()
+    raw = await redis.get("global:indices")
+    ts  = await redis.get("global:indices:ts")
+
+    if not raw:
+        return {
+            "status":     "unavailable",
+            "source":     "groww_cfd",
+            "disclaimer": "CFD prices — market maker prices, not direct exchange feeds",
+            "fetched_at": None,
+            "indices":    [],
+        }
+
+    fetched_at = int(ts) if ts else None
+    age_s      = (time.time() - fetched_at) if fetched_at else None
+    status     = "stale" if (age_s and age_s > 5400) else "ok"
+
+    raw_str = raw if isinstance(raw, str) else raw.decode()
+    return {
+        "status":     status,
+        "source":     "groww_cfd",
+        "disclaimer": "CFD prices — market maker prices, not direct exchange feeds",
+        "fetched_at": fetched_at,
+        "indices":    json.loads(raw_str),
+    }
 
 
 # ===========================================================================
