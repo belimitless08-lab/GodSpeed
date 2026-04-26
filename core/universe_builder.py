@@ -66,6 +66,7 @@ INDEX_SPOT_SEARCH = [
     {"symbol": "MIDCPNIFTY", "exch_seg": "NSE", "name": "MIDCPNIFTY"},
     {"symbol": "SENSEX",     "exch_seg": "BSE", "name": "SENSEX"},
 ]
+KNOWN_WRONG_TOKENS = {"99926004"}  # NIFTY 500, not NIFTY 50
 
 # Regex: strip the trailing expiry/series suffix from NFO FUTSTK symbols.
 # AngelOne futures symbols look like:  RELIANCE28APR26FUT  (DD MON YY FUT)
@@ -214,16 +215,17 @@ def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, dict[str, s
                 continue
             name = str(inst.get("name", "")).strip()
             if name == exact_name:
+                if str(inst.get("token", "")) in KNOWN_WRONG_TOKENS:
+                    continue
                 out[symbol] = {
                     "token": str(inst.get("token", "")),
                     "exch_seg": str(inst.get("exch_seg", "")).strip().upper(),
                 }
                 logger.info(
-                    "[universe] Index spot token resolved: %s -> %s (name=%s, exch_seg=%s)",
+                    "[universe] Index spot token resolved: %s -> %s (name=%s)",
                     symbol,
                     out[symbol]["token"],
                     name,
-                    str(inst.get("exch_seg", "")),
                 )
                 break
 
