@@ -74,6 +74,18 @@
   .index-ltp { font-size: 18px; font-weight: 700; color: var(--text); font-family: 'Syne', sans-serif; line-height: 1.2; }
   .index-change { font-size: 11px; font-weight: 600; }
   .index-pcr { font-size: 9px; color: var(--muted); margin-top: 2px; }
+  .index-top-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .index-chart-btn {
+    background: rgba(56,189,248,0.1);
+    border: 1px solid rgba(56,189,248,0.4);
+    color: var(--accent);
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 1;
+    padding: 1px 5px;
+    cursor: pointer;
+  }
+  .index-chart-btn:hover { background: rgba(56,189,248,0.2); }
   .world-strip {
     background: #060d1a;
     border-top: 1px solid rgba(51,65,85,0.5);
@@ -452,6 +464,8 @@
     .signal-row { grid-template-columns: 70px 44px 1fr 50px 60px 24px; }
     #action-bar, #action-bar > div {
       flex-wrap: wrap;
+      justify-content: flex-start !important;
+      gap: 8px;
     }
 
     /* All tables inside drawers scroll horizontally on mobile */
@@ -554,6 +568,7 @@
       background: #060d1a;
       border-top: 1px solid rgba(51,65,85,0.4);">
 
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
     <!-- LEFT: Health button -->
     <button id="health-btn" onclick="toggleHealthModal()" style="
         font-family: 'Syne', sans-serif;
@@ -567,9 +582,6 @@
         <span id="health-dot" style="width:7px;height:7px;border-radius:50%;background:var(--muted);display:inline-block;"></span>
         SYSTEM HEALTH
     </button>
-
-    <!-- RIGHT: Order + Positions + Pending + Theme -->
-    <div style="display:flex; gap:8px; align-items:center;">
       <button onclick="toggleOrderModal()" style="
           font-family:'Syne',sans-serif; font-size:10px; font-weight:700;
           padding:5px 14px; border-radius:5px; border:none;
@@ -598,8 +610,10 @@
       <button onclick="toggleHistoryDrawer()" style="
           font-family:'Syne',sans-serif;font-size:10px;font-weight:700;
           padding:5px 12px;border-radius:5px;border:none;
-          background:#6366f1;color:#fff;cursor:pointer;letter-spacing:0.06em;">
-          HISTORY
+          background:#6366f1;color:#fff;cursor:pointer;letter-spacing:0.06em;display:flex;gap:6px;align-items:center;">
+          ↑ HISTORY
+          <span style="font-size:9px;opacity:0.95;">T: <span id="history-bar-today-pnl">₹0</span></span>
+          <span style="font-size:9px;opacity:0.95;">U: <span id="history-bar-unrealised-pnl">₹0</span></span>
       </button>
       <button id="theme-toggle" title="Toggle theme">🌙</button>
     </div>
@@ -757,6 +771,7 @@
       <div id="mo-index-mode" style="display:none;">
         <div class="index-selector">
           <button class="idx-btn active" data-idx="NIFTY" onclick="selectMOIndex(this)">NIFTY</button>
+          <button class="idx-btn" data-idx="SENSEX" onclick="selectMOIndex(this)">SENSEX</button>
           <button class="idx-btn" data-idx="BANKNIFTY" onclick="selectMOIndex(this)">BANKNIFTY</button>
           <button class="idx-btn" data-idx="FINNIFTY" onclick="selectMOIndex(this)">FINNIFTY</button>
           <button class="idx-btn" data-idx="MIDCPNIFTY" onclick="selectMOIndex(this)">MIDCPNIFTY</button>
@@ -888,7 +903,7 @@
                        font-size:10px;outline:none;cursor:pointer;"
                 onchange="fetchHistory()"/>
         </div>
-        <button class="drawer-close" onclick="toggleHistoryDrawer()">✕</button>
+        <button class="drawer-close" onclick="toggleHistoryDrawer()">↑</button>
     </div>
     <div style="display:flex;gap:16px;padding:6px 0 10px;
         font-size:11px;border-bottom:1px solid #334155;margin-bottom:8px;flex-wrap:wrap;">
@@ -1098,17 +1113,43 @@ function showToast(msg, type = 'success') {
    SECTION 1: INDICES
 ══════════════════════════════════════════ */
 const INDEX_KEYS = ['NIFTY 50', 'SENSEX', 'BANK NIFTY', 'MIDCAP NIFTY', 'FIN NIFTY'];
+const INDEX_SYMBOLS = ['NIFTY', 'SENSEX', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'];
+
+function normalizeIndexSymbol(raw = '') {
+  const v = String(raw).toUpperCase().trim();
+  if (v.includes('NIFTY 50') || v === 'NIFTY' || v === 'NIFTY50') return 'NIFTY';
+  if (v.includes('SENSEX')) return 'SENSEX';
+  if (v.includes('BANK NIFTY') || v === 'BANKNIFTY') return 'BANKNIFTY';
+  if (v.includes('FIN NIFTY') || v === 'FINNIFTY') return 'FINNIFTY';
+  if (v.includes('MIDCAP NIFTY') || v === 'MIDCPNIFTY') return 'MIDCPNIFTY';
+  return v;
+}
+
+async function fetchIndexSnapshots() {
+  if (!state.indexSnapshots) state.indexSnapshots = {};
+  await Promise.all(INDEX_SYMBOLS.map(async sym => {
+    const snap = await apiFetch(`/api/snapshot/${sym}`);
+    if (snap) state.indexSnapshots[sym] = snap;
+  }));
+}
 
 function renderIndices(data) {
   const container = document.getElementById('index-tiles');
   if (!data || !Array.isArray(data)) return;
   container.innerHTML = data.map(idx => {
-    const chg = idx.change_pct || 0;
+    const symbol = normalizeIndexSymbol(idx.symbol || idx.name);
+    const snap = state.indexSnapshots?.[symbol] || {};
+    const prevClose = Number(snap.prev_close || idx.prev_close || 0);
+    const liveLtp = Number(state.ticks?.[symbol]?.ltp || idx.ltp || 0);
+    const chg = prevClose > 0 ? ((liveLtp - prevClose) / prevClose) * 100 : 0;
     const pcrDir = idx.pcr_direction === 'UP' ? '▲' : '▼';
     const pcrColor = idx.pcr_direction === 'UP' ? 'var(--green)' : 'var(--red)';
-    return `<div class="index-tile" onclick="openChartForSymbol('${idx.symbol}')">
-      <div class="index-name">${idx.name || idx.symbol}</div>
-      <div class="index-ltp">${fmt(idx.ltp)}</div>
+    return `<div class="index-tile" data-sym="${symbol}" onclick="openChartForSymbol('${symbol}')">
+      <div class="index-top-row">
+        <div class="index-name">${idx.name || symbol}</div>
+        <button class="index-chart-btn" onclick="event.stopPropagation();openChartForSymbol('${symbol}', event)" title="Open chart">↗</button>
+      </div>
+      <div class="index-ltp">${fmt(liveLtp)}</div>
       <div class="index-change" style="color:${colorClass(chg)}">${pct(chg)}</div>
       <div class="index-pcr">PCR ${fmt(idx.pcr,2)} <span style="color:${pcrColor}">${pcrDir}</span></div>
     </div>`;
@@ -1364,32 +1405,38 @@ async function fetchSignals() {
 /* ══════════════════════════════════════════
    PAPER ACCOUNT
 ══════════════════════════════════════════ */
+let latestAccountData = null;
+
 function renderAccount(d) {
   if (!d) return;
+  latestAccountData = d;
   const rpnl = d.realised_pnl || 0;
   const upnl = d.unrealised_pnl || 0;
-  const total = rpnl + upnl;
-  document.getElementById('acc-avail').textContent  = fmtINR(d.available);
-  document.getElementById('acc-used').textContent   = fmtINR(d.used);
+  const total = d.total_pnl != null ? d.total_pnl : (rpnl + upnl);
+  const availableMargin = d.available_margin ?? d.available ?? 0;
+  const usedMargin = d.used_margin ?? d.used ?? 0;
+  const liveBalance = d.balance ?? d.account_balance ?? ((d.starting_balance ?? 0) + total);
+  document.getElementById('acc-avail').textContent  = fmtINR(availableMargin);
+  document.getElementById('acc-used').textContent   = fmtINR(usedMargin);
   document.getElementById('acc-rpnl').textContent   = (rpnl>=0?'+':'')+fmtINR(rpnl);
   document.getElementById('acc-rpnl').style.color   = colorClass(rpnl);
   document.getElementById('acc-upnl').textContent   = (upnl>=0?'+':'')+fmtINR(upnl);
   document.getElementById('acc-upnl').style.color   = colorClass(upnl);
   document.getElementById('acc-total').textContent  = (total>=0?'+':'')+fmtINR(total);
   document.getElementById('acc-total').style.color  = colorClass(total);
-  document.getElementById('hist-live-balance').textContent = fmtINR((d.available || 0) + (d.used || 0));
-  document.getElementById('hist-avail-margin').textContent = fmtINR(d.available || 0);
-  document.getElementById('hist-realised-pnl').textContent = (rpnl>=0?'+':'')+fmtINR(rpnl);
-  document.getElementById('hist-realised-pnl').style.color = colorClass(rpnl);
+  document.getElementById('hist-live-balance').textContent = fmtINR(liveBalance);
+  document.getElementById('hist-avail-margin').textContent = fmtINR(availableMargin);
   document.getElementById('hist-unrealised-pnl').textContent = (upnl>=0?'+':'')+fmtINR(upnl);
   document.getElementById('hist-unrealised-pnl').style.color = colorClass(upnl);
-  document.getElementById('acc-trades').textContent = d.trades || 0;
-  document.getElementById('acc-wl').textContent     = `W:${d.wins||0} L:${d.losses||0}`;
+  document.getElementById('history-bar-today-pnl').textContent = (rpnl>=0?'+':'')+fmtINR(rpnl);
+  document.getElementById('history-bar-unrealised-pnl').textContent = (upnl>=0?'+':'')+fmtINR(upnl);
+  document.getElementById('acc-trades').textContent = d.trade_count ?? d.trades ?? 0;
+  document.getElementById('acc-wl').textContent     = `W:${d.win_count ?? d.wins ?? 0} L:${d.loss_count ?? d.losses ?? 0}`;
 }
 
 async function fetchAccount() {
   const d = await apiFetch('/api/account');
-  renderAccount(d || {available:845000, used:155000, realised_pnl:3200, unrealised_pnl:-800, trades:5, wins:3, losses:2});
+  renderAccount(d || {available_margin:845000, used_margin:155000, realised_pnl:3200, unrealised_pnl:-800, trade_count:5, win_count:3, loss_count:2, starting_balance:1000000, total_pnl:2400});
 }
 
 /* ══════════════════════════════════════════
@@ -2396,6 +2443,7 @@ refreshHealthDot()
 const state = {
     ticks: {},
     optionTicks: {},
+    indexSnapshots: {},
     openTrades: [],
     currentChartLTP: null,
 };
@@ -2690,11 +2738,8 @@ function toggleHistoryDrawer() {
     closeAllDrawers()
     if (!open) {
         d.style.transform = 'translateY(0%)'
-        const today = new Date().toISOString().slice(0,10)
-        if (!document.getElementById('hist-from').value)
-            document.getElementById('hist-from').value = today
-        if (!document.getElementById('hist-to').value)
-            document.getElementById('hist-to').value = today
+        if (latestAccountData) renderAccount(latestAccountData);
+        else fetchAccount();
         fetchHistory()
     }
 }
@@ -2710,28 +2755,44 @@ async function fetchHistory() {
 }
 
 function renderHistory(trades) {
+    const from = document.getElementById('hist-from').value
+    const to = document.getElementById('hist-to').value
+    const filteredTrades = (trades || []).filter(t => {
+        const tradeDate = (t.exit_ts || t.trade_date || '').slice(0, 10);
+        if (!tradeDate) return false;
+        if (from && tradeDate < from) return false;
+        if (to && tradeDate > to) return false;
+        return true;
+    });
     const el = document.getElementById('history-list')
-    if (!trades.length) {
+    if (!filteredTrades.length) {
         el.innerHTML = '<div class="empty-state"><div class="empty-icon">📊</div>No trades in this period</div>'
         document.getElementById('hs-count').textContent = 0
         document.getElementById('hs-wins').textContent = 0
         document.getElementById('hs-loss').textContent = 0
         document.getElementById('hs-winpct').textContent = '—'
         document.getElementById('hs-pnl').textContent = '₹0'
+        document.getElementById('hist-realised-pnl').textContent = '₹0'
+        document.getElementById('hist-realised-pnl').style.color = 'var(--muted)'
         return
     }
-    const wins = trades.filter(t => t.pnl_abs > 0).length
-    const losses = trades.filter(t => t.pnl_abs <= 0).length
-    const totalPnl = trades.reduce((s, t) => s + (t.pnl_abs || 0), 0)
-    const winPct = trades.length ? ((wins/trades.length)*100).toFixed(0) : '—'
-    document.getElementById('hs-count').textContent = trades.length
+    const nonFlatTrades = filteredTrades.filter(t => Math.abs(t.pnl_abs || 0) > 0)
+    const wins = nonFlatTrades.filter(t => (t.pnl_abs || 0) > 0).length
+    const losses = nonFlatTrades.filter(t => (t.pnl_abs || 0) < 0).length
+    const totalPnl = filteredTrades.reduce((s, t) => s + (t.pnl_abs || 0), 0)
+    const winBase = wins + losses
+    const winPct = winBase ? ((wins / winBase) * 100).toFixed(0) : '—'
+    document.getElementById('hs-count').textContent = filteredTrades.length
     document.getElementById('hs-wins').textContent = wins
     document.getElementById('hs-loss').textContent = losses
-    document.getElementById('hs-winpct').textContent = winPct + '%'
+    document.getElementById('hs-winpct').textContent = winBase ? (winPct + '%') : '—'
     const pnlEl = document.getElementById('hs-pnl')
     pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + '₹' + Math.abs(totalPnl).toFixed(0)
     pnlEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)'
-    el.innerHTML = trades.map(t => {
+    const realisedEl = document.getElementById('hist-realised-pnl')
+    realisedEl.textContent = (totalPnl >= 0 ? '+' : '') + '₹' + Math.abs(totalPnl).toFixed(0)
+    realisedEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)'
+    el.innerHTML = filteredTrades.map(t => {
         const pnl = t.pnl_abs || 0
         const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)'
         const exitTime = t.exit_ts ? new Date(t.exit_ts).toLocaleTimeString('en-IN',
@@ -3022,6 +3083,14 @@ function hideMODropdown() {
     if (dd) dd.style.display = 'none';
 }
 
+function initHistoryDateInputs() {
+  const today = new Date().toISOString().split('T')[0];
+  const fromEl = document.getElementById('hist-from');
+  const toEl = document.getElementById('hist-to');
+  if (fromEl && !fromEl.value) fromEl.value = today;
+  if (toEl && !toEl.value) toEl.value = today;
+}
+
 /* ══════════════════════════════════════════
    POLLING MANAGER
 ══════════════════════════════════════════ */
@@ -3040,6 +3109,8 @@ Object.entries(pollers).forEach(([key, p]) => {
 
 // Initial account fetch always
 fetchAccount();
+initHistoryDateInputs();
+fetchIndexSnapshots().then(fetchIndices);
 
 // Init WebSockets
 initWebSockets();
