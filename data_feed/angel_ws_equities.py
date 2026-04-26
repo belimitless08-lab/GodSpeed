@@ -38,6 +38,7 @@ from websockets.exceptions import (
 )
 
 from core.config import cfg
+from core.instrument_registry import get_index_ws_tokens
 from core.redis_client import get_redis
 from core.universe_builder import get_token_map
 from execution.options_rest import publish_angel_jwt
@@ -63,16 +64,6 @@ BACKOFF_MAX        = 120        # seconds
 # AngelOne exchange codes
 EXCHANGE_NSE = 1
 EXCHANGE_BSE = 3
-
-# Index tokens — AngelOne SmartAPI token IDs for NSE/BSE indices.
-# These are NOT in universe:token_map (no FUTSTK contract) so we inject them manually.
-_INDEX_TOKENS = {
-    "NIFTY":      ("99926000", EXCHANGE_NSE),
-    "BANKNIFTY":  ("99926009", EXCHANGE_NSE),
-    "FINNIFTY":   ("99926037", EXCHANGE_NSE),
-    "MIDCPNIFTY": ("99926074", EXCHANGE_NSE),
-    "SENSEX":     ("99919000", EXCHANGE_BSE),
-}
 
 # Subscribe action code
 ACTION_SUBSCRIBE = 1
@@ -197,15 +188,14 @@ async def _wait_for_market_open() -> str:
 # Token list helpers
 # ---------------------------------------------------------------------------
 
-async def _load_token_list() -> tuple[list[str], dict[str, str], list[str], list[str]]:
+async def _load_token_list() -> tuple[list[str], dict[str, str]]:
     """
-    Load universe:token_map from Redis and inject index tokens.
+    Load universe:token_map from Redis.
 
     Returns
     -------
-    nse_tokens   : NSE equity + index token strings to subscribe
+    nse_tokens   : NSE equity token strings to subscribe
     reversed_map : token → symbol (for tick processing)
-    bse_tokens   : BSE index token strings (separate subscribe message)
     """
     token_map: dict[str, str] = await get_token_map()   # symbol → token
     reversed_map: dict[str, str] = {v: k for k, v in token_map.items()}
@@ -222,29 +212,14 @@ async def _load_token_list() -> tuple[list[str], dict[str, str], list[str], list
         tokens = tokens[:TOKEN_BUDGET]
         reversed_map = {t: reversed_map[t] for t in tokens if t in reversed_map}
 
-    # Separate index tokens from equity tokens — indices use LTP mode, equities use QUOTE mode
-    nse_equity_tokens = list(tokens)
-    nse_index_tokens  = []
-    bse_index_tokens  = []
-    for symbol, (token, exchange) in _INDEX_TOKENS.items():
-        reversed_map[token] = symbol
-        if exchange == EXCHANGE_NSE:
-            nse_index_tokens.append(token)
-        else:  # BSE
-            bse_index_tokens.append(token)
-
-    logger.info(
-        "[angel_ws] Subscribing %d NSE equity tokens (QUOTE mode) + "
-        "%d NSE index tokens + %d BSE index tokens (LTP mode).",
-        len(nse_equity_tokens), len(nse_index_tokens), len(bse_index_tokens),
-    )
-    # Return: equity tokens (QUOTE), all tokens reversed_map, nse_index, bse_index
-    return nse_equity_tokens, reversed_map, nse_index_tokens, bse_index_tokens
+    return list(tokens), reversed_map
 
 
 def _build_subscribe_message(nse_tokens: list[str], bse_tokens: list[str] = None) -> str:
     """Build QUOTE-mode subscription for equity stocks."""
-    token_list = [{"exchangeType": EXCHANGE_NSE, "tokens": nse_tokens}]
+    token_list = []
+    if nse_tokens:
+        token_list.append({"exchangeType": EXCHANGE_NSE, "tokens": nse_tokens})
     if bse_tokens:
         token_list.append({"exchangeType": EXCHANGE_BSE, "tokens": bse_tokens})
     return json.dumps({
@@ -259,7 +234,9 @@ def _build_subscribe_message(nse_tokens: list[str], bse_tokens: list[str] = None
 
 def _build_index_subscribe_message(nse_index_tokens: list[str], bse_index_tokens: list[str] = None) -> str:
     """Build LTP-mode subscription for index tokens (no volume/OI data available)."""
-    token_list = [{"exchangeType": EXCHANGE_NSE, "tokens": nse_index_tokens}]
+    token_list = []
+    if nse_index_tokens:
+        token_list.append({"exchangeType": EXCHANGE_NSE, "tokens": nse_index_tokens})
     if bse_index_tokens:
         token_list.append({"exchangeType": EXCHANGE_BSE, "tokens": bse_index_tokens})
     return json.dumps({
@@ -455,8 +432,58 @@ async def _run_ws_session(session: dict) -> None:
     client_code = session["client_code"]
 
     # Load token universe fresh on every reconnect (universe may have refreshed)
-    nse_equity_tokens, reversed_map, nse_index_tokens, bse_index_tokens = await _load_token_list()
+    nse_equity_tokens, reversed_map = await _load_token_list()
     redis = await get_redis()
+
+    index_ws_tokens = []
+    for attempt in range(10):
+        index_ws_tokens = await get_index_ws_tokens()
+        if index_ws_tokens:
+            logger.info(
+                f"[ws_equities] Resolved {len(index_ws_tokens)} "
+                f"index WS tokens"
+            )
+            break
+        logger.warning(
+            f"[ws_equities] Waiting for index tokens in Redis "
+            f"(attempt {attempt+1}/10)..."
+        )
+        await asyncio.sleep(3)
+
+    if not index_ws_tokens:
+        logger.error(
+            "[ws_equities] Index tokens not found after 10 attempts "
+            "— subscribing equity tokens only. "
+            "Macro gating will default to BULL."
+        )
+    equity_ws_tokens = [f"nse_cm|{token}" for token in nse_equity_tokens]
+    subscription_ws_tokens = equity_ws_tokens + index_ws_tokens
+
+    nse_index_tokens: list[str] = []
+    bse_index_tokens: list[str] = []
+    sensex_token: str | None = None
+    for ws_token in index_ws_tokens:
+        if ws_token.startswith("nse_cm|"):
+            token = ws_token.split("|", 1)[1]
+            nse_index_tokens.append(token)
+            symbol = await redis.get(f"index:token_to_symbol:{token}")
+            if symbol:
+                reversed_map[token] = symbol
+        elif ws_token.startswith("bse_cm|"):
+            token = ws_token.split("|", 1)[1]
+            bse_index_tokens.append(token)
+            symbol = await redis.get(f"index:token_to_symbol:{token}")
+            if symbol:
+                reversed_map[token] = symbol
+                if str(symbol).upper() == "SENSEX":
+                    sensex_token = token
+
+    logger.info(
+        "[angel_ws] Subscribing %d tokens total (%d equities + %d index tokens).",
+        len(subscription_ws_tokens),
+        len(nse_equity_tokens),
+        len(index_ws_tokens),
+    )
 
     ws_headers = {
         "Authorization": f"Bearer {jwt}",
@@ -468,7 +495,17 @@ async def _run_ws_session(session: dict) -> None:
     # Equity stocks: QUOTE mode (mode=2) — has volume, OI, OHLC
     subscribe_msg       = _build_subscribe_message(nse_equity_tokens)
     # Indices: LTP mode (mode=1) — no volume/OI, just price
-    index_subscribe_msg = _build_index_subscribe_message(nse_index_tokens, bse_index_tokens)
+    index_subscribe_msg = _build_index_subscribe_message(nse_index_tokens)
+    sensex_subscribe_msg = (
+        _build_index_subscribe_message([], [sensex_token])
+        if sensex_token
+        else None
+    )
+    other_bse_index_subscribe_msg = (
+        _build_index_subscribe_message([], [t for t in bse_index_tokens if t != sensex_token])
+        if any(t != sensex_token for t in bse_index_tokens)
+        else None
+    )
     symbol_count = len(nse_equity_tokens) + len(nse_index_tokens) + len(bse_index_tokens)
 
     # Health tracking
@@ -494,7 +531,22 @@ async def _run_ws_session(session: dict) -> None:
 
         await ws.send(subscribe_msg)
         logger.info("[angel_ws] QUOTE subscription sent — %d equity tokens.", len(nse_equity_tokens))
-        await ws.send(index_subscribe_msg)
+        if nse_index_tokens:
+            await ws.send(index_subscribe_msg)
+        if other_bse_index_subscribe_msg:
+            await ws.send(other_bse_index_subscribe_msg)
+        if sensex_subscribe_msg:
+            try:
+                await ws.send(sensex_subscribe_msg)
+            except Exception:
+                logger.warning(
+                    "[ws_equities] SENSEX bse_cm token rejected — "
+                    "BSE may not be supported on this connection. Skipping."
+                )
+                bse_index_tokens = [t for t in bse_index_tokens if t != sensex_token]
+                symbol_count = len(nse_equity_tokens) + len(nse_index_tokens) + len(bse_index_tokens)
+                if sensex_token:
+                    reversed_map.pop(sensex_token, None)
         logger.info("[angel_ws] LTP subscription sent — %d index tokens: NSE=%s BSE=%s",
                     len(nse_index_tokens) + len(bse_index_tokens),
                     nse_index_tokens, bse_index_tokens)
@@ -550,6 +602,19 @@ async def _run_ws_session(session: dict) -> None:
 
                 # AngelOne sends binary ticks; text frames are control/ack messages
                 if isinstance(message, str):
+                    if (
+                        sensex_token
+                        and ("nack" in message.lower() or "error" in message.lower())
+                        and (sensex_token in message or "bse_cm" in message.lower())
+                    ):
+                        logger.warning(
+                            "[ws_equities] SENSEX bse_cm token rejected — "
+                            "BSE may not be supported on this connection. Skipping."
+                        )
+                        bse_index_tokens = [t for t in bse_index_tokens if t != sensex_token]
+                        symbol_count = len(nse_equity_tokens) + len(nse_index_tokens) + len(bse_index_tokens)
+                        reversed_map.pop(sensex_token, None)
+                        sensex_token = None
                     if not first_logged:
                         logger.info("[angel_ws] Text frame: %s", message[:200])
                         first_logged = True
