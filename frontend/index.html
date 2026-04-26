@@ -1023,28 +1023,28 @@
       <div style="font-size:9px;color:#64748b;
         text-transform:uppercase;letter-spacing:0.5px;
         margin-bottom:3px;">Live Balance</div>
-      <div style="font-size:15px;font-weight:700;
+      <div style="font-size:18px;font-weight:700;
         color:#f1f5f9;" id="hs-acc-bal">₹0</div>
     </div>
     <div>
       <div style="font-size:9px;color:#64748b;
         text-transform:uppercase;letter-spacing:0.5px;
         margin-bottom:3px;">Available Margin</div>
-      <div style="font-size:15px;font-weight:700;
+      <div style="font-size:18px;font-weight:700;
         color:#f1f5f9;" id="hs-acc-avail">₹0</div>
     </div>
     <div>
       <div style="font-size:9px;color:#64748b;
         text-transform:uppercase;letter-spacing:0.5px;
-        margin-bottom:3px;">Realised PnL</div>
-      <div style="font-size:15px;font-weight:700;"
+        margin-bottom:3px;">All-Time P/L</div>
+      <div style="font-size:18px;font-weight:700;"
         id="hs-acc-rpnl">₹0</div>
     </div>
     <div>
       <div style="font-size:9px;color:#64748b;
         text-transform:uppercase;letter-spacing:0.5px;
         margin-bottom:3px;">Unrealised PnL</div>
-      <div style="font-size:15px;font-weight:700;"
+      <div style="font-size:18px;font-weight:700;"
         id="hs-acc-upnl">₹0</div>
     </div>
   </div>
@@ -2993,7 +2993,16 @@ function updateBarDateRange() {
     if (from && to && from === to) {
         el.textContent = formatDateShort(from)
     } else if (from && to) {
-        el.textContent = formatDateShort(from) + ' – ' + formatDateShort(to)
+        // Compact: show just day numbers if same month
+        const fParts = from.split('-')
+        const tParts = to.split('-')
+        const months = ['Jan','Feb','Mar','Apr','May','Jun',
+                        'Jul','Aug','Sep','Oct','Nov','Dec']
+        if (fParts[1] === tParts[1]) {
+            el.textContent = fParts[2] + '–' + tParts[2] + ' ' + months[parseInt(fParts[1])-1]
+        } else {
+            el.textContent = formatDateShort(from) + '–' + formatDateShort(to)
+        }
     } else {
         el.textContent = '—'
     }
@@ -3077,12 +3086,12 @@ function renderHistory(trades) {
             : exitReason === 'TAKE_PROFIT' ? 'var(--green)'
             : 'var(--muted)'
         return `<div class="pos-row" style="overflow:hidden;">
-            <div class="pos-top" style="flex-wrap:wrap;gap:4px;">
-                <span class="pos-sym">${t.symbol}</span>
-                <span class="pos-inst">${t.instrument || 'EQ'}</span>
-                <span style="color:${dirColor};font-weight:700;">${dirLabel} ${t.direction}</span>
-                <span style="font-size:9px;color:var(--muted);">${exitDate} ${exitTime}</span>
-                <span style="margin-left:auto;color:${pnlColor};font-weight:700;">
+            <div class="pos-top" style="flex-wrap:nowrap;gap:6px;align-items:center;overflow:hidden;">
+                <span class="pos-sym" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:80px;">${t.symbol}</span>
+                <span class="pos-inst" style="flex-shrink:0;">${t.instrument || 'EQ'}</span>
+                <span style="color:${dirColor};font-weight:700;flex-shrink:0;">${dirLabel} ${t.direction}</span>
+                <span style="font-size:9px;color:var(--muted);flex-shrink:0;">${exitDate}</span>
+                <span style="margin-left:auto;color:${pnlColor};font-weight:700;flex-shrink:0;">
                     ${pnl >= 0 ? '+' : ''}₹${Math.abs(pnl).toFixed(0)}
                     <span style="font-size:9px;">(${(t.pnl_pct||0) >= 0?'+':''}${(t.pnl_pct||0).toFixed(1)}%)</span>
                 </span>
@@ -3091,9 +3100,7 @@ function renderHistory(trades) {
                 <span>Entry: ₹${fmt(t.entry_price)}</span>
                 <span>Exit: ₹${fmt(t.exit_price)}</span>
                 <span>Qty: ${t.quantity}</span>
-                <span>Signal: ${t.signal_type || '—'}</span>
                 <span style="color:${reasonColor};">Exit: ${exitReason}</span>
-                <span>ICI: ${t.ici_score ? Math.round(t.ici_score) : '—'}</span>
             </div>
         </div>`
     }).join('')
