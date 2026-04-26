@@ -38,7 +38,6 @@ from websockets.exceptions import (
 )
 
 from core.config import cfg
-from core.instrument_registry import get_index_ws_tokens
 from core.redis_client import get_redis
 from core.universe_builder import get_token_map
 from execution.options_rest import publish_angel_jwt
@@ -213,6 +212,28 @@ async def _load_token_list() -> tuple[list[str], dict[str, str]]:
         reversed_map = {t: reversed_map[t] for t in tokens if t in reversed_map}
 
     return list(tokens), reversed_map
+
+
+async def _load_index_tokens_from_redis() -> dict:
+    """
+    Load index tokens from Redis index:tokens and index:meta:{symbol}.
+    Returns {symbol: (token, exchange_int)} matching _INDEX_TOKENS format.
+    Never hardcodes token values.
+    """
+    try:
+        redis = await get_redis()
+        tokens = await redis.hgetall("index:tokens")
+        result = {}
+        for symbol, token in tokens.items():
+            meta = await redis.hgetall(f"index:meta:{symbol}")
+            exch_seg = meta.get("exch_seg", "NSE")
+            exchange = EXCHANGE_BSE if exch_seg == "BSE" else EXCHANGE_NSE
+            result[symbol] = (token, exchange)
+        logger.info("[angel_ws] Loaded %d index tokens from Redis", len(result))
+        return result
+    except Exception as e:
+        logger.error("[angel_ws] Failed to load index tokens from Redis: %s", e)
+        return {}
 
 
 def _build_subscribe_message(nse_tokens: list[str], bse_tokens: list[str] = None) -> str:
@@ -435,22 +456,21 @@ async def _run_ws_session(session: dict) -> None:
     nse_equity_tokens, reversed_map = await _load_token_list()
     redis = await get_redis()
 
+    index_tokens = await _load_index_tokens_from_redis()
     index_ws_tokens = []
-    for attempt in range(10):
-        index_ws_tokens = await get_index_ws_tokens()
-        if index_ws_tokens:
-            logger.info(
-                f"[ws_equities] Resolved {len(index_ws_tokens)} "
-                f"index WS tokens"
-            )
-            break
-        logger.warning(
-            f"[ws_equities] Waiting for index tokens in Redis "
-            f"(attempt {attempt+1}/10)..."
-        )
-        await asyncio.sleep(3)
+    for symbol, (token, exchange) in index_tokens.items():
+        if exchange == EXCHANGE_BSE:
+            index_ws_tokens.append(f"bse_cm|{token}")
+        else:
+            index_ws_tokens.append(f"nse_cm|{token}")
+        reversed_map[token] = symbol
 
-    if not index_ws_tokens:
+    if index_ws_tokens:
+        logger.info(
+            f"[ws_equities] Resolved {len(index_ws_tokens)} "
+            f"index WS tokens"
+        )
+    else:
         logger.error(
             "[ws_equities] Index tokens not found after 10 attempts "
             "— subscribing equity tokens only. "
@@ -466,17 +486,12 @@ async def _run_ws_session(session: dict) -> None:
         if ws_token.startswith("nse_cm|"):
             token = ws_token.split("|", 1)[1]
             nse_index_tokens.append(token)
-            symbol = await redis.get(f"index:token_to_symbol:{token}")
-            if symbol:
-                reversed_map[token] = symbol
         elif ws_token.startswith("bse_cm|"):
             token = ws_token.split("|", 1)[1]
             bse_index_tokens.append(token)
-            symbol = await redis.get(f"index:token_to_symbol:{token}")
-            if symbol:
-                reversed_map[token] = symbol
-                if str(symbol).upper() == "SENSEX":
-                    sensex_token = token
+            symbol = reversed_map.get(token)
+            if symbol and str(symbol).upper() == "SENSEX":
+                sensex_token = token
 
     logger.info(
         "[angel_ws] Subscribing %d tokens total (%d equities + %d index tokens).",
