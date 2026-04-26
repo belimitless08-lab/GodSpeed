@@ -451,6 +451,34 @@
   .empty-state { padding: 24px; text-align: center; color: var(--muted); font-size: 11px; }
   .empty-state .empty-icon { font-size: 28px; margin-bottom: 8px; opacity: 0.4; }
 
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 12px;
+    background: rgba(255,255,255,0.03);
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .summary-box {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .summary-label {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .summary-value {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
   /* ── RESPONSIVE ── */
   @media(max-width: 768px) {
     #index-tiles {
@@ -487,8 +515,6 @@
       text-overflow: ellipsis;
     }
     #history-drawer #history-date-filters { display: none !important; }
-    #history-drawer.history-open #history-date-filters { display: flex !important; }
-    #history-drawer .history-mobile-hide { display: none; }
   }
 
   [data-theme="light"] .popup-header,
@@ -899,46 +925,89 @@
 </div>
 
 <div id="history-drawer" class="side-drawer" style="height:360px;">
-    <div class="drawer-header" style="display:flex;align-items:center;gap:12px;padding:8px 14px;background:#1a1d2e;border-bottom:1px solid #334155;">
-      <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
-        <span style="font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:1px;">TRADE HISTORY</span>
-        <span style="font-size:11px;color:#94a3b8;">
-          T: <span id="bar-total-pnl" style="font-weight:700;color:#22c55e;">₹0</span>
-          <span class="history-mobile-hide">&nbsp;|&nbsp; U: <span id="bar-unreal-pnl" style="font-weight:700;color:#94a3b8;">₹0</span></span>
-          <span class="history-mobile-hide">&nbsp;|&nbsp; Bal: <span id="bar-balance" style="font-weight:700;color:#f1f5f9;">₹0</span></span>
-        </span>
-      </div>
-      <div id="history-date-filters" style="display:flex;align-items:center;gap:6px;flex:1;justify-content:center;">
-        <span style="font-size:10px;color:#64748b;">From:</span>
-        <input type="date" id="hist-from"
-          style="background:rgba(255,255,255,0.07);border:1px solid #334155;border-radius:4px;padding:3px 6px;color:#f1f5f9;font-size:10px;outline:none;cursor:pointer;"
-          onchange="fetchHistory()"/>
-        <span style="font-size:10px;color:#64748b;">To:</span>
-        <input type="date" id="hist-to"
-          style="background:rgba(255,255,255,0.07);border:1px solid #334155;border-radius:4px;padding:3px 6px;color:#f1f5f9;font-size:10px;outline:none;cursor:pointer;"
-          onchange="fetchHistory()"/>
-      </div>
-      <button onclick="toggleHistoryDrawer()"
-        style="background:none;border:none;color:#94a3b8;font-size:16px;cursor:pointer;padding:4px 8px;border-radius:4px;transition:color 0.2s;"
-        onmouseover="this.style.color='#f1f5f9'"
-        onmouseout="this.style.color='#94a3b8'">↑</button>
+    <div class="drawer-header" style="display:flex;
+  align-items:center; gap:10px; padding:8px 14px;
+  flex-wrap:nowrap;">
+
+  <span style="font-size:11px;font-weight:700;
+    color:#94a3b8;letter-spacing:1px;white-space:nowrap;">
+    TRADE HISTORY
+  </span>
+
+  <span style="font-size:11px;white-space:nowrap;">
+    T:&nbsp;<span id="bar-total-pnl"
+      style="font-weight:700;color:var(--muted);">₹0</span>
+    &nbsp;|&nbsp;U:&nbsp;<span id="bar-unreal-pnl"
+      style="font-weight:700;color:var(--muted);">₹0</span>
+  </span>
+
+  <div id="history-date-filters" style="display:flex;align-items:center;gap:6px;
+    flex:1;justify-content:center;">
+    <span style="font-size:10px;color:#64748b;">From:</span>
+    <input type="date" id="hist-from"
+      style="background:rgba(255,255,255,0.07);
+        border:1px solid #334155;border-radius:4px;
+        padding:3px 6px;color:#f1f5f9;font-size:10px;
+        outline:none;cursor:pointer;"
+      onchange="fetchHistory()"/>
+    <span style="font-size:10px;color:#64748b;">To:</span>
+    <input type="date" id="hist-to"
+      style="background:rgba(255,255,255,0.07);
+        border:1px solid #334155;border-radius:4px;
+        padding:3px 6px;color:#f1f5f9;font-size:10px;
+        outline:none;cursor:pointer;"
+      onchange="fetchHistory()"/>
+  </div>
+
+  <button onclick="toggleHistoryDrawer()"
+    style="background:none;border:none;color:#94a3b8;
+      font-size:18px;cursor:pointer;padding:2px 6px;">
+    ↑
+  </button>
+</div>
+    <div id="hist-summary">
+  <div class="summary-grid">
+    <div class="summary-box">
+      <span class="summary-label">Live Balance</span>
+      <span class="summary-value" id="hs-acc-bal">₹0</span>
     </div>
-    <div style="display:flex;gap:16px;padding:6px 0 10px;
-        font-size:11px;border-bottom:1px solid #334155;margin-bottom:8px;flex-wrap:wrap;">
-        <span>Live Balance: <span id="hist-live-balance" style="color:#f1f5f9;font-weight:700;">₹0</span></span>
-        <span>Available Margin: <span id="hist-avail-margin" style="color:#f1f5f9;font-weight:700;">₹0</span></span>
-        <span>Realised PnL: <span id="hist-realised-pnl" style="font-weight:700;">₹0</span></span>
-        <span>Unrealised PnL: <span id="hist-unrealised-pnl" style="font-weight:700;">₹0</span></span>
+    <div class="summary-box">
+      <span class="summary-label">Available Margin</span>
+      <span class="summary-value" id="hs-acc-avail">₹0</span>
     </div>
-    <div id="hist-summary" style="display:flex;gap:16px;padding:6px 0 10px;
-        font-size:11px;border-bottom:1px solid #334155;margin-bottom:8px;">
-        <span>Trades: <span id="hs-count" style="color:#f1f5f9;font-weight:700;">0</span></span>
-        <span>Wins: <span id="hs-wins" style="color:#22c55e;font-weight:700;">0</span></span>
-        <span>Losses: <span id="hs-loss" style="color:#ef4444;font-weight:700;">0</span></span>
-        <span>Win%: <span id="hs-winpct" style="color:#f1f5f9;font-weight:700;">—</span></span>
-        <span>Total PnL: <span id="hs-pnl" style="font-weight:700;">₹0</span></span>
+    <div class="summary-box">
+      <span class="summary-label">Realised PnL</span>
+      <span class="summary-value" id="hs-acc-rpnl">₹0</span>
     </div>
-    <div id="history-list">
+    <div class="summary-box">
+      <span class="summary-label">Unrealised PnL</span>
+      <span class="summary-value" id="hs-acc-upnl">₹0</span>
+    </div>
+  </div>
+  <div class="summary-grid"
+    style="grid-template-columns:repeat(auto-fit,minmax(80px,1fr));">
+    <div class="summary-box">
+      <span class="summary-label">Period Trades</span>
+      <span class="summary-value" id="hs-count">0</span>
+    </div>
+    <div class="summary-box">
+      <span class="summary-label">Win / Loss</span>
+      <span class="summary-value">
+        <span id="hs-wins" style="color:var(--green)">0</span> /
+        <span id="hs-loss" style="color:var(--red)">0</span>
+      </span>
+    </div>
+    <div class="summary-box">
+      <span class="summary-label">Win %</span>
+      <span class="summary-value" id="hs-winpct">—</span>
+    </div>
+    <div class="summary-box">
+      <span class="summary-label">Period PnL</span>
+      <span class="summary-value" id="hs-pnl">₹0</span>
+    </div>
+  </div>
+</div>
+<div id="history-list">
         <div class="empty-state"><div class="empty-icon">📊</div>No trade history</div>
     </div>
 </div>
@@ -1157,9 +1226,12 @@ function renderIndices(data) {
   container.innerHTML = data.map(idx => {
     const symbol = normalizeIndexSymbol(idx.symbol || idx.name);
     const snap = state.indexSnapshots?.[symbol] || {};
-    const prevClose = Number(snap.prev_close || idx.prev_close || 0);
     const liveLtp = Number(state.ticks?.[symbol]?.ltp || idx.ltp || 0);
-    const chg = prevClose > 0 ? ((liveLtp - prevClose) / prevClose) * 100 : 0;
+    const ltp  = parseFloat(liveLtp) || 0;
+    const prev = parseFloat(idx.prev_close) || 0;
+    const chg  = (ltp > 0 && prev > 0)
+               ? ((ltp - prev) / prev * 100)
+               : (parseFloat(idx.change_pct) || 0);
     const pcrDir = idx.pcr_direction === 'UP' ? '▲' : '▼';
     const pcrColor = idx.pcr_direction === 'UP' ? 'var(--green)' : 'var(--red)';
     return `<div class="index-tile" data-sym="${symbol}" onclick="openChartForSymbol('${symbol}')">
@@ -1428,29 +1500,55 @@ let latestAccountData = null;
 
 function renderAccount(d) {
   if (!d) return;
-  latestAccountData = d;
-  const rpnl = d.realised_pnl || 0;
-  const upnl = d.unrealised_pnl || 0;
-  const total = d.total_pnl != null ? d.total_pnl : (rpnl + upnl);
-  const availableMargin = d.available_margin ?? d.available ?? 0;
-  const usedMargin = d.used_margin ?? d.used ?? 0;
-  const liveBalance = d.balance ?? d.account_balance ?? ((d.starting_balance ?? 0) + total);
-  document.getElementById('acc-avail').textContent  = fmtINR(availableMargin);
-  document.getElementById('acc-used').textContent   = fmtINR(usedMargin);
-  document.getElementById('acc-rpnl').textContent   = (rpnl>=0?'+':'')+fmtINR(rpnl);
-  document.getElementById('acc-rpnl').style.color   = colorClass(rpnl);
-  document.getElementById('acc-upnl').textContent   = (upnl>=0?'+':'')+fmtINR(upnl);
-  document.getElementById('acc-upnl').style.color   = colorClass(upnl);
-  document.getElementById('acc-total').textContent  = (total>=0?'+':'')+fmtINR(total);
-  document.getElementById('acc-total').style.color  = colorClass(total);
-  document.getElementById('hist-live-balance').textContent = fmtINR(liveBalance);
-  document.getElementById('hist-avail-margin').textContent = fmtINR(availableMargin);
-  document.getElementById('hist-unrealised-pnl').textContent = (upnl>=0?'+':'')+fmtINR(upnl);
-  document.getElementById('hist-unrealised-pnl').style.color = colorClass(upnl);
-  document.getElementById('bar-unreal-pnl').textContent = (upnl>=0?'+':'') + fmtINR(upnl);
-  document.getElementById('bar-balance').textContent = fmtINR(liveBalance);
-  document.getElementById('acc-trades').textContent = d.trade_count ?? d.trades ?? 0;
-  document.getElementById('acc-wl').textContent     = `W:${d.win_count ?? d.wins ?? 0} L:${d.loss_count ?? d.losses ?? 0}`;
+  const avail = parseFloat(d.available) || 0;
+  const used  = parseFloat(d.used) || 0;
+  const rpnl  = parseFloat(d.realised_pnl) || 0;
+  const upnl  = parseFloat(d.unrealised_pnl) || 0;
+  const balance = avail + used;
+  const total   = rpnl + upnl;
+
+  const set = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+  };
+  const setColor = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = (val >= 0 ? '+' : '') + fmtINR(val);
+      el.style.color = val > 0 ? 'var(--green)'
+                     : val < 0 ? 'var(--red)'
+                     : 'var(--muted)';
+    }
+  };
+
+  set('acc-avail',  fmtINR(avail));
+  set('acc-used',   fmtINR(used));
+  set('acc-trades', d.trades || 0);
+  set('acc-wl',     `W:${d.wins||0} L:${d.losses||0}`);
+  setColor('acc-rpnl',  rpnl);
+  setColor('acc-upnl',  upnl);
+  setColor('acc-total', total);
+
+  set('hs-acc-bal',   fmtINR(balance));
+  set('hs-acc-avail', fmtINR(avail));
+  setColor('hs-acc-rpnl', rpnl);
+  setColor('hs-acc-upnl', upnl);
+
+  // Bottom bar
+  const barPnl = document.getElementById('bar-total-pnl');
+  if (barPnl) {
+    barPnl.textContent = (rpnl >= 0 ? '+' : '') + fmtINR(rpnl);
+    barPnl.style.color = rpnl > 0 ? 'var(--green)'
+                       : rpnl < 0 ? 'var(--red)'
+                       : 'var(--muted)';
+  }
+  const barUnreal = document.getElementById('bar-unreal-pnl');
+  if (barUnreal) {
+    barUnreal.textContent = (upnl >= 0 ? '+' : '') + fmtINR(upnl);
+    barUnreal.style.color = upnl > 0 ? 'var(--green)'
+                          : upnl < 0 ? 'var(--red)'
+                          : 'var(--muted)';
+  }
 }
 
 async function fetchAccount() {
@@ -2796,8 +2894,6 @@ function renderHistory(trades) {
         document.getElementById('hs-loss').textContent = 0
         document.getElementById('hs-winpct').textContent = '—'
         document.getElementById('hs-pnl').textContent = '₹0'
-        document.getElementById('hist-realised-pnl').textContent = '₹0'
-        document.getElementById('hist-realised-pnl').style.color = 'var(--muted)'
         const barTotalEl = document.getElementById('bar-total-pnl')
         barTotalEl.textContent = '₹0'
         barTotalEl.style.color = 'var(--muted)'
@@ -2816,9 +2912,6 @@ function renderHistory(trades) {
     const pnlEl = document.getElementById('hs-pnl')
     pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + '₹' + Math.abs(totalPnl).toFixed(0)
     pnlEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)'
-    const realisedEl = document.getElementById('hist-realised-pnl')
-    realisedEl.textContent = (totalPnl >= 0 ? '+' : '') + '₹' + Math.abs(totalPnl).toFixed(0)
-    realisedEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)'
     const barTotalEl = document.getElementById('bar-total-pnl')
     barTotalEl.textContent = (totalPnl >= 0 ? '+' : '') + '₹' + Math.abs(totalPnl).toFixed(0)
     barTotalEl.style.color = totalPnl > 0 ? 'var(--green)' : (totalPnl < 0 ? 'var(--red)' : 'var(--muted)')

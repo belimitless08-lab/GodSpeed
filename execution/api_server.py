@@ -257,6 +257,7 @@ class IndexData(BaseModel):
     name: str = ""
     ltp: float
     change_pct: float
+    prev_close: float = 0.0
     pcr: float = 0.0
     pcr_direction: str = "FLAT"  # UP / DOWN / FLAT
 
@@ -952,6 +953,7 @@ async def get_indices():
             name=_INDEX_DISPLAY_NAMES.get(sym, sym),
             ltp=ltp,
             change_pct=round(change_pct, 2),
+            prev_close=float(prev_close or 0.0),
             pcr=round(pcr, 3),
             pcr_direction=pcr_dir,
         ))
