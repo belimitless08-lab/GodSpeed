@@ -41,7 +41,7 @@ from core.universe_builder import (
     get_token_map,
 )
 from execution.options_rest import publish_angel_jwt
-from strategy_brain.global_indices_scraper import scrape_and_store as _scrape_global_indices, REDIS_TTL_SEED as _GLOBAL_TTL
+from strategy_brain.ai_pipeline.global_indices_scraper import scrape_and_store as _scrape_global_indices, REDIS_TTL_SEED as _GLOBAL_TTL
 
 # ---------------------------------------------------------------------------
 # Logging
