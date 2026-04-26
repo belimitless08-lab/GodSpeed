@@ -302,6 +302,15 @@ def _get_date_range() -> tuple[datetime, datetime]:
     return from_dt, to_dt
 
 
+def _min_index_lookback_from(from_dt: datetime, to_dt: datetime) -> datetime:
+    """
+    Ensure index 1m lookback covers at least ~2 trading days for EMA200 warmup.
+    NSE trades ~375 minutes/day, so 2 days (~750 bars) is sufficient.
+    """
+    min_from_dt = (to_dt - timedelta(days=2)).replace(hour=9, minute=15)
+    return min(from_dt, min_from_dt)
+
+
 # ---------------------------------------------------------------------------
 # Technical indicator calculations (NumPy vectorized)
 # ---------------------------------------------------------------------------
@@ -978,6 +987,7 @@ async def run_seeder(force: bool = False) -> None:
     )
 
     # Seed index snapshots
+    index_from_dt = _min_index_lookback_from(from_dt, to_dt)
     index_symbols = await load_index_symbols()
     logger.info(f"[seeder] Seeding snapshots for {len(index_symbols)} indices: {index_symbols}")
 
@@ -992,7 +1002,7 @@ async def run_seeder(force: bool = False) -> None:
             try:
                 token_str = token.decode() if isinstance(token, (bytes, bytearray)) else str(token)
                 candles = await fetch_candles(
-                    session, "NSE", token_str, "ONE_MINUTE", from_dt, to_dt, http_client
+                    session, "NSE", token_str, "ONE_MINUTE", index_from_dt, to_dt, http_client
                 )
                 if not candles or len(candles) < 20:
                     logger.warning(f"[seeder] Too few candles for index {symbol} ({len(candles)}), skipping")
@@ -1039,12 +1049,23 @@ async def run_seeder(force: bool = False) -> None:
                 classic = compute_pivots_classic(prev_high, prev_low, prev_close)
                 camarilla = compute_pivots_camarilla(prev_high, prev_low, prev_close)
 
-                raw_candles = [[c[0], c[1], c[2], c[3], c[4], c[5]] for c in candles]
                 candle_key_1m = f"candles:{symbol}:1m"
                 async with redis.pipeline(transaction=False) as pipe:
                     pipe.delete(candle_key_1m)
-                    for candle in raw_candles:
-                        pipe.rpush(candle_key_1m, json.dumps(candle))
+                    for candle in reversed(candles):
+                        pipe.lpush(
+                            candle_key_1m,
+                            json.dumps(
+                                {
+                                    "t": candle[0],
+                                    "o": candle[1],
+                                    "h": candle[2],
+                                    "l": candle[3],
+                                    "c": candle[4],
+                                    "v": candle[5],
+                                }
+                            ),
+                        )
                     pipe.ltrim(candle_key_1m, -500, -1)
                     await pipe.execute()
 
