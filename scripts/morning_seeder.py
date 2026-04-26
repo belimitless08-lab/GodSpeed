@@ -1052,7 +1052,7 @@ async def run_seeder(force: bool = False) -> None:
                 classic = compute_pivots_classic(prev_high, prev_low, prev_close)
                 camarilla = compute_pivots_camarilla(prev_high, prev_low, prev_close)
 
-                candle_key_1m = f"candles:{symbol}:1m"
+                candle_key_1m = f"candles:1m:{symbol}"
                 async with redis.pipeline(transaction=False) as pipe:
                     pipe.delete(candle_key_1m)
                     for candle in reversed(candles):
