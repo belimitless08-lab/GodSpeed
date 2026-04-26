@@ -1183,6 +1183,21 @@ async def get_index_options(index: str) -> list[dict]:
     return json.loads(raw)
 
 
+async def load_index_symbols() -> set:
+    """
+    Returns set of index symbol strings from Redis index:tokens hash.
+    e.g. {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"}
+    Returns empty set if key missing, never raises.
+    """
+    try:
+        redis = await get_redis()
+        tokens = await redis.hgetall("index:tokens")
+        return set(tokens.keys()) if tokens else set()
+    except Exception as e:
+        logger.warning(f"[universe] load_index_symbols failed: {e}")
+        return set()
+
+
 # ---------------------------------------------------------------------------
 # Standalone test entry point
 # ---------------------------------------------------------------------------
