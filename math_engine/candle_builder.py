@@ -36,8 +36,11 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
+from core.instrument_registry import (
+    load_index_symbols, get_symbol_for_token, is_index_token
+)
 from core.redis_client import get_redis
-from core.universe_builder import get_symbols
+from core.universe_builder import get_symbols, get_symbol_for_token as get_equity_symbol_for_token
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -66,9 +69,8 @@ _CH_15M      = "candles:15m"
 _CH_1HR      = "candles:1hr"
 _KEY_STATUS  = "candle_builder:status"
 
-# Index symbols to build candles for even when they are not part of the
-# equity F&O symbol universe seeded by get_symbols().
-_INDICES_WITH_CANDLES = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"}
+# Index symbols loaded dynamically from Redis token registry at startup.
+_INDEX_SYMBOLS: set = set()
 
 # Indicator periods
 _EMA16_PERIOD  = 16
@@ -271,34 +273,41 @@ async def _flush_candle_to_redis(
     snapshot_key = f"snapshot:{symbol}"
     candle_key   = f"candles:1m:{symbol}"
 
+    is_index = symbol in _INDEX_SYMBOLS
+    snapshot_mapping = {
+        "ema9":            str(updated_ind["ema9"]),
+        "ema16":           str(updated_ind["ema16"]),
+        "ema200":          str(updated_ind["ema200"]),
+        "atr14":           str(updated_ind["atr14"]),
+        "choppiness14":    str(updated_ind["choppiness14"]),
+        "supertrend_dir":  st_label,
+        "supertrend_band": str(updated_ind["supertrend_band"]),
+        # RSI14 — rsi_avg_gain / rsi_avg_loss stored for next incremental update
+        "rsi14":           str(updated_ind["rsi14"]),
+        "rsi_avg_gain":    str(updated_ind["rsi_avg_gain"]),
+        "rsi_avg_loss":    str(updated_ind["rsi_avg_loss"]),
+        # VWAP — only vwap scalar in snapshot; accumulators live in memory
+        "vwap":            json.dumps(updated_ind["vwap"]) if is_index else str(updated_ind["vwap"]),
+        "vwap_slope":      json.dumps(updated_ind["vwap_slope"]) if is_index else str(updated_ind["vwap_slope"]),
+        "last_close":      str(c),
+        "last_high":       str(h),
+        "last_low":        str(l),
+        "last_volume":     str(v),
+        "last_candle_ts":  ts,
+        "updated_at":      now_iso,
+    }
+    if is_index:
+        snapshot_mapping["is_index"] = "1"
+
     async with redis.pipeline(transaction=False) as pipe:
         # 1. Append + trim candle history
         pipe.rpush(candle_key, candle_arr)
-        pipe.ltrim(candle_key, -2800, -1)
+        pipe.ltrim(candle_key, -500, -1)
 
         # 2. Update snapshot
-        pipe.hset(snapshot_key, mapping={
-            "ema9":            str(updated_ind["ema9"]),
-            "ema16":           str(updated_ind["ema16"]),
-            "ema200":          str(updated_ind["ema200"]),
-            "atr14":           str(updated_ind["atr14"]),
-            "choppiness14":    str(updated_ind["choppiness14"]),
-            "supertrend_dir":  st_label,
-            "supertrend_band": str(updated_ind["supertrend_band"]),
-            # RSI14 — rsi_avg_gain / rsi_avg_loss stored for next incremental update
-            "rsi14":           str(updated_ind["rsi14"]),
-            "rsi_avg_gain":    str(updated_ind["rsi_avg_gain"]),
-            "rsi_avg_loss":    str(updated_ind["rsi_avg_loss"]),
-            # VWAP — only vwap scalar in snapshot; accumulators live in memory
-            "vwap":            str(updated_ind["vwap"]),
-            "vwap_slope":      str(updated_ind["vwap_slope"]),
-            "last_close":      str(c),
-            "last_high":       str(h),
-            "last_low":        str(l),
-            "last_volume":     str(v),
-            "last_candle_ts":  ts,
-            "updated_at":      now_iso,
-        })
+        pipe.hset(snapshot_key, mapping=snapshot_mapping)
+        if is_index:
+            pipe.hdel(snapshot_key, "lot_size", "oi", "ce_oi", "pe_oi")
 
         await pipe.execute()
 
@@ -436,116 +445,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
 
     try:
         redis = await get_redis()
-        is_index = symbol in _INDICES_WITH_CANDLES
-
-        if is_index:
-            # Indices: compute full price-based indicators, skip volume-based ones.
-            ind = indicators.get(symbol, {})
-            c = closed["close"]
-            h = closed["high"]
-            l = closed["low"]
-
-            prev_close_idx = ind.get("last_close", c)
-            prev_atr_idx = ind.get("atr14", 1.0)
-
-            # Price-based indicators (same as equities)
-            new_ema9 = update_ema(c, ind.get("ema9", c), 9)
-            new_ema16 = update_ema(c, ind.get("ema16", c), _EMA16_PERIOD)
-            new_ema200 = update_ema(c, ind.get("ema200", c), _EMA200_PERIOD)
-            new_atr = update_atr(h, l, prev_close_idx, prev_atr_idx)
-
-            direction_idx, band_idx = _update_supertrend(
-                prev_direction=ind.get("supertrend_dir", 1),
-                prev_band=ind.get("supertrend_band", c),
-                new_high=h,
-                new_low=l,
-                new_close=c,
-                new_atr=new_atr,
-            )
-
-            # RSI14 (O(1) Wilder smoothing)
-            rsi_idx, new_avg_gain_idx, new_avg_loss_idx = update_rsi(
-                current_close=c,
-                prev_close=prev_close_idx,
-                prev_avg_gain=ind.get("rsi_avg_gain", 0.0),
-                prev_avg_loss=ind.get("rsi_avg_loss", 0.0),
-            )
-
-            # Choppiness
-            raw_chop = await redis.lrange(f"candles:1m:{symbol}", -_CHOP_PERIOD, -1)
-            chop_candles = [json.loads(x) for x in raw_chop] if raw_chop else []
-            chop14_idx = _calc_choppiness(chop_candles) if len(chop_candles) >= 2 else ind.get("choppiness14", 50.0)
-
-            if isinstance(chop14_idx, float) and chop14_idx == chop14_idx:
-                if chop14_idx < 38.2:
-                    chop_class_idx = "TRENDING"
-                elif chop14_idx > 61.8:
-                    chop_class_idx = "CHOPPY"
-                else:
-                    chop_class_idx = "NEUTRAL"
-            else:
-                chop_class_idx = "NEUTRAL"
-
-            # Rolling 1h high/low
-            raw_1h = await redis.lrange(f"candles:1m:{symbol}", -60, -1)
-            candles_1h = [json.loads(x) for x in raw_1h] if raw_1h else []
-            rolling_1h_high = max((float(x[2]) for x in candles_1h), default=h)
-            rolling_1h_low = min((float(x[3]) for x in candles_1h), default=l)
-
-            st_dir_str = "BULL" if direction_idx == 1 else "BEAR"
-
-            # Update in-memory state
-            indicators.setdefault(symbol, {})
-            indicators[symbol].update({
-                "ema9": new_ema9,
-                "ema16": new_ema16,
-                "ema200": new_ema200,
-                "atr14": new_atr,
-                "supertrend_dir": direction_idx,
-                "supertrend_band": band_idx,
-                "rsi14": rsi_idx,
-                "rsi_avg_gain": new_avg_gain_idx,
-                "rsi_avg_loss": new_avg_loss_idx,
-                "choppiness14": chop14_idx,
-                "last_close": c,
-            })
-
-            now_iso = datetime.now(timezone.utc).isoformat()
-            await redis.hset(f"snapshot:{symbol}", mapping={
-                "last_close": str(c),
-                "last_high": str(h),
-                "last_low": str(l),
-                "last_volume": str(closed["volume"]),
-                "last_candle_ts": closed["ts"],
-                "is_index": "1",
-                "updated_at": now_iso,
-                "ema9": str(round(new_ema9, 4)),
-                "ema16": str(round(new_ema16, 4)),
-                "ema200": str(round(new_ema200, 4)),
-                "atr14": str(round(new_atr, 4)),
-                "rsi14": str(round(rsi_idx, 2)),
-                "supertrend_dir": st_dir_str,
-                "supertrend_band": str(round(band_idx, 4)),
-                "choppiness14": str(round(chop14_idx, 4)),
-                "choppiness_class": chop_class_idx,
-                "rolling_1h_high": str(round(rolling_1h_high, 2)),
-                "rolling_1h_low": str(round(rolling_1h_low, 2)),
-            })
-
-            pub_payload = json.dumps({
-                "symbol": symbol,
-                "ts": closed["ts"],
-                "open": closed["open"],
-                "high": closed["high"],
-                "low": closed["low"],
-                "close": closed["close"],
-                "volume": closed["volume"],
-            })
-            await redis.publish(_CH_1M, pub_payload)
-            _update_tf_accumulator(symbol, closed)
-            await _maybe_close_tf_candles(symbol, new_minute)
-            _candles_closed_since_last_log += 1
-            return
+        is_index = symbol in _INDEX_SYMBOLS
 
         # Fetch last 14 closed candles for choppiness window
         raw_candles = await redis.lrange(f"candles:1m:{symbol}", -_CHOP_PERIOD, -1)
@@ -594,37 +494,44 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
         # --- VWAP (O(1) incremental; resets at 09:15 each day) ---
         # Use candle's own minute (derived from exchange timestamp) — not system clock
         is_first_candle = (closed["minute"] == "09:15")
-        if is_first_candle:
-            # Day reset — start VWAP accumulators from zero
-            ind["vwap_cum_tp_vol"] = 0.0
-            ind["vwap_cum_vol"]    = 0.0
-            ind["vwap_history"]    = []
-            prev_cum_tp_vol = 0.0
-            prev_cum_vol    = 0.0
+        if is_index:
+            new_vwap = None
+            new_cum_tp_vol = ind.get("vwap_cum_tp_vol", 0.0)
+            new_cum_vol = ind.get("vwap_cum_vol", 0.0)
+            vwap_history = list(ind.get("vwap_history", []))
+            vwap_slope = None
         else:
-            prev_cum_tp_vol = ind.get("vwap_cum_tp_vol", 0.0)
-            prev_cum_vol    = ind.get("vwap_cum_vol",    0.0)
+            if is_first_candle:
+                # Day reset — start VWAP accumulators from zero
+                ind["vwap_cum_tp_vol"] = 0.0
+                ind["vwap_cum_vol"]    = 0.0
+                ind["vwap_history"]    = []
+                prev_cum_tp_vol = 0.0
+                prev_cum_vol    = 0.0
+            else:
+                prev_cum_tp_vol = ind.get("vwap_cum_tp_vol", 0.0)
+                prev_cum_vol    = ind.get("vwap_cum_vol",    0.0)
 
-        new_vwap, new_cum_tp_vol, new_cum_vol = update_vwap(
-            prev_cum_tp_vol = prev_cum_tp_vol,
-            prev_cum_vol    = prev_cum_vol,
-            high   = h,
-            low    = l,
-            close  = c,
-            volume = closed["volume"],
-        )
+            new_vwap, new_cum_tp_vol, new_cum_vol = update_vwap(
+                prev_cum_tp_vol = prev_cum_tp_vol,
+                prev_cum_vol    = prev_cum_vol,
+                high   = h,
+                low    = l,
+                close  = c,
+                volume = closed["volume"],
+            )
 
-        # vwap_history: rolling list of last 5 VWAP values (oldest first)
-        vwap_history: list[float] = list(ind.get("vwap_history", []))
-        vwap_history.append(new_vwap)
-        if len(vwap_history) > 5:
-            vwap_history = vwap_history[-5:]
+            # vwap_history: rolling list of last 5 VWAP values (oldest first)
+            vwap_history = list(ind.get("vwap_history", []))
+            vwap_history.append(new_vwap)
+            if len(vwap_history) > 5:
+                vwap_history = vwap_history[-5:]
 
-        # vwap_slope: % change over last 5 candles (or 0 if window not full yet)
-        if len(vwap_history) == 5 and vwap_history[0] != 0:
-            vwap_slope = (vwap_history[-1] - vwap_history[0]) / vwap_history[0] * 100
-        else:
-            vwap_slope = 0.0
+            # vwap_slope: % change over last 5 candles (or 0 if window not full yet)
+            if len(vwap_history) == 5 and vwap_history[0] != 0:
+                vwap_slope = (vwap_history[-1] - vwap_history[0]) / vwap_history[0] * 100
+            else:
+                vwap_slope = 0.0
 
         # Assemble updated indicator dict
         updated_ind: dict[str, Any] = {
@@ -809,7 +716,7 @@ async def _route_tick(symbol: str, ltp: float, volume: int, ts: str) -> None:
     if not _within_session(minute):
         return
 
-    if symbol not in indicators and symbol not in _INDICES_WITH_CANDLES:
+    if symbol not in indicators and symbol not in _INDEX_SYMBOLS:
         # Snapshot not seeded at startup — skip until seeder runs.
         # Indices are allowed through even without seeded snapshot so we can
         # build their 1m/5m/15m/1hr candles for trigger logic.
@@ -895,11 +802,24 @@ async def _subscribe_ticks() -> None:
 
                 try:
                     symbol = data.get("symbol")
+                    token = str(data.get("token", "")).strip()
                     ltp    = data.get("ltp")
                     volume = data.get("volume", 0)
                     ts     = data.get("ts")
 
-                    if not symbol or ltp is None or not ts:
+                    if not ts or ltp is None:
+                        continue
+
+                    # Resolve by token first through existing equity lookup; if no
+                    # match, try dynamic index token registry.
+                    if token:
+                        resolved_symbol = await get_equity_symbol_for_token(token)
+                        if not resolved_symbol and await is_index_token(token):
+                            resolved_symbol = await get_symbol_for_token(token)
+                        if resolved_symbol is None:
+                            continue
+                        symbol = resolved_symbol
+                    elif not symbol:
                         continue
 
                     await _route_tick(symbol, float(ltp), int(volume), ts)
@@ -1083,7 +1003,7 @@ async def _seed_indicators() -> None:
 
     # Ensure index symbols can flow through _route_tick even though they do not
     # have full seeded indicator snapshots like equities.
-    for idx in _INDICES_WITH_CANDLES:
+    for idx in _INDEX_SYMBOLS:
         indicators.setdefault(idx, {"is_index": True})
         tf_accumulators.setdefault(idx, {"5m": None, "15m": None, "1hr": None})
 
@@ -1150,6 +1070,9 @@ async def run_candle_builder() -> None:
     Designed to run as a long-lived asyncio task alongside the equity feed.
     """
     logger.info("[candle_builder] Starting up …")
+    global _INDEX_SYMBOLS
+    _INDEX_SYMBOLS = await load_index_symbols()
+    logger.info(f"[candle_builder] Index symbols loaded: {_INDEX_SYMBOLS}")
 
     await _seed_indicators()
 
