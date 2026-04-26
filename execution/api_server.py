@@ -2154,3 +2154,17 @@ async def debug_index_tokens():
         }
     except Exception as e:
         return {"error": str(e), "index_tokens": {}, "count": 0}
+
+@app.get("/api/debug/index-candles")
+async def debug_index_candles():
+    redis = await get_redis()
+    
+    key1 = await redis.llen("candles:1m:NIFTY")
+    key2 = await redis.llen("candles:NIFTY:1m")
+    key3 = await redis.llen("candles:1m:NIFTY50")
+    
+    return {
+        "candles:1m:NIFTY":   key1,
+        "candles:NIFTY:1m":   key2,
+        "candles:1m:NIFTY50": key3,
+    }
