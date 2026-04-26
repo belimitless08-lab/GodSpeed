@@ -612,8 +612,6 @@
           padding:5px 12px;border-radius:5px;border:none;
           background:#6366f1;color:#fff;cursor:pointer;letter-spacing:0.06em;display:flex;gap:6px;align-items:center;">
           ↑ HISTORY
-          <span style="font-size:9px;opacity:0.95;">T: <span id="history-bar-today-pnl">₹0</span></span>
-          <span style="font-size:9px;opacity:0.95;">U: <span id="history-bar-unrealised-pnl">₹0</span></span>
       </button>
       <button id="theme-toggle" title="Toggle theme">🌙</button>
     </div>
@@ -887,23 +885,30 @@
 </div>
 
 <div id="history-drawer" class="side-drawer" style="height:360px;">
-    <div class="drawer-header">
-        <span class="drawer-title">TRADE HISTORY</span>
-        <div style="display:flex;gap:8px;align-items:center;">
-            <span style="font-size:10px;color:#94a3b8;">From:</span>
-            <input type="date" id="hist-from"
-                style="background:rgba(255,255,255,0.07);border:1px solid #334155;
-                       border-radius:4px;padding:3px 6px;color:#f1f5f9;
-                       font-size:10px;outline:none;cursor:pointer;"
-                onchange="fetchHistory()"/>
-            <span style="font-size:10px;color:#94a3b8;">To:</span>
-            <input type="date" id="hist-to"
-                style="background:rgba(255,255,255,0.07);border:1px solid #334155;
-                       border-radius:4px;padding:3px 6px;color:#f1f5f9;
-                       font-size:10px;outline:none;cursor:pointer;"
-                onchange="fetchHistory()"/>
+    <div class="drawer-header" style="display:flex;flex-direction:column;align-items:stretch;gap:4px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <span class="drawer-title">TRADE HISTORY</span>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <span style="font-size:10px;color:#94a3b8;">From:</span>
+                <input type="date" id="hist-from"
+                    style="background:rgba(255,255,255,0.07);border:1px solid #334155;
+                           border-radius:4px;padding:3px 6px;color:#f1f5f9;
+                           font-size:10px;outline:none;cursor:pointer;"
+                    onchange="fetchHistory()"/>
+                <span style="font-size:10px;color:#94a3b8;">To:</span>
+                <input type="date" id="hist-to"
+                    style="background:rgba(255,255,255,0.07);border:1px solid #334155;
+                           border-radius:4px;padding:3px 6px;color:#f1f5f9;
+                           font-size:10px;outline:none;cursor:pointer;"
+                    onchange="fetchHistory()"/>
+            </div>
+            <button class="drawer-close" onclick="toggleHistoryDrawer()">↑</button>
         </div>
-        <button class="drawer-close" onclick="toggleHistoryDrawer()">↑</button>
+        <div style="font-size:10px;color:#aaa;font-weight:400;letter-spacing:0.02em;">
+            T: <span id="history-strip-total-pnl" style="font-weight:400;color:#aaa;">₹0</span>
+            <span style="color:#64748b;padding:0 8px;">|</span>
+            U: <span id="history-strip-unrealised-pnl" style="font-weight:400;color:#aaa;">₹0</span>
+        </div>
     </div>
     <div style="display:flex;gap:16px;padding:6px 0 10px;
         font-size:11px;border-bottom:1px solid #334155;margin-bottom:8px;flex-wrap:wrap;">
@@ -1169,7 +1174,8 @@ function renderWorldIndices(data) {
 }
 
 async function fetchIndices() {
-  const [idx, world] = await Promise.all([
+  const [_, idx, world] = await Promise.all([
+    fetchIndexSnapshots(),
     apiFetch('/api/indices'),
     apiFetch('/api/world-indices')
   ]);
@@ -1428,8 +1434,8 @@ function renderAccount(d) {
   document.getElementById('hist-avail-margin').textContent = fmtINR(availableMargin);
   document.getElementById('hist-unrealised-pnl').textContent = (upnl>=0?'+':'')+fmtINR(upnl);
   document.getElementById('hist-unrealised-pnl').style.color = colorClass(upnl);
-  document.getElementById('history-bar-today-pnl').textContent = (rpnl>=0?'+':'')+fmtINR(rpnl);
-  document.getElementById('history-bar-unrealised-pnl').textContent = (upnl>=0?'+':'')+fmtINR(upnl);
+  document.getElementById('history-strip-total-pnl').textContent = (rpnl>=0?'+':'')+fmtINR(rpnl);
+  document.getElementById('history-strip-unrealised-pnl').textContent = (upnl>=0?'+':'')+fmtINR(upnl);
   document.getElementById('acc-trades').textContent = d.trade_count ?? d.trades ?? 0;
   document.getElementById('acc-wl').textContent     = `W:${d.win_count ?? d.wins ?? 0} L:${d.loss_count ?? d.losses ?? 0}`;
 }
@@ -3087,8 +3093,8 @@ function initHistoryDateInputs() {
   const today = new Date().toISOString().split('T')[0];
   const fromEl = document.getElementById('hist-from');
   const toEl = document.getElementById('hist-to');
-  if (fromEl && !fromEl.value) fromEl.value = today;
-  if (toEl && !toEl.value) toEl.value = today;
+  if (fromEl) fromEl.value = today;
+  if (toEl) toEl.value = today;
 }
 
 /* ══════════════════════════════════════════
@@ -3109,8 +3115,10 @@ Object.entries(pollers).forEach(([key, p]) => {
 
 // Initial account fetch always
 fetchAccount();
-initHistoryDateInputs();
-fetchIndexSnapshots().then(fetchIndices);
+document.addEventListener('DOMContentLoaded', () => {
+  initHistoryDateInputs();
+});
+fetchIndices();
 
 // Init WebSockets
 initWebSockets();
