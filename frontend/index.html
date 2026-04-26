@@ -47,7 +47,7 @@
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
     min-height: 100vh;
-    padding-bottom: 48px;
+    padding-bottom: 80px;
     transition: background 0.25s, color 0.25s;
   }
 
@@ -555,7 +555,7 @@
     z-index: 999;
     background: #0f1117;
     border-top: 1px solid #1e293b;
-    transform: translateY(calc(100% - 44px));
+    transform: translateY(calc(100% - 72px));
     transition: transform 0.3s ease;
     padding: 0;
   }
@@ -946,46 +946,44 @@
 </div>
 
 <div id="history-drawer" class="side-drawer" style="height:360px;">
-    <div class="drawer-header" style="display:flex;
-  align-items:center; gap:10px; padding:8px 14px;
-  flex-wrap:nowrap;">
+  <!-- Bottom bar: always visible as trigger, two clean rows -->
+  <div class="drawer-header" style="display:flex;flex-direction:column;
+    gap:0;padding:0;cursor:pointer;" onclick="toggleHistoryDrawer()">
 
-  <span style="font-size:11px;font-weight:700;
-    color:#94a3b8;letter-spacing:1px;white-space:nowrap;">
-    TRADE HISTORY
-  </span>
+    <!-- Row 1: Title + PnL summary + arrow -->
+    <div style="display:flex;align-items:center;padding:7px 14px;gap:10px;">
+      <span style="font-size:11px;font-weight:700;color:#94a3b8;
+        letter-spacing:1px;flex:1;">TRADE HISTORY</span>
+      <span style="font-size:11px;">
+        T:&nbsp;<span id="bar-total-pnl"
+          style="font-weight:700;color:#94a3b8;">₹0</span>
+        &nbsp;|&nbsp;U:&nbsp;<span id="bar-unreal-pnl"
+          style="font-weight:700;color:#94a3b8;">₹0</span>
+      </span>
+      <button id="hist-toggle-btn" onclick="event.stopPropagation();toggleHistoryDrawer()"
+        style="background:none;border:none;color:#94a3b8;
+          font-size:16px;cursor:pointer;padding:0 4px;line-height:1;">↑</button>
+    </div>
 
-  <span style="font-size:11px;white-space:nowrap;">
-    T:&nbsp;<span id="bar-total-pnl"
-      style="font-weight:700;color:var(--muted);">₹0</span>
-    &nbsp;|&nbsp;U:&nbsp;<span id="bar-unreal-pnl"
-      style="font-weight:700;color:var(--muted);">₹0</span>
-  </span>
-
-  <div id="history-date-filters" style="display:flex;align-items:center;gap:6px;
-    flex:1;justify-content:center;">
-    <span style="font-size:10px;color:#64748b;">From:</span>
-    <input type="date" id="hist-from"
-      style="background:rgba(255,255,255,0.07);
-        border:1px solid #334155;border-radius:4px;
-        padding:3px 6px;color:#f1f5f9;font-size:10px;
-        outline:none;cursor:pointer;"
-      onchange="fetchHistory()"/>
-    <span style="font-size:10px;color:#64748b;">To:</span>
-    <input type="date" id="hist-to"
-      style="background:rgba(255,255,255,0.07);
-        border:1px solid #334155;border-radius:4px;
-        padding:3px 6px;color:#f1f5f9;font-size:10px;
-        outline:none;cursor:pointer;"
-      onchange="fetchHistory()"/>
+    <!-- Row 2: Date filters -->
+    <div id="history-date-filters" style="display:flex;align-items:center;
+      gap:6px;padding:4px 14px 7px;border-top:1px solid #1e293b;">
+      <span style="font-size:10px;color:#64748b;">From:</span>
+      <input type="date" id="hist-from"
+        onclick="event.stopPropagation()"
+        style="background:rgba(255,255,255,0.07);border:1px solid #334155;
+          border-radius:4px;padding:3px 6px;color:#f1f5f9;font-size:10px;
+          outline:none;cursor:pointer;"
+        onchange="fetchHistory()"/>
+      <span style="font-size:10px;color:#64748b;">To:</span>
+      <input type="date" id="hist-to"
+        onclick="event.stopPropagation()"
+        style="background:rgba(255,255,255,0.07);border:1px solid #334155;
+          border-radius:4px;padding:3px 6px;color:#f1f5f9;font-size:10px;
+          outline:none;cursor:pointer;"
+        onchange="fetchHistory()"/>
+    </div>
   </div>
-
-  <button onclick="toggleHistoryDrawer()"
-    style="background:none;border:none;color:#94a3b8;
-      font-size:18px;cursor:pointer;padding:2px 6px;">
-    ↑
-  </button>
-</div>
     <div id="hist-summary">
   <!-- Account summary: 2x2 on mobile, 4 cols on desktop -->
   <div class="summary-grid-account" style="display:grid;
@@ -2954,7 +2952,7 @@ function toggleHistoryDrawer() {
         }
         fetchHistory()
     }
-    const toggleBtn = document.querySelector('#history-drawer .drawer-header button')
+    const toggleBtn = document.getElementById('hist-toggle-btn')
     if (toggleBtn) toggleBtn.textContent = isOpen ? '↑' : '↓'
 }
 
