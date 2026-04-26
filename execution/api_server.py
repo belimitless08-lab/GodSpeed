@@ -413,14 +413,25 @@ async def _fetch_candles_internal(symbol: str, timeframe: str) -> dict:
     redis = await get_redis()
     key   = f"candles:{timeframe}:{symbol}"
     raw   = await redis.lrange(key, 0, -1)
+    logger.debug("Candles fetch key=%s symbol=%s timeframe=%s raw_count=%d", key, symbol, timeframe, len(raw))
+    if raw:
+        logger.debug("Candles first raw entry key=%s: %s", key, raw[0])
+    else:
+        logger.debug("Candles key=%s has no raw entries", key)
 
     # Each entry = JSON-serialized [ts, o, h, l, c, v]
     # Frontend (lightweight-charts) wants objects with unix-second `time`.
     candles = []
-    for entry in raw:
+    for idx, entry in enumerate(raw):
         try:
             arr = json.loads(entry)
             if not isinstance(arr, list) or len(arr) < 6:
+                logger.debug(
+                    "Candle parse skipped key=%s index=%d reason=unexpected_format entry=%s",
+                    key,
+                    idx,
+                    entry,
+                )
                 continue
             ts, o, h, l, c, v = arr[0], arr[1], arr[2], arr[3], arr[4], arr[5]
             # Convert ISO timestamp to UNIX seconds
@@ -429,10 +440,22 @@ async def _fetch_candles_internal(symbol: str, timeframe: str) -> dict:
                     dt = datetime.fromisoformat(ts)
                     ts_unix = int(dt.timestamp())
                 except Exception:
+                    logger.debug(
+                        "Candle parse skipped key=%s index=%d reason=timestamp_parse_failed ts=%s",
+                        key,
+                        idx,
+                        ts,
+                    )
                     continue
             elif isinstance(ts, (int, float)):
                 ts_unix = int(ts)
             else:
+                logger.debug(
+                    "Candle parse skipped key=%s index=%d reason=unsupported_timestamp_type type=%s",
+                    key,
+                    idx,
+                    type(ts).__name__,
+                )
                 continue
             candles.append({
                 "time":   ts_unix,
@@ -442,7 +465,14 @@ async def _fetch_candles_internal(symbol: str, timeframe: str) -> dict:
                 "close":  float(c),
                 "volume": float(v),
             })
-        except (json.JSONDecodeError, ValueError, TypeError):
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            logger.exception(
+                "Candle parse error key=%s index=%d entry=%s error=%s",
+                key,
+                idx,
+                entry,
+                exc,
+            )
             continue
 
     # Embed pivot data from snapshot so frontend gets everything in one call
@@ -491,6 +521,21 @@ async def get_candles_path(symbol: str, timeframe: str):
     Example: /api/candles/RELIANCE/5m
     """
     return await _fetch_candles_internal(symbol, timeframe)
+
+
+@app.get("/api/debug/candle-sample/{symbol}")
+async def debug_candle_sample(symbol: str):
+    redis = await get_redis()
+    key = f"candles:1m:{symbol}"
+    count = await redis.llen(key)
+    first = await redis.lindex(key, 0)
+    last = await redis.lindex(key, -1)
+    return {
+        "key": key,
+        "count": count,
+        "first_raw": first,
+        "last_raw": last,
+    }
 
 
 @app.get("/api/pivots/{symbol}", response_model=PivotData)
