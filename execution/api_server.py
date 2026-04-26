@@ -2230,12 +2230,60 @@ async def debug_index_candles():
 async def debug_scan_signals():
     from strategy_brain.signal_engines import scan_all_signals
     from core.universe_builder import get_symbols
+    import traceback
 
     redis = await get_redis()
     results = []
-    symbols = await get_symbols()
-    last_candle_date = ""
+    symbols = []
+    snapshot_sample = {}
+    candle_sample = {}
+    first_5 = []
 
+    try:
+        symbols = await get_symbols()
+    except Exception as e:
+        return {"error": f"get_symbols failed: {str(e)}"}
+
+    # Diagnostic: check RELIANCE snapshot and candles
+    test_sym = "RELIANCE"
+    try:
+        snap = await redis.hgetall(f"snapshot:{test_sym}")
+        snapshot_sample = {
+            "symbol": test_sym,
+            "has_snapshot": bool(snap),
+            "ltp": snap.get("ltp"),
+            "prev_close": snap.get("prev_close"),
+            "ema9": snap.get("ema9"),
+            "rsi14": snap.get("rsi14"),
+            "supertrend_dir": snap.get("supertrend_dir"),
+            "choppiness_class": snap.get("choppiness_class"),
+            "orb_high": snap.get("orb_high"),
+            "orb_low": snap.get("orb_low"),
+            "vwap": snap.get("vwap"),
+        }
+    except Exception as e:
+        snapshot_sample = {"error": str(e)}
+
+    try:
+        count = await redis.llen(f"candles:1m:{test_sym}")
+        candle_sample = {"symbol": test_sym, "candle_count_1m": count}
+    except Exception as e:
+        candle_sample = {"error": str(e)}
+
+    # Scan first 5 with full error detail
+    for symbol in symbols[:5]:
+        try:
+            signals = await scan_all_signals(symbol)
+            first_5.append({
+                "symbol": symbol,
+                "signals": signals,
+                "count": len(signals) if signals else 0
+            })
+        except Exception as e:
+            first_5.append({"symbol": symbol, "error": traceback.format_exc()})
+
+    # Full scan
+    last_candle_date = ""
     for symbol in symbols:
         try:
             signals = await scan_all_signals(symbol)
@@ -2255,7 +2303,6 @@ async def debug_scan_signals():
                         "choppiness_class": snap.get("choppiness_class", ""),
                         "rsi14":            snap.get("rsi14", 0),
                         "ema9":             snap.get("ema9", 0),
-                        "vwap":             snap.get("vwap", 0),
                         "pp":               snap.get("pp", 0),
                         "r1":               snap.get("r1", 0),
                         "s1":               snap.get("s1", 0),
@@ -2266,135 +2313,15 @@ async def debug_scan_signals():
 
     grouped = {}
     for r in results:
-        st = r["signal_type"]
-        grouped.setdefault(st, []).append(r)
+        grouped.setdefault(r["signal_type"], []).append(r)
 
     return {
-        "scanned":          len(symbols),
-        "signals_found":    len(results),
-        "last_candle_date": last_candle_date,
-        "grouped":          grouped,
-        "flat":             results,
-    }
-
-
-@app.get("/api/debug/scan-signals")
-async def debug_scan_signals():
-    from strategy_brain.signal_engines import scan_all_signals
-    from core.universe_builder import get_symbols
-    
-    redis = await get_redis()
-    results = []
-    errors = []
-    symbols = []
-    
-    try:
-        symbols = await get_symbols()
-    except Exception as e:
-        return {"error": f"get_symbols failed: {str(e)}", 
-                "scanned": 0, "signals_found": 0, 
-                "grouped": {}, "flat": []}
-    
-    for symbol in symbols:
-        try:
-            signals = await scan_all_signals(symbol)
-            if signals:
-                snap = await redis.hgetall(f"snapshot:{symbol}")
-                for signal in signals:
-                    results.append({
-                        "symbol":           symbol,
-                        "signal_type":      signal.get("type", ""),
-                        "direction":        signal.get("direction", ""),
-                        "ltp":              snap.get("ltp", 0),
-                        "prev_close":       snap.get("prev_close", 0),
-                        "supertrend_dir":   snap.get("supertrend_dir", ""),
-                        "choppiness_class": snap.get("choppiness_class", ""),
-                        "rsi14":            snap.get("rsi14", 0),
-                        "ema9":             snap.get("ema9", 0),
-                        "pp":               snap.get("pp", 0),
-                        "r1":               snap.get("r1", 0),
-                        "s1":               snap.get("s1", 0),
-                        "sector":           snap.get("sector", ""),
-                    })
-        except Exception as e:
-            errors.append({"symbol": symbol, "error": str(e)})
-            continue
-    
-    grouped = {}
-    for r in results:
-        st = r["signal_type"]
-        grouped.setdefault(st, []).append(r)
-    
-    return {
-        "scanned":       len(symbols),
-        "signals_found": len(results),
-        "errors":        errors[:10],
-        "sample_symbol": symbols[0] if symbols else None,
-        "grouped":       grouped,
-        "flat":          results,
-    }
-
-
-@app.get("/api/debug/scan-signals")
-async def debug_scan_signals():
-    from strategy_brain.signal_engines import scan_all_signals
-    from core.universe_builder import get_symbols
-    
-    redis = await get_redis()
-    results = []
-    errors = []
-    symbols = []
-    snapshot_sample = {}
-    candle_sample = {}
-    
-    try:
-        symbols = await get_symbols()
-    except Exception as e:
-        return {"error": f"get_symbols failed: {str(e)}"}
-    
-    # Check first symbol's snapshot and candles for diagnosis
-    if symbols:
-        test_sym = symbols[0]
-        try:
-            snap = await redis.hgetall(f"snapshot:{test_sym}")
-            snapshot_sample = {
-                "symbol": test_sym,
-                "has_snapshot": bool(snap),
-                "ema9": snap.get("ema9"),
-                "rsi14": snap.get("rsi14"),
-                "supertrend_dir": snap.get("supertrend_dir"),
-                "ltp": snap.get("ltp"),
-                "prev_close": snap.get("prev_close"),
-                "orb_high": snap.get("orb_high"),
-                "orb_low": snap.get("orb_low"),
-            }
-        except Exception as e:
-            snapshot_sample = {"error": str(e)}
-        
-        try:
-            count = await redis.llen(f"candles:1m:{test_sym}")
-            candle_sample = {
-                "symbol": test_sym,
-                "candle_count_1m": count,
-            }
-        except Exception as e:
-            candle_sample = {"error": str(e)}
-    
-    # Scan first 5 symbols only for speed, with full error detail
-    for symbol in symbols[:5]:
-        try:
-            signals = await scan_all_signals(symbol)
-            errors.append({
-                "symbol": symbol, 
-                "signals": signals,
-                "signal_count": len(signals) if signals else 0
-            })
-        except Exception as e:
-            errors.append({"symbol": symbol, "error": str(e)})
-    
-    return {
-        "total_symbols": len(symbols),
-        "snapshot_sample": snapshot_sample,
-        "candle_sample": candle_sample,
-        "first_5_scan_results": errors,
+        "scanned":            len(symbols),
+        "signals_found":      len(results),
+        "last_candle_date":   last_candle_date,
+        "snapshot_sample":    snapshot_sample,
+        "candle_sample":      candle_sample,
+        "first_5_scan":       first_5,
+        "grouped":            grouped,
+        "flat":               results,
     }
