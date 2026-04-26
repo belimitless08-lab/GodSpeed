@@ -41,6 +41,7 @@ from core.universe_builder import (
     get_token_map,
 )
 from execution.options_rest import publish_angel_jwt
+from strategy_brain.global_indices_scraper import scrape_and_store as _scrape_global_indices, REDIS_TTL_SEED as _GLOBAL_TTL
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1228,6 +1229,23 @@ async def run_seeder(force: bool = False) -> None:
         "Phase B complete: %d/%d symbols seeded in %.1fs.",
         options_ok, len(symbols), phase_b_seconds,
     )
+
+    # -----------------------------------------------------------------------
+    # Global Indices seed (Groww CFD data — macro pre-market context)
+    # -----------------------------------------------------------------------
+    logger.info("[seeder] seeding global indices from Groww...")
+    try:
+        redis_sync = await get_redis()
+        # scrape_and_store is synchronous (requests) — run in thread pool
+        ok = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _scrape_global_indices(redis_sync, ttl=_GLOBAL_TTL)
+        )
+        if ok:
+            logger.info("[seeder] global indices seeded ✅")
+        else:
+            logger.warning("[seeder] global indices seed failed — dashboard will show unavailable")
+    except Exception as _gi_exc:
+        logger.error("[seeder] global indices seed exception: %s", _gi_exc)
 
     # -----------------------------------------------------------------------
     # Write completion status to Redis
