@@ -47,7 +47,7 @@
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
     min-height: 100vh;
-    padding-bottom: 80px;
+    padding-bottom: 50px;
     transition: background 0.25s, color 0.25s;
   }
 
@@ -554,13 +554,15 @@
     right: 0;
     z-index: 999;
     background: #0f1117;
-    border-top: 1px solid #1e293b;
-    transform: translateY(calc(100% - 72px));
+    border-top: 2px solid #6366f1;
+    transform: translateY(calc(100% - 42px));
     transition: transform 0.3s ease;
     padding: 0;
+    overflow: hidden;
   }
   #history-drawer.hist-open {
     transform: translateY(0%);
+    overflow-y: auto;
   }
 
   /* Position/Pending rows */
@@ -946,44 +948,65 @@
 </div>
 
 <div id="history-drawer" class="side-drawer" style="height:360px;">
-  <!-- Bottom bar: always visible as trigger, two clean rows -->
-  <div class="drawer-header" style="display:flex;flex-direction:column;
-    gap:0;padding:0;cursor:pointer;" onclick="toggleHistoryDrawer()">
+  <!-- Single compact trigger row — always visible -->
+  <div class="drawer-header" onclick="toggleHistoryDrawer()" style="
+    display:flex; align-items:center; gap:0;
+    padding:0 14px; height:42px; cursor:pointer;
+    user-select:none;">
 
-    <!-- Row 1: Title + PnL summary + arrow -->
-    <div style="display:flex;align-items:center;padding:7px 14px;gap:10px;">
-      <span style="font-size:11px;font-weight:700;color:#94a3b8;
-        letter-spacing:1px;flex:1;">TRADE HISTORY</span>
-      <span style="font-size:11px;">
-        T:&nbsp;<span id="bar-total-pnl"
-          style="font-weight:700;color:#94a3b8;">₹0</span>
-        &nbsp;|&nbsp;U:&nbsp;<span id="bar-unreal-pnl"
-          style="font-weight:700;color:#94a3b8;">₹0</span>
-      </span>
-      <button id="hist-toggle-btn" onclick="event.stopPropagation();toggleHistoryDrawer()"
-        style="background:none;border:none;color:#94a3b8;
-          font-size:16px;cursor:pointer;padding:0 4px;line-height:1;">↑</button>
-    </div>
+    <!-- Trades label + date range -->
+    <span style="font-size:10px;font-weight:600;color:#6366f1;
+      letter-spacing:0.5px;white-space:nowrap;margin-right:6px;">
+      TRADES
+    </span>
+    <span id="bar-date-range" style="font-size:10px;color:#64748b;
+      white-space:nowrap;flex:1;">
+      —
+    </span>
 
-    <!-- Row 2: Date filters -->
-    <div id="history-date-filters" style="display:flex;align-items:center;
-      gap:6px;padding:4px 14px 7px;border-top:1px solid #1e293b;">
-      <span style="font-size:10px;color:#64748b;">From:</span>
-      <input type="date" id="hist-from"
-        onclick="event.stopPropagation()"
-        style="background:rgba(255,255,255,0.07);border:1px solid #334155;
-          border-radius:4px;padding:3px 6px;color:#f1f5f9;font-size:10px;
-          outline:none;cursor:pointer;"
-        onchange="fetchHistory()"/>
-      <span style="font-size:10px;color:#64748b;">To:</span>
-      <input type="date" id="hist-to"
-        onclick="event.stopPropagation()"
-        style="background:rgba(255,255,255,0.07);border:1px solid #334155;
-          border-radius:4px;padding:3px 6px;color:#f1f5f9;font-size:10px;
-          outline:none;cursor:pointer;"
-        onchange="fetchHistory()"/>
-    </div>
+    <!-- Hidden date inputs (still functional) -->
+    <input type="date" id="hist-from" style="display:none;"
+      onchange="fetchHistory()"/>
+    <input type="date" id="hist-to" style="display:none;"
+      onchange="fetchHistory()"/>
+
+    <!-- Divider -->
+    <span style="color:#1e293b;margin:0 10px;">|</span>
+
+    <!-- UPL -->
+    <span style="font-size:10px;color:#64748b;margin-right:4px;">UPL</span>
+    <span id="bar-unreal-pnl" style="font-size:11px;font-weight:700;
+      color:#94a3b8;margin-right:10px;">₹0</span>
+
+    <!-- Divider -->
+    <span style="color:#1e293b;margin-right:10px;">|</span>
+
+    <!-- PL -->
+    <span style="font-size:10px;color:#64748b;margin-right:4px;">P/L</span>
+    <span id="bar-total-pnl" style="font-size:11px;font-weight:700;
+      color:#94a3b8;margin-right:10px;">₹0</span>
+
+    <!-- Arrow -->
+    <span id="hist-toggle-btn" style="font-size:14px;color:#6366f1;
+      font-weight:700;">↑</span>
   </div>
+    <!-- Date filter row — visible when drawer is open -->
+    <div style="display:flex;align-items:center;gap:8px;
+      padding:8px 14px;border-bottom:1px solid #1e293b;
+      background:#0d1017;">
+      <span style="font-size:10px;color:#64748b;font-weight:600;">FROM</span>
+      <input type="date" id="hist-from-vis"
+        style="background:rgba(255,255,255,0.07);border:1px solid #334155;
+          border-radius:4px;padding:4px 8px;color:#f1f5f9;font-size:11px;
+          outline:none;cursor:pointer;flex:1;"
+        onchange="syncDates('from',this.value)"/>
+      <span style="font-size:10px;color:#64748b;font-weight:600;">TO</span>
+      <input type="date" id="hist-to-vis"
+        style="background:rgba(255,255,255,0.07);border:1px solid #334155;
+          border-radius:4px;padding:4px 8px;color:#f1f5f9;font-size:11px;
+          outline:none;cursor:pointer;flex:1;"
+        onchange="syncDates('to',this.value)"/>
+    </div>
     <div id="hist-summary">
   <!-- Account summary: 2x2 on mobile, 4 cols on desktop -->
   <div class="summary-grid-account" style="display:grid;
@@ -2934,17 +2957,27 @@ function toggleHistoryDrawer() {
     const isOpen = d.classList.contains('hist-open')
     if (isOpen) {
         d.classList.remove('hist-open')
+        const btn = document.getElementById('hist-toggle-btn')
+        if (btn) btn.textContent = '↑'
     } else {
         const pos = document.getElementById('positions-drawer')
         const pend = document.getElementById('pending-drawer')
         if (pos) pos.style.display = 'none'
         if (pend) pend.style.display = 'none'
         d.classList.add('hist-open')
+        const btn = document.getElementById('hist-toggle-btn')
+        if (btn) btn.textContent = '↓'
         const today = new Date().toISOString().slice(0,10)
         const fromEl = document.getElementById('hist-from')
         const toEl = document.getElementById('hist-to')
         if (fromEl && !fromEl.value) fromEl.value = today
         if (toEl && !toEl.value) toEl.value = today
+        // Sync visible inputs
+        const fromVis = document.getElementById('hist-from-vis')
+        const toVis = document.getElementById('hist-to-vis')
+        if (fromVis) fromVis.value = fromEl ? fromEl.value : today
+        if (toVis) toVis.value = toEl ? toEl.value : today
+        updateBarDateRange()
         if (typeof latestAccountData !== 'undefined' && latestAccountData) {
             renderAccount(latestAccountData)
         } else {
@@ -2952,8 +2985,38 @@ function toggleHistoryDrawer() {
         }
         fetchHistory()
     }
-    const toggleBtn = document.getElementById('hist-toggle-btn')
-    if (toggleBtn) toggleBtn.textContent = isOpen ? '↑' : '↓'
+}
+
+function updateBarDateRange() {
+    const fromEl = document.getElementById('hist-from')
+    const toEl = document.getElementById('hist-to')
+    const el = document.getElementById('bar-date-range')
+    if (!el) return
+    const from = fromEl ? fromEl.value : ''
+    const to = toEl ? toEl.value : ''
+    if (from && to && from === to) {
+        el.textContent = formatDateShort(from)
+    } else if (from && to) {
+        el.textContent = formatDateShort(from) + ' – ' + formatDateShort(to)
+    } else {
+        el.textContent = '—'
+    }
+}
+
+function formatDateShort(d) {
+    if (!d) return '—'
+    const months = ['Jan','Feb','Mar','Apr','May','Jun',
+                    'Jul','Aug','Sep','Oct','Nov','Dec']
+    const parts = d.split('-')
+    return parts[2] + ' ' + months[parseInt(parts[1])-1]
+}
+
+function syncDates(field, value) {
+    // Sync visible inputs with hidden inputs
+    const hidden = document.getElementById(field === 'from' ? 'hist-from' : 'hist-to')
+    if (hidden) hidden.value = value
+    updateBarDateRange()
+    fetchHistory()
 }
 
 async function fetchHistory() {
@@ -3300,8 +3363,13 @@ function initHistoryDateInputs() {
   const today = new Date().toISOString().split('T')[0];
   const fromEl = document.getElementById('hist-from');
   const toEl = document.getElementById('hist-to');
+  const fromVis = document.getElementById('hist-from-vis');
+  const toVis = document.getElementById('hist-to-vis');
   if (fromEl) fromEl.value = today;
   if (toEl) toEl.value = today;
+  if (fromVis) fromVis.value = today;
+  if (toVis) toVis.value = today;
+  updateBarDateRange();
 }
 
 /* ══════════════════════════════════════════
