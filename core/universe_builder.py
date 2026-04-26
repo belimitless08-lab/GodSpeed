@@ -178,7 +178,7 @@ async def _download_master() -> list[dict]:
     return data
 
 
-def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, str]:
+def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, dict[str, str]]:
     """
     Extract spot-index AMXIDX tokens for configured symbols.
 
@@ -201,7 +201,7 @@ def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, str]:
             str(inst.get("exch_seg", "")),
         )
 
-    out: dict[str, str] = {}
+    out: dict[str, dict[str, str]] = {}
     for cfg in INDEX_SPOT_SEARCH:
         symbol = str(cfg.get("symbol", "")).strip().upper()
         exch_seg = str(cfg.get("exch_seg", "")).strip().upper()
@@ -214,11 +214,14 @@ def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, str]:
                 continue
             name = str(inst.get("name", "")).strip()
             if name == exact_name:
-                out[symbol] = str(inst.get("token", ""))
+                out[symbol] = {
+                    "token": str(inst.get("token", "")),
+                    "exch_seg": str(inst.get("exch_seg", "")).strip().upper(),
+                }
                 logger.info(
                     "[universe] Index spot token resolved: %s -> %s (name=%s, exch_seg=%s)",
                     symbol,
-                    out[symbol],
+                    out[symbol]["token"],
                     name,
                     str(inst.get("exch_seg", "")),
                 )
@@ -233,6 +236,43 @@ def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, str]:
             )
 
     return out
+
+
+async def store_index_spot_tokens(tokens: dict) -> None:
+    redis = await get_redis()
+
+    # Step 1: delete ALL stale index keys unconditionally
+    await redis.delete("index:tokens")
+
+    stale_keys = []
+    async for key in redis.scan_iter(match="index:meta:*"):
+        stale_keys.append(key)
+    async for key in redis.scan_iter(match="index:token_to_symbol:*"):
+        stale_keys.append(key)
+    if stale_keys:
+        await redis.delete(*stale_keys)
+
+    # Step 2: write fresh data
+    for symbol, meta in tokens.items():
+        token = meta["token"]
+        exch = meta["exch_seg"]
+        await redis.hset("index:tokens", symbol, token)
+        await redis.hset(
+            f"index:meta:{symbol}",
+            mapping={"token": token, "exch_seg": exch}
+        )
+        await redis.set(
+            f"index:token_to_symbol:{token}", symbol, ex=86400
+        )
+        logger.info(
+            "[universe] Stored index spot token: %s -> %s (%s)",
+            symbol, token, exch
+        )
+
+    logger.info(
+        "[universe] store_index_spot_tokens complete: %d tokens written: %s",
+        len(tokens), list(tokens.keys())
+    )
 
 
 def _build_maps(instruments: list[dict]) -> tuple[list[str], dict[str, str], dict[str, int]]:
@@ -354,7 +394,9 @@ def _build_maps(instruments: list[dict]) -> tuple[list[str], dict[str, str], dic
 
     # Add spot-index AMXIDX tokens so indices can be resolved by token users
     # of universe:token_map (e.g. NIFTY/BANKNIFTY/SENSEX).
-    token_map.update(_extract_index_spot_tokens(instruments))
+    token_map.update(
+        {symbol: meta["token"] for symbol, meta in _extract_index_spot_tokens(instruments).items()}
+    )
 
     # ------------------------------------------------------------------
     # Final universe — include ALL F&O underlyings regardless of EQ token.
@@ -1039,6 +1081,8 @@ async def build_universe() -> dict:
     parse failure (no silent fallback to stale data).
     """
     instruments = await _download_master()
+    index_spot = _extract_index_spot_tokens(instruments)
+    await store_index_spot_tokens(index_spot)
     symbols, token_map, lot_sizes = _build_maps(instruments)
     meta = await _write_to_redis(symbols, token_map, lot_sizes)
 
