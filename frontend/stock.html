@@ -988,16 +988,26 @@ let ltpPriceLine = candleSeries.createPriceLine({
 
 // Pivot lines
 let pivotSeries = [];
-function setPivotLines(pivots) {
-  if (!chart || !candleSeries || !pivots) return;
+let lastCandleTime = null;
 
+function clearPivotSeries() {
   pivotSeries.forEach(s => { try { chart.removeSeries(s); } catch(e) {} });
   pivotSeries = [];
+}
 
-  const nowIST = new Date(Date.now() + 19800000);
-  const todayStr = nowIST.toISOString().slice(0, 10);
-  const sessionStart = Math.floor(new Date(`${todayStr}T09:15:00+05:30`).getTime() / 1000);
-  const sessionEnd   = Math.floor(new Date(`${todayStr}T15:30:00+05:30`).getTime() / 1000);
+function setPivotLines(pivots) {
+  if (!chart || !pivots || !lastCandleTime) return;
+
+  clearPivotSeries();
+
+  const lastCandleIST = new Date((lastCandleTime + 19800) * 1000);
+  const yyyy = lastCandleIST.getUTCFullYear();
+  const mm = String(lastCandleIST.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(lastCandleIST.getUTCDate()).padStart(2, '0');
+  const tradingDay = `${yyyy}-${mm}-${dd}`;
+
+  const sessionStart = Math.floor(new Date(`${tradingDay}T09:15:00+05:30`).getTime() / 1000);
+  const sessionEnd   = Math.floor(new Date(`${tradingDay}T15:30:00+05:30`).getTime() / 1000);
 
   const defs = [
     { key: 'pp', color: '#eab308', label: 'PP' },
@@ -1023,7 +1033,7 @@ function setPivotLines(pivots) {
 
     series.setData([
       { time: sessionStart, value: price },
-      { time: sessionEnd,   value: price },
+      { time: sessionEnd, value: price },
     ]);
 
     pivotSeries.push(series);
@@ -1075,8 +1085,7 @@ function applyIndState() {
   vwapSeries.applyOptions({visible: !!s.vwap});
   volSeries.applyOptions({visible: !!s.vol});
   if (!s.pivots) {
-    pivotSeries.forEach(srs => { try { chart.removeSeries(srs); } catch(e) {} });
-    pivotSeries = [];
+    clearPivotSeries();
   }
   document.querySelectorAll('.ind-toggle').forEach(btn => {
     const ind = btn.dataset.ind;
@@ -1105,6 +1114,7 @@ async function fetchChartData(tf) {
     time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
   }));
   candleSeries.setData(candles);
+  lastCandleTime = candles.length ? candles[candles.length - 1].time : null;
 
   if (data.ema9)   ema9Series.setData(data.ema9.map((v,i) => ({time: data.candles[i].time, value:v})).filter(x=>x.value));
   if (data.ema16)  ema16Series.setData(data.ema16.map((v,i) => ({time: data.candles[i].time, value:v})).filter(x=>x.value));
@@ -1205,6 +1215,7 @@ function showSymDropdown(q) {
 }
 
 function goSymbol(sym) {
+  clearPivotSeries();
   window.location.href = 'stock.html?symbol=' + sym;
 }
 
@@ -1823,6 +1834,10 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+window.addEventListener('beforeunload', () => {
+  clearPivotSeries();
+});
+
 document.getElementById('header-symbol').textContent = SYMBOL;
 document.getElementById('order-sym-display').textContent = SYMBOL;
 document.getElementById('pos-sym-title').textContent = SYMBOL;
