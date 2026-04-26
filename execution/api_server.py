@@ -2276,3 +2276,60 @@ async def debug_scan_signals():
         "grouped":          grouped,
         "flat":             results,
     }
+
+
+@app.get("/api/debug/scan-signals")
+async def debug_scan_signals():
+    from strategy_brain.signal_engines import scan_all_signals
+    from core.universe_builder import get_symbols
+    
+    redis = await get_redis()
+    results = []
+    errors = []
+    symbols = []
+    
+    try:
+        symbols = await get_symbols()
+    except Exception as e:
+        return {"error": f"get_symbols failed: {str(e)}", 
+                "scanned": 0, "signals_found": 0, 
+                "grouped": {}, "flat": []}
+    
+    for symbol in symbols:
+        try:
+            signals = await scan_all_signals(symbol)
+            if signals:
+                snap = await redis.hgetall(f"snapshot:{symbol}")
+                for signal in signals:
+                    results.append({
+                        "symbol":           symbol,
+                        "signal_type":      signal.get("type", ""),
+                        "direction":        signal.get("direction", ""),
+                        "ltp":              snap.get("ltp", 0),
+                        "prev_close":       snap.get("prev_close", 0),
+                        "supertrend_dir":   snap.get("supertrend_dir", ""),
+                        "choppiness_class": snap.get("choppiness_class", ""),
+                        "rsi14":            snap.get("rsi14", 0),
+                        "ema9":             snap.get("ema9", 0),
+                        "pp":               snap.get("pp", 0),
+                        "r1":               snap.get("r1", 0),
+                        "s1":               snap.get("s1", 0),
+                        "sector":           snap.get("sector", ""),
+                    })
+        except Exception as e:
+            errors.append({"symbol": symbol, "error": str(e)})
+            continue
+    
+    grouped = {}
+    for r in results:
+        st = r["signal_type"]
+        grouped.setdefault(st, []).append(r)
+    
+    return {
+        "scanned":       len(symbols),
+        "signals_found": len(results),
+        "errors":        errors[:10],
+        "sample_symbol": symbols[0] if symbols else None,
+        "grouped":       grouped,
+        "flat":          results,
+    }
