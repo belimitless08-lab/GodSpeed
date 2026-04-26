@@ -245,12 +245,23 @@ def _extract_index_spot_tokens(instruments: list[dict]) -> dict[str, dict[str, s
                 break
 
         if symbol not in out:
-            logger.warning(
-                "[universe] Index spot token not found for %s (exch_seg=%s, name=%s)",
-                symbol,
-                exch_seg,
-                cfg.get("name", ""),
-            )
+            # If symbol has a preferred token, use it directly as fallback
+            if symbol in PREFERRED_TOKENS:
+                out[symbol] = {
+                    "token": PREFERRED_TOKENS[symbol],
+                    "exch_seg": exch_seg,
+                }
+                logger.info(
+                    "[universe] Index spot token forced from PREFERRED_TOKENS: "
+                    "%s -> %s",
+                    symbol, PREFERRED_TOKENS[symbol],
+                )
+            else:
+                logger.warning(
+                    "[universe] Index spot token not found for %s "
+                    "(exch_seg=%s, name=%s)",
+                    symbol, exch_seg, cfg.get("name", ""),
+                )
 
     return out
 
@@ -269,10 +280,17 @@ async def store_index_spot_tokens(tokens: dict) -> None:
     if stale_keys:
         await redis.delete(*stale_keys)
 
-    # Step 2: write fresh data
+    # Step 2: write fresh data (apply PREFERRED_TOKENS override as safety net)
     for symbol, meta in tokens.items():
         token = meta["token"]
         exch = meta["exch_seg"]
+        # Final safety override — never write a known wrong token
+        if symbol in PREFERRED_TOKENS and token != PREFERRED_TOKENS[symbol]:
+            logger.warning(
+                "[universe] Overriding wrong token for %s: %s -> %s",
+                symbol, token, PREFERRED_TOKENS[symbol]
+            )
+            token = PREFERRED_TOKENS[symbol]
         await redis.hset("index:tokens", symbol, token)
         await redis.hset(
             f"index:meta:{symbol}",
