@@ -64,14 +64,12 @@ async def _load_options_tick(symbol: str, strike: int, opt_type: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def _gate1_choppiness(snap: dict) -> tuple[bool, str]:
-    """Gate 1 — Choppiness veto: price action too choppy vs own baseline."""
-    chop14   = _safe_float(snap.get("choppiness14"),   50.0)
-    chop_avg = _safe_float(snap.get("choppiness_5d_avg"), 50.0)
-    chop_std = _safe_float(snap.get("choppiness_5d_std"),  5.0)
-
-    threshold = chop_avg + 0.5 * chop_std
-    if chop14 > threshold:
-        logger.debug("[gate1] CHOPPY_MARKET chop14=%.2f > threshold=%.2f", chop14, threshold)
+    """Gate 1 — Choppiness veto: reads pre-classified choppiness_class written by candle_builder."""
+    chop_class = snap.get("choppiness_class", "NEUTRAL")
+    if chop_class == "CHOPPY":
+        logger.debug(
+            "[gate1] CHOPPY_MARKET chop_class=%s", chop_class
+        )
         return False, "CHOPPY_MARKET"
     return True, ""
 
