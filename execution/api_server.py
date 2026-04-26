@@ -928,8 +928,11 @@ async def get_indices():
         if ltp <= 0:
             continue  # Still nothing — omit tile
 
-        prev_close = _sf(snap, "prev_close") or ltp
-        change_pct = (ltp - prev_close) / max(prev_close, 1) * 100
+        prev_close = _sf(snap, "prev_close")
+        if prev_close > 0:
+            change_pct = ((ltp - prev_close) / prev_close) * 100
+        else:
+            change_pct = 0.0
 
         pcr_raw = await redis.get(f"options:pcr:{sym}")
         pcr     = _safe_float(pcr_raw)
