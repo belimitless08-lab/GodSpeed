@@ -284,6 +284,7 @@ async def _flush_candle_to_redis(
         "ema200":          str(updated_ind["ema200"]),
         "atr14":           str(updated_ind["atr14"]),
         "choppiness14":    str(updated_ind["choppiness14"]),
+        "choppiness_class": "CHOPPY" if float(updated_ind["choppiness14"]) >= 61.8 else ("TRENDING" if float(updated_ind["choppiness14"]) <= 38.2 else "NEUTRAL"),
         "supertrend_dir":  st_label,
         "supertrend_band": str(updated_ind["supertrend_band"]),
         # RSI14 — rsi_avg_gain / rsi_avg_loss stored for next incremental update
@@ -699,6 +700,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
 
         # Write to snapshot
         await redis.hset(f"snapshot:{symbol}", mapping={
+            "choppiness_class":           choppiness_class,
             "consecutive_choppy_candles": str(state[symbol]["consecutive_choppy_candles"]),
             "choppy_range_high":          str(state[symbol].get("choppy_range_high", 0)),
             "choppy_range_low":           str(state[symbol].get("choppy_range_low", 0)),
