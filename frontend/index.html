@@ -441,9 +441,26 @@
 
   /* ── RESPONSIVE ── */
   @media(max-width: 768px) {
+    #index-tiles {
+      overflow-x: auto;
+      white-space: nowrap;
+      flex-wrap: nowrap;
+    }
+    #outlook-grid,
     #signals-grid { grid-template-columns: 1fr !important; }
     #chart-popup { width: 95vw !important; left: 2.5vw !important; }
     .signal-row { grid-template-columns: 70px 44px 1fr 50px 60px 24px; }
+    #action-bar, #action-bar > div {
+      flex-wrap: wrap;
+    }
+
+    /* All tables inside drawers scroll horizontally on mobile */
+    .side-drawer table,
+    .side-drawer .drawer-content table {
+      display: block;
+      overflow-x: auto;
+      width: 100%;
+    }
   }
 
   [data-theme="light"] .popup-header,
@@ -872,6 +889,13 @@
                 onchange="fetchHistory()"/>
         </div>
         <button class="drawer-close" onclick="toggleHistoryDrawer()">✕</button>
+    </div>
+    <div style="display:flex;gap:16px;padding:6px 0 10px;
+        font-size:11px;border-bottom:1px solid #334155;margin-bottom:8px;flex-wrap:wrap;">
+        <span>Live Balance: <span id="hist-live-balance" style="color:#f1f5f9;font-weight:700;">₹0</span></span>
+        <span>Available Margin: <span id="hist-avail-margin" style="color:#f1f5f9;font-weight:700;">₹0</span></span>
+        <span>Realised PnL: <span id="hist-realised-pnl" style="font-weight:700;">₹0</span></span>
+        <span>Unrealised PnL: <span id="hist-unrealised-pnl" style="font-weight:700;">₹0</span></span>
     </div>
     <div id="hist-summary" style="display:flex;gap:16px;padding:6px 0 10px;
         font-size:11px;border-bottom:1px solid #334155;margin-bottom:8px;">
@@ -1353,6 +1377,12 @@ function renderAccount(d) {
   document.getElementById('acc-upnl').style.color   = colorClass(upnl);
   document.getElementById('acc-total').textContent  = (total>=0?'+':'')+fmtINR(total);
   document.getElementById('acc-total').style.color  = colorClass(total);
+  document.getElementById('hist-live-balance').textContent = fmtINR((d.available || 0) + (d.used || 0));
+  document.getElementById('hist-avail-margin').textContent = fmtINR(d.available || 0);
+  document.getElementById('hist-realised-pnl').textContent = (rpnl>=0?'+':'')+fmtINR(rpnl);
+  document.getElementById('hist-realised-pnl').style.color = colorClass(rpnl);
+  document.getElementById('hist-unrealised-pnl').textContent = (upnl>=0?'+':'')+fmtINR(upnl);
+  document.getElementById('hist-unrealised-pnl').style.color = colorClass(upnl);
   document.getElementById('acc-trades').textContent = d.trades || 0;
   document.getElementById('acc-wl').textContent     = `W:${d.wins||0} L:${d.losses||0}`;
 }
@@ -2372,11 +2402,20 @@ const state = {
 
 let positionsData = [];
 
+function closeAllDrawers() {
+  document.getElementById('positions-drawer').style.transform = 'translateY(100%)';
+  document.getElementById('pending-drawer').style.transform = 'translateY(100%)';
+  document.getElementById('history-drawer').style.transform = 'translateY(100%)';
+}
+
 function togglePositionsDrawer() {
   const d = document.getElementById('positions-drawer');
   const open = d.style.transform === 'translateY(0%)';
-  d.style.transform = open ? 'translateY(100%)' : 'translateY(0%)';
-  if (!open) fetchPositions();
+  closeAllDrawers();
+  if (!open) {
+    d.style.transform = 'translateY(0%)';
+    fetchPositions();
+  }
 }
 
 async function fetchPositions() {
@@ -2564,8 +2603,11 @@ async function confirmClosePosition(tradeId) {
 function togglePendingDrawer() {
   const d = document.getElementById('pending-drawer');
   const open = d.style.transform === 'translateY(0%)';
-  d.style.transform = open ? 'translateY(100%)' : 'translateY(0%)';
-  if (!open) fetchPendingOrders();
+  closeAllDrawers();
+  if (!open) {
+    d.style.transform = 'translateY(0%)';
+    fetchPendingOrders();
+  }
 }
 
 async function fetchPendingOrders() {
@@ -2645,8 +2687,9 @@ async function cancelPendingOrder(orderId, symbol) {
 function toggleHistoryDrawer() {
     const d = document.getElementById('history-drawer')
     const open = d.style.transform === 'translateY(0%)'
-    d.style.transform = open ? 'translateY(100%)' : 'translateY(0%)'
+    closeAllDrawers()
     if (!open) {
+        d.style.transform = 'translateY(0%)'
         const today = new Date().toISOString().slice(0,10)
         if (!document.getElementById('hist-from').value)
             document.getElementById('hist-from').value = today
