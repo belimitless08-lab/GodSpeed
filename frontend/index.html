@@ -480,6 +480,12 @@
   }
 
   /* ── RESPONSIVE ── */
+  @media(min-width:769px) {
+    #hist-summary .summary-grid-account {
+      grid-template-columns: repeat(4, 1fr) !important;
+    }
+  }
+
   @media(max-width: 768px) {
     #index-tiles {
       overflow-x: auto;
@@ -966,44 +972,83 @@
   </button>
 </div>
     <div id="hist-summary">
-  <div class="summary-grid">
-    <div class="summary-box">
-      <span class="summary-label">Live Balance</span>
-      <span class="summary-value" id="hs-acc-bal">₹0</span>
+  <!-- Account summary: 2x2 on mobile, 4 cols on desktop -->
+  <div class="summary-grid-account" style="display:grid;
+    grid-template-columns:repeat(2,1fr);
+    gap:10px;
+    background:rgba(255,255,255,0.03);
+    padding:12px;border-radius:6px;
+    border:1px solid #1e293b;
+    margin-bottom:10px;width:100%;
+    box-sizing:border-box;">
+    <div>
+      <div style="font-size:9px;color:#64748b;
+        text-transform:uppercase;letter-spacing:0.5px;
+        margin-bottom:3px;">Live Balance</div>
+      <div style="font-size:15px;font-weight:700;
+        color:#f1f5f9;" id="hs-acc-bal">₹0</div>
     </div>
-    <div class="summary-box">
-      <span class="summary-label">Available Margin</span>
-      <span class="summary-value" id="hs-acc-avail">₹0</span>
+    <div>
+      <div style="font-size:9px;color:#64748b;
+        text-transform:uppercase;letter-spacing:0.5px;
+        margin-bottom:3px;">Available Margin</div>
+      <div style="font-size:15px;font-weight:700;
+        color:#f1f5f9;" id="hs-acc-avail">₹0</div>
     </div>
-    <div class="summary-box">
-      <span class="summary-label">Realised PnL</span>
-      <span class="summary-value" id="hs-acc-rpnl">₹0</span>
+    <div>
+      <div style="font-size:9px;color:#64748b;
+        text-transform:uppercase;letter-spacing:0.5px;
+        margin-bottom:3px;">Realised PnL</div>
+      <div style="font-size:15px;font-weight:700;"
+        id="hs-acc-rpnl">₹0</div>
     </div>
-    <div class="summary-box">
-      <span class="summary-label">Unrealised PnL</span>
-      <span class="summary-value" id="hs-acc-upnl">₹0</span>
+    <div>
+      <div style="font-size:9px;color:#64748b;
+        text-transform:uppercase;letter-spacing:0.5px;
+        margin-bottom:3px;">Unrealised PnL</div>
+      <div style="font-size:15px;font-weight:700;"
+        id="hs-acc-upnl">₹0</div>
     </div>
   </div>
-  <div class="summary-grid"
-    style="grid-template-columns:repeat(auto-fit,minmax(80px,1fr));">
-    <div class="summary-box">
-      <span class="summary-label">Period Trades</span>
-      <span class="summary-value" id="hs-count">0</span>
+
+  <!-- Period stats: 4 cols on both mobile and desktop -->
+  <div style="display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:8px;
+    background:rgba(255,255,255,0.02);
+    padding:10px;border-radius:6px;
+    border:1px solid #1e293b;
+    margin-bottom:10px;width:100%;
+    box-sizing:border-box;font-size:11px;">
+    <div>
+      <div style="color:#64748b;font-size:9px;
+        text-transform:uppercase;margin-bottom:3px;">
+        Trades</div>
+      <div style="font-weight:700;color:#f1f5f9;"
+        id="hs-count">0</div>
     </div>
-    <div class="summary-box">
-      <span class="summary-label">Win / Loss</span>
-      <span class="summary-value">
-        <span id="hs-wins" style="color:var(--green)">0</span> /
-        <span id="hs-loss" style="color:var(--red)">0</span>
-      </span>
+    <div>
+      <div style="color:#64748b;font-size:9px;
+        text-transform:uppercase;margin-bottom:3px;">
+        W / L</div>
+      <div style="font-weight:700;">
+        <span style="color:#22c55e;" id="hs-wins">0</span>
+        <span style="color:#64748b;"> / </span>
+        <span style="color:#ef4444;" id="hs-loss">0</span>
+      </div>
     </div>
-    <div class="summary-box">
-      <span class="summary-label">Win %</span>
-      <span class="summary-value" id="hs-winpct">—</span>
+    <div>
+      <div style="color:#64748b;font-size:9px;
+        text-transform:uppercase;margin-bottom:3px;">
+        Win%</div>
+      <div style="font-weight:700;color:#f1f5f9;"
+        id="hs-winpct">—</div>
     </div>
-    <div class="summary-box">
-      <span class="summary-label">Period PnL</span>
-      <span class="summary-value" id="hs-pnl">₹0</span>
+    <div>
+      <div style="color:#64748b;font-size:9px;
+        text-transform:uppercase;margin-bottom:3px;">
+        Period PnL</div>
+      <div style="font-weight:700;" id="hs-pnl">₹0</div>
     </div>
   </div>
 </div>
@@ -1500,12 +1545,12 @@ let latestAccountData = null;
 
 function renderAccount(d) {
   if (!d) return;
-  const avail = parseFloat(d.available) || 0;
-  const used  = parseFloat(d.used) || 0;
+  const avail = parseFloat(d.available_margin) || 0;
+  const used  = parseFloat(d.used_margin) || 0;
   const rpnl  = parseFloat(d.realised_pnl) || 0;
   const upnl  = parseFloat(d.unrealised_pnl) || 0;
-  const balance = avail + used;
-  const total   = rpnl + upnl;
+  const bal   = avail + used;
+  const total = rpnl + upnl;
 
   const set = (id, val) => {
     const el = document.getElementById(id);
@@ -1513,47 +1558,56 @@ function renderAccount(d) {
   };
   const setColor = (id, val) => {
     const el = document.getElementById(id);
-    if (el) {
-      el.textContent = (val >= 0 ? '+' : '') + fmtINR(val);
-      el.style.color = val > 0 ? 'var(--green)'
-                     : val < 0 ? 'var(--red)'
-                     : 'var(--muted)';
-    }
+    if (!el) return;
+    el.textContent = (val >= 0 ? '+' : '') + fmtINR(val);
+    el.style.color = val > 0 ? '#22c55e'
+                   : val < 0 ? '#ef4444'
+                   : '#94a3b8';
   };
 
+  // Main account bar
   set('acc-avail',  fmtINR(avail));
   set('acc-used',   fmtINR(used));
-  set('acc-trades', d.trades || 0);
-  set('acc-wl',     `W:${d.wins||0} L:${d.losses||0}`);
+  set('acc-trades', d.trade_count || 0);
+  set('acc-wl', `W:${d.win_count||0} L:${d.loss_count||0}`);
   setColor('acc-rpnl',  rpnl);
   setColor('acc-upnl',  upnl);
   setColor('acc-total', total);
 
-  set('hs-acc-bal',   fmtINR(balance));
+  // History drawer summary cards
+  set('hs-acc-bal',   fmtINR(bal));
   set('hs-acc-avail', fmtINR(avail));
   setColor('hs-acc-rpnl', rpnl);
   setColor('hs-acc-upnl', upnl);
 
-  // Bottom bar
-  const barPnl = document.getElementById('bar-total-pnl');
-  if (barPnl) {
-    barPnl.textContent = (rpnl >= 0 ? '+' : '') + fmtINR(rpnl);
-    barPnl.style.color = rpnl > 0 ? 'var(--green)'
-                       : rpnl < 0 ? 'var(--red)'
-                       : 'var(--muted)';
+  // Bottom history bar
+  const barT = document.getElementById('bar-total-pnl');
+  if (barT) {
+    barT.textContent = (rpnl >= 0 ? '+' : '') + fmtINR(rpnl);
+    barT.style.color = rpnl > 0 ? '#22c55e'
+                     : rpnl < 0 ? '#ef4444'
+                     : '#94a3b8';
   }
-  const barUnreal = document.getElementById('bar-unreal-pnl');
-  if (barUnreal) {
-    barUnreal.textContent = (upnl >= 0 ? '+' : '') + fmtINR(upnl);
-    barUnreal.style.color = upnl > 0 ? 'var(--green)'
-                          : upnl < 0 ? 'var(--red)'
-                          : 'var(--muted)';
+  const barU = document.getElementById('bar-unreal-pnl');
+  if (barU) {
+    barU.textContent = (upnl >= 0 ? '+' : '') + fmtINR(upnl);
+    barU.style.color = upnl > 0 ? '#22c55e'
+                     : upnl < 0 ? '#ef4444'
+                     : '#94a3b8';
   }
 }
 
 async function fetchAccount() {
   const d = await apiFetch('/api/account');
-  renderAccount(d || {available_margin:845000, used_margin:155000, realised_pnl:3200, unrealised_pnl:-800, trade_count:5, win_count:3, loss_count:2, starting_balance:1000000, total_pnl:2400});
+  renderAccount(d || {
+  available_margin: 0,
+  used_margin: 0,
+  realised_pnl: 0,
+  unrealised_pnl: 0,
+  trade_count: 0,
+  win_count: 0,
+  loss_count: 0
+});
 }
 
 /* ══════════════════════════════════════════
@@ -2568,18 +2622,23 @@ const state = {
 let positionsData = [];
 
 function closeAllDrawers() {
-  document.getElementById('positions-drawer').style.transform = 'translateY(100%)';
-  document.getElementById('pending-drawer').style.transform = 'translateY(100%)';
-  const historyDrawer = document.getElementById('history-drawer');
-  historyDrawer.style.transform = 'translateY(100%)';
-  historyDrawer.classList.remove('history-open');
+  const drawers = [
+    'positions-drawer',
+    'pending-drawer',
+    'history-drawer'
+  ];
+  drawers.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
 }
 
 function togglePositionsDrawer() {
+  closeAllDrawers();
   const d = document.getElementById('positions-drawer');
   const open = d.style.transform === 'translateY(0%)';
-  closeAllDrawers();
   if (!open) {
+    d.style.display = 'block';
     d.style.transform = 'translateY(0%)';
     fetchPositions();
   }
@@ -2768,10 +2827,11 @@ async function confirmClosePosition(tradeId) {
    PENDING ORDERS DRAWER (Change 5)
 ══════════════════════════════════════════ */
 function togglePendingDrawer() {
+  closeAllDrawers();
   const d = document.getElementById('pending-drawer');
   const open = d.style.transform === 'translateY(0%)';
-  closeAllDrawers();
   if (!open) {
+    d.style.display = 'block';
     d.style.transform = 'translateY(0%)';
     fetchPendingOrders();
   }
@@ -2852,10 +2912,11 @@ async function cancelPendingOrder(orderId, symbol) {
    TRADE HISTORY DRAWER
 ══════════════════════════════════════════ */
 function toggleHistoryDrawer() {
+    closeAllDrawers()
     const d = document.getElementById('history-drawer')
     const open = d.style.transform === 'translateY(0%)'
-    closeAllDrawers()
     if (!open) {
+        d.style.display = 'block'
         d.style.transform = 'translateY(0%)'
         d.classList.add('history-open')
         if (latestAccountData) renderAccount(latestAccountData);
