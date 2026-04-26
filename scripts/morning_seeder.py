@@ -36,6 +36,7 @@ else:
 from core.universe_builder import (
     build_universe,
     get_lot_sizes,
+    load_index_symbols,
     get_symbols,
     get_token_map,
 )
@@ -975,6 +976,100 @@ async def run_seeder(force: bool = False) -> None:
         "Phase A complete: %d/%d symbols seeded in %.1fs.",
         equity_ok, len(symbols), phase_a_seconds,
     )
+
+    # Seed index snapshots
+    index_symbols = await load_index_symbols()
+    logger.info(f"[seeder] Seeding snapshots for {len(index_symbols)} indices: {index_symbols}")
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        for symbol in index_symbols:
+            redis = await get_redis()
+            token = await redis.hget("index:tokens", symbol)
+            if not token:
+                logger.warning(f"[seeder] No token for index {symbol} — skipping")
+                continue
+
+            try:
+                candles = await fetch_candles(
+                    session, "NSE", str(token), "ONE_MINUTE", from_dt, to_dt, http_client
+                )
+                if not candles or len(candles) < 2:
+                    logger.warning(f"[seeder] Too few candles for index {symbol} ({len(candles)}), skipping")
+                    continue
+
+                opens = np.array([c[1] for c in candles], dtype=float)
+                highs = np.array([c[2] for c in candles], dtype=float)
+                lows = np.array([c[3] for c in candles], dtype=float)
+                closes = np.array([c[4] for c in candles], dtype=float)
+                volumes = np.array([c[5] for c in candles], dtype=float)
+                timestamps = [c[0] for c in candles]
+
+                day_map: dict[str, list[int]] = {}
+                for idx, ts in enumerate(timestamps):
+                    day_key = ts[:10]
+                    day_map.setdefault(day_key, []).append(idx)
+
+                sorted_days = sorted(day_map.keys())
+                if not sorted_days:
+                    logger.warning(f"[seeder] No grouped day data for index {symbol}, skipping")
+                    continue
+                if len(sorted_days) < 2:
+                    prev_day_indices = day_map[sorted_days[-1]]
+                else:
+                    prev_day_indices = day_map[sorted_days[-2]]
+
+                pd_opens = opens[prev_day_indices]
+                pd_highs = highs[prev_day_indices]
+                pd_lows = lows[prev_day_indices]
+                pd_closes = closes[prev_day_indices]
+                pd_volumes = volumes[prev_day_indices]
+
+                prev_open = float(pd_opens[0])
+                prev_high = float(np.max(pd_highs))
+                prev_low = float(np.min(pd_lows))
+                prev_close = float(pd_closes[-1])
+                prev_volume = float(np.sum(pd_volumes))
+                classic = compute_pivots_classic(prev_high, prev_low, prev_close)
+
+                snapshot = {
+                    "ema9": 0.0,
+                    "ema16": 0.0,
+                    "ema200": 0.0,
+                    "atr14": 0.0,
+                    "avg_volume_5d": 0.0,
+                    "rsi14": 0.0,
+                    "rsi_avg_gain": 0.0,
+                    "rsi_avg_loss": 0.0,
+                    "prev_day": {
+                        "open": round(prev_open, 2),
+                        "high": round(prev_high, 2),
+                        "low": round(prev_low, 2),
+                        "close": round(prev_close, 2),
+                        "volume": round(prev_volume, 2),
+                        "classic": classic,
+                    },
+                    "choppiness14": None,
+                    "supertrend": {
+                        "direction": "BULL",
+                        "band": 0.0,
+                    },
+                    "lot_size": 1,
+                    "token": str(token),
+                    "seeded_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+                mapping = _snapshot_to_hash_mapping(snapshot)
+                mapping.update(
+                    {
+                        "ltp": str(round(prev_close, 2)),
+                        "symbol": symbol,
+                        "sector": "INDEX",
+                    }
+                )
+                await redis.hset(f"snapshot:{symbol}", mapping=mapping)
+                logger.info(f"[seeder] Seeded snapshot for index {symbol}")
+            except Exception as exc:
+                logger.error(f"[seeder] Failed to seed snapshot for index {symbol} — {exc}")
 
     # -----------------------------------------------------------------------
     # PHASE B — Options Baseline
