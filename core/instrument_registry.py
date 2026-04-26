@@ -16,6 +16,10 @@ INDEX_SYMBOLS = [
     {"symbol": "SENSEX", "exch_seg": "BSE", "search_name": "SENSEX"},
 ]
 
+PREFERRED_TOKENS = {
+    "NIFTY": "99926000",   # NIFTY 50 — not 99926004 (NIFTY 500)
+}
+
 
 async def resolve_index_tokens(master_df: pd.DataFrame) -> dict:
     """Resolve index tokens from AngelOne master dataframe without hardcoded fallbacks."""
@@ -47,6 +51,10 @@ async def resolve_index_tokens(master_df: pd.DataFrame) -> dict:
             resolved[symbol] = {"token": token, "exch_seg": exch_seg}
     except Exception as e:
         logger.error(f"[registry] Failed resolving index tokens: {e}")
+
+    for symbol, forced_token in PREFERRED_TOKENS.items():
+        if symbol in resolved:
+            resolved[symbol]["token"] = forced_token
 
     return resolved
 
