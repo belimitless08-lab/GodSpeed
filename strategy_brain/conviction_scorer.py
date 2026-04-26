@@ -158,12 +158,12 @@ def _score_relative_strength(
     return 0.0
 
 
-async def _score_options_flow(
+async def _score_options_flow_raw(
     symbol: str,
     weight: float,
     direction: str,
 ) -> float:
-    """Pillar 3 — Options OI flow imbalance."""
+    """Pillar 3 — Options OI flow imbalance (raw component)."""
     redis = await get_redis()
 
     prev_raw = await redis.get(f"options:prev:{symbol}")
@@ -211,6 +211,72 @@ async def _score_options_flow(
     elif oi_flow < -0.2:
         return weight * -1.0   # opposing flow penalty
     return 0.0
+
+
+async def _score_options_flow(
+    symbol: str,
+    weight: float,
+    direction: str,
+) -> float:
+    """
+    Pillar 3 — Blended options OI flow + AI sentiment.
+
+    Combines:
+      • 60% weight  → raw OI flow imbalance  (_score_options_flow_raw)
+      • 40% weight  → AI sentiment from Redis key ``ai:sentiment:{symbol}``
+
+    If the AI sentiment key is absent (no-news day / pipeline not run),
+    ``ai_contribution`` is 0 and the raw options score passes through
+    unchanged (i.e. the blend simply returns ``options_flow_score * 0.6``
+    for the options portion — total weight is preserved because the caller
+    already sized ``weight`` to cover the full pillar).
+
+    AI sentiment JSON contract
+    --------------------------
+    Key  : ``ai:sentiment:{symbol}``
+    Value: ``{"score": <float -5 … +5>, ...}``   (extra keys ignored)
+    """
+    options_flow_score = await _score_options_flow_raw(symbol, weight, direction)
+
+    # ── AI sentiment ────────────────────────────────────────────────────
+    redis = await get_redis()
+    ai_raw_bytes = await redis.get(f"ai:sentiment:{symbol}")
+
+    ai_contribution = 0.0
+    if ai_raw_bytes:
+        try:
+            ai_raw = json.loads(ai_raw_bytes)
+            ai_score_raw = float(ai_raw.get("score", 0))  # -5 to +5
+
+            if direction == "LONG":
+                if ai_score_raw >= 2.0:
+                    ai_contribution = weight * 0.4    # strong bullish AI → +40% of weight
+                elif ai_score_raw >= 0.5:
+                    ai_contribution = weight * 0.2
+                elif ai_score_raw <= -2.0:
+                    ai_contribution = weight * -0.3   # AI contradicts → penalty
+                else:
+                    ai_contribution = 0.0
+            else:  # SHORT
+                if ai_score_raw <= -2.0:
+                    ai_contribution = weight * 0.4
+                elif ai_score_raw <= -0.5:
+                    ai_contribution = weight * 0.2
+                elif ai_score_raw >= 2.0:
+                    ai_contribution = weight * -0.3
+                else:
+                    ai_contribution = 0.0
+
+        except (json.JSONDecodeError, TypeError, ValueError):
+            logger.warning(
+                "[scorer] Malformed ai:sentiment for %s — skipping AI contribution",
+                symbol,
+            )
+            ai_contribution = 0.0
+
+    # ── Blend: 60% options flow + 40% AI sentiment ──────────────────────
+    options_contribution = options_flow_score * 0.6
+    return options_contribution + ai_contribution
 
 
 def _score_vwap_trend(snap: dict, weight: float, direction: str) -> float:
