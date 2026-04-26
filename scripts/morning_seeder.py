@@ -981,19 +981,20 @@ async def run_seeder(force: bool = False) -> None:
     index_symbols = await load_index_symbols()
     logger.info(f"[seeder] Seeding snapshots for {len(index_symbols)} indices: {index_symbols}")
 
+    redis = await get_redis()
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         for symbol in index_symbols:
-            redis = await get_redis()
             token = await redis.hget("index:tokens", symbol)
             if not token:
                 logger.warning(f"[seeder] No token for index {symbol} — skipping")
                 continue
 
             try:
+                token_str = token.decode() if isinstance(token, (bytes, bytearray)) else str(token)
                 candles = await fetch_candles(
-                    session, "NSE", str(token), "ONE_MINUTE", from_dt, to_dt, http_client
+                    session, "NSE", token_str, "ONE_MINUTE", from_dt, to_dt, http_client
                 )
-                if not candles or len(candles) < 2:
+                if not candles or len(candles) < 20:
                     logger.warning(f"[seeder] Too few candles for index {symbol} ({len(candles)}), skipping")
                     continue
 
@@ -1029,15 +1030,31 @@ async def run_seeder(force: bool = False) -> None:
                 prev_low = float(np.min(pd_lows))
                 prev_close = float(pd_closes[-1])
                 prev_volume = float(np.sum(pd_volumes))
+
+                ema9 = float(ema_vectorized(closes, 9)[-1])
+                atr14 = compute_atr14(highs, lows, closes)
+                choppiness14 = compute_choppiness(highs, lows, closes)
+                st_direction, st_band = compute_supertrend(highs, lows, closes)
+                rsi14, _, _ = compute_rsi14_wilder(closes)
                 classic = compute_pivots_classic(prev_high, prev_low, prev_close)
+                camarilla = compute_pivots_camarilla(prev_high, prev_low, prev_close)
+
+                raw_candles = [[c[0], c[1], c[2], c[3], c[4], c[5]] for c in candles]
+                candle_key_1m = f"candles:{symbol}:1m"
+                async with redis.pipeline(transaction=False) as pipe:
+                    pipe.delete(candle_key_1m)
+                    for candle in raw_candles:
+                        pipe.rpush(candle_key_1m, json.dumps(candle))
+                    pipe.ltrim(candle_key_1m, -500, -1)
+                    await pipe.execute()
 
                 snapshot = {
-                    "ema9": 0.0,
+                    "ema9": round(ema9, 4),
                     "ema16": 0.0,
                     "ema200": 0.0,
-                    "atr14": 0.0,
+                    "atr14": round(atr14, 4),
                     "avg_volume_5d": 0.0,
-                    "rsi14": 0.0,
+                    "rsi14": rsi14,
                     "rsi_avg_gain": 0.0,
                     "rsi_avg_loss": 0.0,
                     "prev_day": {
@@ -1047,14 +1064,15 @@ async def run_seeder(force: bool = False) -> None:
                         "close": round(prev_close, 2),
                         "volume": round(prev_volume, 2),
                         "classic": classic,
+                        "camarilla": camarilla,
                     },
-                    "choppiness14": None,
+                    "choppiness14": round(choppiness14, 4) if choppiness14 == choppiness14 else None,
                     "supertrend": {
-                        "direction": "BULL",
-                        "band": 0.0,
+                        "direction": st_direction,
+                        "band": round(st_band, 4),
                     },
                     "lot_size": 1,
-                    "token": str(token),
+                    "token": token_str,
                     "seeded_at": datetime.now(timezone.utc).isoformat(),
                 }
 
@@ -1067,7 +1085,7 @@ async def run_seeder(force: bool = False) -> None:
                     }
                 )
                 await redis.hset(f"snapshot:{symbol}", mapping=mapping)
-                logger.info(f"[seeder] Seeded snapshot for index {symbol}")
+                logger.info(f"[seeder] Index {symbol}: 1m candles + snapshot seeded")
             except Exception as exc:
                 logger.error(f"[seeder] Failed to seed snapshot for index {symbol} — {exc}")
 
