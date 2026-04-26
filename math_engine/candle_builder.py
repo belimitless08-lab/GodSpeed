@@ -37,10 +37,14 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 from core.instrument_registry import (
-    load_index_symbols, get_symbol_for_token, is_index_token
+    get_symbol_for_token, is_index_token
 )
 from core.redis_client import get_redis
-from core.universe_builder import get_symbols, get_symbol_for_token as get_equity_symbol_for_token
+from core.universe_builder import (
+    get_symbols,
+    get_symbol_for_token as get_equity_symbol_for_token,
+    load_index_symbols,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
