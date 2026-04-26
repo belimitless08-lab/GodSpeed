@@ -2333,3 +2333,68 @@ async def debug_scan_signals():
         "grouped":       grouped,
         "flat":          results,
     }
+
+
+@app.get("/api/debug/scan-signals")
+async def debug_scan_signals():
+    from strategy_brain.signal_engines import scan_all_signals
+    from core.universe_builder import get_symbols
+    
+    redis = await get_redis()
+    results = []
+    errors = []
+    symbols = []
+    snapshot_sample = {}
+    candle_sample = {}
+    
+    try:
+        symbols = await get_symbols()
+    except Exception as e:
+        return {"error": f"get_symbols failed: {str(e)}"}
+    
+    # Check first symbol's snapshot and candles for diagnosis
+    if symbols:
+        test_sym = symbols[0]
+        try:
+            snap = await redis.hgetall(f"snapshot:{test_sym}")
+            snapshot_sample = {
+                "symbol": test_sym,
+                "has_snapshot": bool(snap),
+                "ema9": snap.get("ema9"),
+                "rsi14": snap.get("rsi14"),
+                "supertrend_dir": snap.get("supertrend_dir"),
+                "ltp": snap.get("ltp"),
+                "prev_close": snap.get("prev_close"),
+                "orb_high": snap.get("orb_high"),
+                "orb_low": snap.get("orb_low"),
+            }
+        except Exception as e:
+            snapshot_sample = {"error": str(e)}
+        
+        try:
+            count = await redis.llen(f"candles:1m:{test_sym}")
+            candle_sample = {
+                "symbol": test_sym,
+                "candle_count_1m": count,
+            }
+        except Exception as e:
+            candle_sample = {"error": str(e)}
+    
+    # Scan first 5 symbols only for speed, with full error detail
+    for symbol in symbols[:5]:
+        try:
+            signals = await scan_all_signals(symbol)
+            errors.append({
+                "symbol": symbol, 
+                "signals": signals,
+                "signal_count": len(signals) if signals else 0
+            })
+        except Exception as e:
+            errors.append({"symbol": symbol, "error": str(e)})
+    
+    return {
+        "total_symbols": len(symbols),
+        "snapshot_sample": snapshot_sample,
+        "candle_sample": candle_sample,
+        "first_5_scan_results": errors,
+    }
