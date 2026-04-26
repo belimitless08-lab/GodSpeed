@@ -1052,23 +1052,12 @@ async def run_seeder(force: bool = False) -> None:
                 classic = compute_pivots_classic(prev_high, prev_low, prev_close)
                 camarilla = compute_pivots_camarilla(prev_high, prev_low, prev_close)
 
+                raw_candles = [[c[0], c[1], c[2], c[3], c[4], 0] for c in candles]
                 candle_key_1m = f"candles:1m:{symbol}"
                 async with redis.pipeline(transaction=False) as pipe:
                     pipe.delete(candle_key_1m)
-                    for candle in reversed(candles):
-                        pipe.lpush(
-                            candle_key_1m,
-                            json.dumps(
-                                {
-                                    "t": candle[0],
-                                    "o": candle[1],
-                                    "h": candle[2],
-                                    "l": candle[3],
-                                    "c": candle[4],
-                                    "v": candle[5],
-                                }
-                            ),
-                        )
+                    for candle in raw_candles:
+                        pipe.rpush(candle_key_1m, json.dumps(candle))
                     pipe.ltrim(candle_key_1m, -500, -1)
                     await pipe.execute()
 
