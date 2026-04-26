@@ -41,7 +41,7 @@ from pydantic import BaseModel
 from core.config import cfg, validate
 from core.redis_client import get_redis, close, ping as redis_ping
 from core.universe_builder import build_universe, get_symbols, get_lot_sizes
-from strategy_brain.global_indices_scraper import scrape_and_store as _scrape_global_indices, REDIS_TTL_SEED as _GLOBAL_TTL
+from strategy_brain.ai_pipeline.global_indices_scraper import scrape_and_store as _scrape_global_indices, REDIS_TTL_SEED as _GLOBAL_TTL
 from execution.order_manager import (
     init_paper_account,
     get_paper_account,
