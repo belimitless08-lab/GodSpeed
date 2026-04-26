@@ -1001,10 +1001,11 @@ async def run_seeder(force: bool = False) -> None:
 
             try:
                 token_str = token.decode() if isinstance(token, (bytes, bytearray)) else str(token)
+                exchange = "BSE" if symbol == "SENSEX" else "NSE"
                 candles = await fetch_candles(
-                    session, "NSE", token_str, "ONE_MINUTE", index_from_dt, to_dt, http_client
+                    session, exchange, token_str, "ONE_MINUTE", index_from_dt, to_dt, http_client
                 )
-                if not candles or len(candles) < 20:
+                if not candles or len(candles) < 200:
                     logger.warning(f"[seeder] Too few candles for index {symbol} ({len(candles)}), skipping")
                     continue
 
@@ -1042,6 +1043,8 @@ async def run_seeder(force: bool = False) -> None:
                 prev_volume = float(np.sum(pd_volumes))
 
                 ema9 = float(ema_vectorized(closes, 9)[-1])
+                ema16 = float(ema_vectorized(closes, 16)[-1])
+                ema200 = float(ema_vectorized(closes, 200)[-1])
                 atr14 = compute_atr14(highs, lows, closes)
                 choppiness14 = compute_choppiness(highs, lows, closes)
                 st_direction, st_band = compute_supertrend(highs, lows, closes)
@@ -1071,8 +1074,8 @@ async def run_seeder(force: bool = False) -> None:
 
                 snapshot = {
                     "ema9": round(ema9, 4),
-                    "ema16": 0.0,
-                    "ema200": 0.0,
+                    "ema16": round(ema16, 4),
+                    "ema200": round(ema200, 4),
                     "atr14": round(atr14, 4),
                     "avg_volume_5d": 0.0,
                     "rsi14": rsi14,
@@ -1094,6 +1097,7 @@ async def run_seeder(force: bool = False) -> None:
                     },
                     "lot_size": 1,
                     "token": token_str,
+                    "sector": "INDEX",
                     "seeded_at": datetime.now(timezone.utc).isoformat(),
                 }
 
