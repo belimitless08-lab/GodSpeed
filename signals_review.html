@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Signal Scanner — Market Pulse Pro</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --card: #1a1d2e;
+      --accent: #6c63ff;
+      --text: #e8ebf5;
+      --muted: #9aa3b2;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #f59e0b;
+      --border: #2a2f45;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .container {
+      width: min(1280px, 96vw);
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .header {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      letter-spacing: 0.2px;
+    }
+
+    .meta {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 18px 0 14px;
+    }
+
+    .tab {
+      background: #15192a;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 0.82rem;
+    }
+
+    .tab.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent) inset;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 940px;
+    }
+
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .badge {
+      border-radius: 999px;
+      display: inline-block;
+      padding: 3px 8px;
+      font-size: 0.76rem;
+      font-weight: 700;
+      border: 1px solid transparent;
+    }
+
+    .dir-long, .trend-bull, .chop-trending {
+      color: #d8ffe6;
+      background: rgba(34,197,94,0.2);
+      border-color: rgba(34,197,94,0.45);
+    }
+
+    .dir-short, .trend-bear, .chop-choppy {
+      color: #ffd9d9;
+      background: rgba(239,68,68,0.2);
+      border-color: rgba(239,68,68,0.45);
+    }
+
+    .chop-neutral {
+      color: #fff3d5;
+      background: rgba(245,158,11,0.2);
+      border-color: rgba(245,158,11,0.45);
+    }
+
+    footer {
+      margin-top: auto;
+      padding: 20px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.9rem;
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div>
+        <h1>Signal Scanner — Market Pulse Pro</h1>
+        <div id="status" class="meta">Ready to scan.</div>
+      </div>
+      <button id="runScanBtn">Run Scan</button>
+    </header>
+
+    <section id="tabs" class="tabs"></section>
+
+    <section class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Direction</th>
+            <th>LTP</th>
+            <th>Prev Close</th>
+            <th>Supertrend</th>
+            <th>Choppiness</th>
+            <th>RSI14</th>
+            <th>Sector</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty">Run a scan to view signals.</div>
+    </section>
+  </div>
+
+  <footer>
+    Signal scan uses Friday closing data. Live signals fire during market hours only.
+  </footer>
+
+  <script>
+    const runScanBtn = document.getElementById('runScanBtn');
+    const statusEl = document.getElementById('status');
+    const tabsEl = document.getElementById('tabs');
+    const rowsEl = document.getElementById('rows');
+    const emptyEl = document.getElementById('empty');
+
+    let groupedSignals = {};
+    let activeType = '';
+
+    const fmt = (v) => {
+      const n = Number(v);
+      if (Number.isNaN(n)) return v ?? '';
+      return n.toFixed(2);
+    };
+
+    function renderTabs() {
+      tabsEl.innerHTML = '';
+      const types = Object.keys(groupedSignals);
+      if (!types.length) {
+        activeType = '';
+        renderRows();
+        return;
+      }
+
+      if (!activeType || !groupedSignals[activeType]) {
+        activeType = types[0];
+      }
+
+      types.forEach((type) => {
+        const btn = document.createElement('button');
+        btn.className = `tab ${type === activeType ? 'active' : ''}`;
+        btn.textContent = `${type} (${groupedSignals[type].length})`;
+        btn.onclick = () => {
+          activeType = type;
+          renderTabs();
+        };
+        tabsEl.appendChild(btn);
+      });
+
+      renderRows();
+    }
+
+    function badgeClassForDirection(dir) {
+      return dir === 'LONG' ? 'dir-long' : 'dir-short';
+    }
+
+    function badgeClassForChop(ch) {
+      if (ch === 'TRENDING') return 'chop-trending';
+      if (ch === 'NEUTRAL') return 'chop-neutral';
+      return 'chop-choppy';
+    }
+
+    function badgeClassForTrend(t) {
+      return t === 'BULL' ? 'trend-bull' : 'trend-bear';
+    }
+
+    function renderRows() {
+      rowsEl.innerHTML = '';
+      const list = activeType ? (groupedSignals[activeType] || []) : [];
+      if (!list.length) {
+        emptyEl.style.display = 'block';
+        emptyEl.textContent = 'No signals for this section.';
+        return;
+      }
+
+      emptyEl.style.display = 'none';
+
+      const sorted = [...list].sort((a, b) => {
+        const aRsi = Number(a.rsi14) || 0;
+        const bRsi = Number(b.rsi14) || 0;
+        const aDir = (a.direction || '').toUpperCase();
+        const bDir = (b.direction || '').toUpperCase();
+
+        if (aDir === bDir) {
+          return aDir === 'SHORT' ? (aRsi - bRsi) : (bRsi - aRsi);
+        }
+
+        if (aDir === 'LONG') return -1;
+        if (bDir === 'LONG') return 1;
+        return bRsi - aRsi;
+      });
+
+      sorted.forEach((r) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${r.symbol || ''}</td>
+          <td><span class="badge ${badgeClassForDirection((r.direction || '').toUpperCase())}">${(r.direction || '').toUpperCase()}</span></td>
+          <td>${fmt(r.ltp)}</td>
+          <td>${fmt(r.prev_close)}</td>
+          <td><span class="badge ${badgeClassForTrend((r.supertrend_dir || '').toUpperCase())}">${(r.supertrend_dir || '').toUpperCase()}</span></td>
+          <td><span class="badge ${badgeClassForChop((r.choppiness_class || '').toUpperCase())}">${(r.choppiness_class || '').toUpperCase()}</span></td>
+          <td>${fmt(r.rsi14)}</td>
+          <td>${r.sector || ''}</td>
+        `;
+        rowsEl.appendChild(tr);
+      });
+    }
+
+    async function runScan() {
+      runScanBtn.disabled = true;
+      statusEl.textContent = 'Scanning 213 symbols...';
+      try {
+        const res = await fetch('/api/debug/scan-signals');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        groupedSignals = data.grouped || {};
+
+        const symbolsWithSignals = new Set((data.flat || []).map(r => r.symbol)).size;
+        const lastCandle = data.last_candle_date
+          ? String(data.last_candle_date).slice(0, 10)
+          : new Date().toISOString().slice(0, 10);
+
+        statusEl.textContent = `Found ${data.signals_found || 0} signals across ${symbolsWithSignals} symbols — Based on ${lastCandle}`;
+        renderTabs();
+      } catch (err) {
+        groupedSignals = {};
+        renderTabs();
+        statusEl.textContent = `Scan failed: ${err.message}`;
+      } finally {
+        runScanBtn.disabled = false;
+      }
+    }
+
+    runScanBtn.addEventListener('click', runScan);
+  </script>
+</body>
+</html>

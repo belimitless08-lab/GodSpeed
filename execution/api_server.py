@@ -1791,6 +1791,12 @@ async def serve_stock():
     return FileResponse(os.path.join(frontend_path, 'stock.html'))
 
 
+@app.get("/signals-review")
+async def signals_review_page():
+    from fastapi.responses import FileResponse
+    return FileResponse("signals_review.html")
+
+
 # ═══════════════════════════════════════════════════════════════════
 # TEMPORARY STEP-2 DIAGNOSTICS — DELETE AFTER SESSION 2 VERIFIED
 # ═══════════════════════════════════════════════════════════════════
@@ -2212,4 +2218,56 @@ async def debug_index_candles():
         "candles:1m:NIFTY":   key1,
         "candles:NIFTY:1m":   key2,
         "candles:1m:NIFTY50": key3,
+    }
+
+
+@app.get("/api/debug/scan-signals")
+async def debug_scan_signals():
+    from strategy_brain.signal_engines import scan_all_signals
+    from core.universe_builder import get_symbols
+
+    redis = await get_redis()
+    results = []
+    symbols = await get_symbols()
+    last_candle_date = ""
+
+    for symbol in symbols:
+        try:
+            signals = await scan_all_signals(symbol)
+            if signals:
+                snap = await redis.hgetall(f"snapshot:{symbol}")
+                updated_at = snap.get("updated_at", "")
+                if updated_at and (not last_candle_date or updated_at > last_candle_date):
+                    last_candle_date = updated_at
+                for signal in signals:
+                    results.append({
+                        "symbol":           symbol,
+                        "signal_type":      signal.get("type", ""),
+                        "direction":        signal.get("direction", ""),
+                        "ltp":              snap.get("ltp", 0),
+                        "prev_close":       snap.get("prev_close", 0),
+                        "supertrend_dir":   snap.get("supertrend_dir", ""),
+                        "choppiness_class": snap.get("choppiness_class", ""),
+                        "rsi14":            snap.get("rsi14", 0),
+                        "ema9":             snap.get("ema9", 0),
+                        "vwap":             snap.get("vwap", 0),
+                        "pp":               snap.get("pp", 0),
+                        "r1":               snap.get("r1", 0),
+                        "s1":               snap.get("s1", 0),
+                        "sector":           snap.get("sector", ""),
+                    })
+        except Exception:
+            continue
+
+    grouped = {}
+    for r in results:
+        st = r["signal_type"]
+        grouped.setdefault(st, []).append(r)
+
+    return {
+        "scanned":          len(symbols),
+        "signals_found":    len(results),
+        "last_candle_date": last_candle_date,
+        "grouped":          grouped,
+        "flat":             results,
     }
