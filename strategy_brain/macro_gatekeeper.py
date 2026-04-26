@@ -64,13 +64,33 @@ async def _load_options_tick(symbol: str, strike: int, opt_type: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def _gate1_choppiness(snap: dict) -> tuple[bool, str]:
-    """Gate 1 — Choppiness veto: reads pre-classified choppiness_class written by candle_builder."""
+    """
+    Gate 1 — Only block when both conditions are true:
+    1. choppiness_class is CHOPPY (lagging indicator)
+    2. consecutive_choppy_candles > 20 (sustained choppiness,
+       not just a brief consolidation before breakout)
+
+    This allows CHOPPINESS_BREAKOUT signals to pass through
+    since those explicitly require choppy consolidation first.
+    Also allows genuine breakouts that happen to have had
+    brief choppy action in the last 14 candles.
+    """
     chop_class = snap.get("choppiness_class", "NEUTRAL")
-    if chop_class == "CHOPPY":
+    choppy_count = int(float(snap.get("consecutive_choppy_candles") or 0))
+    signal_type = snap.get("signal_type", "")
+
+    # Never block choppiness breakout signals — they need choppy history
+    if "CHOPPINESS_BREAKOUT" in str(signal_type):
+        return True, ""
+
+    # Only block if sustained extreme choppiness (>20 consecutive candles)
+    # Brief choppiness before a breakout is normal and should not be blocked
+    if chop_class == "CHOPPY" and choppy_count > 20:
         logger.debug(
-            "[gate1] CHOPPY_MARKET chop_class=%s", chop_class
+            "[gate1] CHOPPY_MARKET sustained chop_count=%d", choppy_count
         )
         return False, "CHOPPY_MARKET"
+
     return True, ""
 
 

@@ -299,9 +299,20 @@ async def _flush_candle_to_redis(
         "last_volume":     str(v),
         "last_candle_ts":  ts,
         "updated_at":      now_iso,
+        "rvol":            str(updated_ind.get("rvol", 0.0)),
+        "live_volume_ratio": str(updated_ind.get("rvol", 0.0)),
     }
     if is_index:
         snapshot_mapping["is_index"] = "1"
+
+    # Save previous supertrend direction for flip detection
+    prev_st = await redis.hget(f"snapshot:{symbol}", "supertrend_dir")
+    if prev_st:
+        await redis.set(
+            f"snapshot_prev:{symbol}",
+            json.dumps({"supertrend_dir": prev_st}),
+            ex=86400
+        )
 
     async with redis.pipeline(transaction=False) as pipe:
         # 1. Append + trim candle history
@@ -450,6 +461,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
     try:
         redis = await get_redis()
         is_index = symbol in _INDEX_SYMBOLS
+        snap = await redis.hgetall(f"snapshot:{symbol}")
 
         # Fetch last 14 closed candles for choppiness window
         raw_candles = await redis.lrange(f"candles:1m:{symbol}", -_CHOP_PERIOD, -1)
@@ -537,6 +549,20 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             else:
                 vwap_slope = 0.0
 
+        if is_index:
+            rvol = 0.0
+        else:
+            avg_vol_5d = float(snap.get("avg_volume_5d") or 0)
+            current_vol = closed["volume"]  # current 1m candle volume
+
+            if avg_vol_5d > 0:
+                expected_per_min = avg_vol_5d / 375
+                rvol = current_vol / max(expected_per_min, 1)
+            else:
+                rvol = 0.0
+
+            rvol = round(rvol, 3)
+
         # Assemble updated indicator dict
         updated_ind: dict[str, Any] = {
             "ema9":            new_ema9,
@@ -554,6 +580,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             "vwap_cum_vol":    new_cum_vol,       # in-memory only
             "vwap_history":    vwap_history,      # in-memory only
             "vwap_slope":      vwap_slope,
+            "rvol":            rvol,
         }
 
         # Persist to Redis (async I/O — back on event loop)
