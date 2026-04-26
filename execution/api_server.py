@@ -2325,3 +2325,137 @@ async def debug_scan_signals():
         "grouped":            grouped,
         "flat":               results,
     }
+
+
+Add to execution/api_server.py:
+
+@app.get("/api/debug/snapshot-scan")
+async def snapshot_scan():
+    """
+    Weekend signal readiness scan.
+    Reads Friday closing snapshots and checks which stocks 
+    meet signal-like conditions — without needing live data.
+    Useful for Sunday review before Monday trading.
+    """
+    from core.universe_builder import get_symbols
+
+    redis = await get_redis()
+    symbols = await get_symbols()
+
+    results = {
+        "supertrend_bull": [],
+        "supertrend_bear": [],
+        "above_r1": [],
+        "above_vwap": [],
+        "rsi_momentum": [],
+        "choppiness_trending": [],
+        "supertrend_flip_candidates": [],
+        "summary": {}
+    }
+
+    for symbol in symbols:
+        try:
+            snap = await redis.hgetall(f"snapshot:{symbol}")
+            if not snap:
+                continue
+
+            ltp         = float(snap.get("ltp") or snap.get("prev_close") or 0)
+            prev_close  = float(snap.get("prev_close") or 0)
+            r1          = float(snap.get("r1") or 0)
+            pp          = float(snap.get("pp") or 0)
+            s1          = float(snap.get("s1") or 0)
+            vwap        = float(snap.get("vwap") or 0)
+            rsi14       = float(snap.get("rsi14") or 0)
+            ema9        = float(snap.get("ema9") or 0)
+            ema200      = float(snap.get("ema200") or 0)
+            st_dir      = snap.get("supertrend_dir", "")
+            chop_class  = snap.get("choppiness_class", "")
+            vwap_slope  = float(snap.get("vwap_slope") or 0)
+            st_band     = float(snap.get("supertrend_band") or 0)
+            atr14       = float(snap.get("atr14") or 1)
+
+            price = ltp if ltp > 0 else prev_close
+            if price == 0:
+                continue
+
+            row = {
+                "symbol":    symbol,
+                "price":     round(price, 2),
+                "rsi14":     round(rsi14, 1),
+                "st_dir":    st_dir,
+                "chop":      chop_class,
+                "r1":        round(r1, 2),
+                "pp":        round(pp, 2),
+                "s1":        round(s1, 2),
+                "vwap":      round(vwap, 2),
+                "ema9":      round(ema9, 2),
+                "ema200":    round(ema200, 2),
+                "st_band":   round(st_band, 2),
+            }
+
+            # BULL supertrend
+            if st_dir == "BULL":
+                results["supertrend_bull"].append(row)
+
+            # BEAR supertrend
+            if st_dir == "BEAR":
+                results["supertrend_bear"].append(row)
+
+            # Closed above R1 (strong close)
+            if r1 > 0 and price > r1:
+                results["above_r1"].append(row)
+
+            # Closed above VWAP
+            if vwap > 0 and price > vwap:
+                results["above_vwap"].append(row)
+
+            # RSI momentum zone (55-68 LONG, 32-45 SHORT)
+            if 55 <= rsi14 <= 68 and st_dir == "BULL":
+                results["rsi_momentum"].append({**row, "direction": "LONG"})
+            elif 32 <= rsi14 <= 45 and st_dir == "BEAR":
+                results["rsi_momentum"].append({**row, "direction": "SHORT"})
+
+            # Choppiness trending
+            if chop_class == "TRENDING":
+                results["choppiness_trending"].append(row)
+
+            # Supertrend flip candidate:
+            # BULL supertrend but price within 0.5 ATR of band = potential flip zone
+            if st_dir == "BULL" and st_band > 0 and atr14 > 0:
+                dist_to_band = price - st_band
+                if 0 < dist_to_band < atr14 * 0.5:
+                    results["supertrend_flip_candidates"].append({
+                        **row,
+                        "dist_to_flip": round(dist_to_band, 2),
+                        "note": "Price within 0.5 ATR of supertrend band"
+                    })
+            elif st_dir == "BEAR" and st_band > 0 and atr14 > 0:
+                dist_to_band = st_band - price
+                if 0 < dist_to_band < atr14 * 0.5:
+                    results["supertrend_flip_candidates"].append({
+                        **row,
+                        "dist_to_flip": round(dist_to_band, 2),
+                        "note": "Price within 0.5 ATR of supertrend band"
+                    })
+
+        except Exception:
+            continue
+
+    # Sort each list by RSI descending for LONG candidates
+    for key in results:
+        if key != "summary" and isinstance(results[key], list):
+            results[key].sort(key=lambda x: x.get("rsi14", 0), reverse=True)
+
+    results["summary"] = {
+        "total_scanned":           len(symbols),
+        "supertrend_bull":         len(results["supertrend_bull"]),
+        "supertrend_bear":         len(results["supertrend_bear"]),
+        "above_r1":                len(results["above_r1"]),
+        "above_vwap":              len(results["above_vwap"]),
+        "rsi_momentum_long":       len([x for x in results["rsi_momentum"] if x.get("direction")=="LONG"]),
+        "rsi_momentum_short":      len([x for x in results["rsi_momentum"] if x.get("direction")=="SHORT"]),
+        "choppiness_trending":     len(results["choppiness_trending"]),
+        "supertrend_flip_watch":   len(results["supertrend_flip_candidates"]),
+    }
+
+    return results
