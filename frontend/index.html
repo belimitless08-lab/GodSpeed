@@ -555,7 +555,7 @@
     z-index: 999;
     background: #0f1117;
     border-top: 2px solid #6366f1;
-    transform: translateY(calc(100% - 42px));
+    transform: translateY(calc(100% - 48px));
     transition: transform 0.3s ease;
     padding: 0;
     overflow: hidden;
@@ -960,7 +960,7 @@
       TRADES
     </span>
     <span id="bar-date-range" style="font-size:10px;color:#64748b;
-      white-space:nowrap;flex:1;">
+      white-space:nowrap;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">
       —
     </span>
 
@@ -971,24 +971,26 @@
       onchange="fetchHistory()"/>
 
     <!-- Divider -->
-    <span style="color:#1e293b;margin:0 10px;">|</span>
+    <span style="color:#1e293b;margin:0 8px;">|</span>
 
-    <!-- UPL -->
-    <span style="font-size:10px;color:#64748b;margin-right:4px;">UPL</span>
-    <span id="bar-unreal-pnl" style="font-size:11px;font-weight:700;
-      color:#94a3b8;margin-right:10px;">₹0</span>
+    <!-- U P/L — equal width section -->
+    <div style="display:flex;flex-direction:column;align-items:center;min-width:95px;">
+      <span style="font-size:9px;color:#64748b;letter-spacing:0.3px;">U P/L</span>
+      <span id="bar-unreal-pnl" style="font-size:11px;font-weight:700;color:#94a3b8;">₹0</span>
+    </div>
 
     <!-- Divider -->
-    <span style="color:#1e293b;margin-right:10px;">|</span>
+    <span style="color:#1e293b;margin:0 8px;">|</span>
 
-    <!-- PL -->
-    <span style="font-size:10px;color:#64748b;margin-right:4px;">P/L</span>
-    <span id="bar-total-pnl" style="font-size:11px;font-weight:700;
-      color:#94a3b8;margin-right:10px;">₹0</span>
+    <!-- P/L — equal width section -->
+    <div style="display:flex;flex-direction:column;align-items:center;min-width:95px;">
+      <span style="font-size:9px;color:#64748b;letter-spacing:0.3px;">P/L</span>
+      <span id="bar-total-pnl" style="font-size:11px;font-weight:700;color:#94a3b8;">₹0</span>
+    </div>
 
     <!-- Arrow -->
     <span id="hist-toggle-btn" style="font-size:14px;color:#6366f1;
-      font-weight:700;">↑</span>
+      font-weight:700;margin-left:8px;">↑</span>
   </div>
     <!-- Date filter row — visible when drawer is open -->
     <div style="display:flex;align-items:center;gap:8px;
@@ -1616,14 +1618,8 @@ function renderAccount(d) {
   setColor('hs-acc-rpnl', rpnl);
   setColor('hs-acc-upnl', upnl);
 
-  // Bottom history bar
-  const barT = document.getElementById('bar-total-pnl');
-  if (barT) {
-    barT.textContent = (rpnl >= 0 ? '+' : '') + fmtINR(rpnl);
-    barT.style.color = rpnl > 0 ? '#22c55e'
-                     : rpnl < 0 ? '#ef4444'
-                     : '#94a3b8';
-  }
+  // Bottom bar — only update UPL from account, NOT P/L
+  // P/L in bar is period PnL set by renderHistory, not lifetime realised
   const barU = document.getElementById('bar-unreal-pnl');
   if (barU) {
     barU.textContent = (upnl >= 0 ? '+' : '') + fmtINR(upnl);
@@ -3080,8 +3076,8 @@ function renderHistory(trades) {
         const reasonColor = exitReason === 'STOP_LOSS' ? 'var(--red)'
             : exitReason === 'TAKE_PROFIT' ? 'var(--green)'
             : 'var(--muted)'
-        return `<div class="pos-row">
-            <div class="pos-top">
+        return `<div class="pos-row" style="overflow:hidden;">
+            <div class="pos-top" style="flex-wrap:wrap;gap:4px;">
                 <span class="pos-sym">${t.symbol}</span>
                 <span class="pos-inst">${t.instrument || 'EQ'}</span>
                 <span style="color:${dirColor};font-weight:700;">${dirLabel} ${t.direction}</span>
@@ -3091,7 +3087,7 @@ function renderHistory(trades) {
                     <span style="font-size:9px;">(${(t.pnl_pct||0) >= 0?'+':''}${(t.pnl_pct||0).toFixed(1)}%)</span>
                 </span>
             </div>
-            <div class="pos-sub">
+            <div class="pos-sub" style="flex-wrap:wrap;gap:6px;overflow:hidden;">
                 <span>Entry: ₹${fmt(t.entry_price)}</span>
                 <span>Exit: ₹${fmt(t.exit_price)}</span>
                 <span>Qty: ${t.quantity}</span>
