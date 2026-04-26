@@ -90,6 +90,7 @@ def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
         "rsi_avg_gain": str(snapshot.get("rsi_avg_gain", 0.0)),
         "rsi_avg_loss": str(snapshot.get("rsi_avg_loss", 0.0)),
         "choppiness14": "" if snapshot.get("choppiness14") is None else str(snapshot.get("choppiness14")),
+        "choppiness_class": str(snapshot.get("choppiness_class", "NEUTRAL")),
         "lot_size": str(snapshot.get("lot_size", 1)),
         "token": str(snapshot.get("token", "")),
         "seeded_at": str(snapshot.get("seeded_at", "")),
@@ -97,9 +98,10 @@ def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
         "prev_open": str(prev_day.get("open", 0.0)),
         "prev_high": str(prev_day.get("high", 0.0)),
         "prev_low": str(prev_day.get("low", 0.0)),
-        "prev_close": str(prev_day.get("close", 0.0)),
+        "prev_close": str(snapshot.get("prev_close", prev_day.get("close", 0.0))),
         "prev_volume": str(prev_day.get("volume", 0.0)),
         "last_close": str(prev_day.get("close", 0.0)),
+        "ltp": str(snapshot.get("ltp", prev_day.get("close", 0.0))),
         # Supertrend fields consumed by signal engines
         "supertrend_dir": str(supertrend.get("direction", "BULL")),
         "supertrend_band": str(supertrend.get("band", 0.0)),
@@ -698,23 +700,26 @@ async def _seed_equity_symbol(
             day_map.setdefault(day_key, []).append(idx)
 
         sorted_days = sorted(day_map.keys())
-        if len(sorted_days) < 2:
-            # Only one day of data — use it as prev day
-            prev_day_indices = day_map[sorted_days[-1]]
-        else:
-            # Last completed day = second-to-last date (latest might be partial)
+
+        # Last trading day = Friday (for ltp and pivot calculations)
+        last_day_indices = day_map[sorted_days[-1]]
+        last_close = float(closes[last_day_indices[-1]])
+        last_high  = float(np.max(highs[last_day_indices]))
+        last_low   = float(np.min(lows[last_day_indices]))
+        last_open  = float(opens[last_day_indices[0]])
+
+        # Previous trading day = Thursday (for prev_close field)
+        if len(sorted_days) >= 2:
             prev_day_indices = day_map[sorted_days[-2]]
+            prev_close = float(closes[prev_day_indices[-1]])
+        else:
+            prev_close = last_close
 
-        pd_opens   = opens[prev_day_indices]
-        pd_highs   = highs[prev_day_indices]
-        pd_lows    = lows[prev_day_indices]
-        pd_closes  = closes[prev_day_indices]
-        pd_volumes = volumes[prev_day_indices]
+        pd_volumes = volumes[last_day_indices]
 
-        prev_open   = float(pd_opens[0])
-        prev_high   = float(np.max(pd_highs))
-        prev_low    = float(np.min(pd_lows))
-        prev_close  = float(pd_closes[-1])
+        prev_open   = last_open
+        prev_high   = last_high
+        prev_low    = last_low
         prev_volume = float(np.sum(pd_volumes))
 
         # --- Indicators ---
@@ -728,11 +733,22 @@ async def _seed_equity_symbol(
         avg_volume_5d = float(np.mean(daily_volumes[-5:])) if daily_volumes else 0.0
 
         choppiness14    = compute_choppiness(highs, lows, closes)
+        if choppiness14 < 38.2:
+            choppiness_class = "TRENDING"
+        elif choppiness14 > 61.8:
+            choppiness_class = "CHOPPY"
+        else:
+            choppiness_class = "NEUTRAL"
         st_direction, st_band = compute_supertrend(highs, lows, closes)
         rsi14, rsi_avg_gain, rsi_avg_loss = compute_rsi14_wilder(closes)
 
-        classic   = compute_pivots_classic(prev_high, prev_low, prev_close)
-        camarilla = compute_pivots_camarilla(prev_high, prev_low, prev_close)
+        # ltp = Friday's close (best known price, overwritten by
+        # live WebSocket at 9:15 AM Monday)
+        ltp = last_close
+
+        # Pivots computed from Friday's OHLC (correct for Monday trading)
+        classic   = compute_pivots_classic(last_high, last_low, last_close)
+        camarilla = compute_pivots_camarilla(last_high, last_low, last_close)
 
         snapshot = {
             "ema9":          float(ema9[-1]),
@@ -753,6 +769,7 @@ async def _seed_equity_symbol(
                 "camarilla": camarilla,
             },
             "choppiness14": round(choppiness14, 4) if choppiness14 == choppiness14 else None,
+            "choppiness_class": choppiness_class,
             "supertrend": {
                 "direction": st_direction,
                 "band":      round(st_band, 4),
@@ -760,6 +777,8 @@ async def _seed_equity_symbol(
             "lot_size":  lot_size,
             "token":     token,
             "seeded_at": datetime.now(timezone.utc).isoformat(),
+            "ltp": round(ltp, 2),
+            "prev_close": round(prev_close, 2),
         }
 
         redis = await get_redis()
@@ -1024,21 +1043,25 @@ async def run_seeder(force: bool = False) -> None:
                 if not sorted_days:
                     logger.warning(f"[seeder] No grouped day data for index {symbol}, skipping")
                     continue
-                if len(sorted_days) < 2:
-                    prev_day_indices = day_map[sorted_days[-1]]
-                else:
+                # Last trading day = Friday (for ltp and pivot calculations)
+                last_day_indices = day_map[sorted_days[-1]]
+                last_close = float(closes[last_day_indices[-1]])
+                last_high = float(np.max(highs[last_day_indices]))
+                last_low = float(np.min(lows[last_day_indices]))
+                last_open = float(opens[last_day_indices[0]])
+
+                # Previous trading day = Thursday (for prev_close field)
+                if len(sorted_days) >= 2:
                     prev_day_indices = day_map[sorted_days[-2]]
+                    prev_close = float(closes[prev_day_indices[-1]])
+                else:
+                    prev_close = last_close
 
-                pd_opens = opens[prev_day_indices]
-                pd_highs = highs[prev_day_indices]
-                pd_lows = lows[prev_day_indices]
-                pd_closes = closes[prev_day_indices]
-                pd_volumes = volumes[prev_day_indices]
+                pd_volumes = volumes[last_day_indices]
 
-                prev_open = float(pd_opens[0])
-                prev_high = float(np.max(pd_highs))
-                prev_low = float(np.min(pd_lows))
-                prev_close = float(pd_closes[-1])
+                prev_open = last_open
+                prev_high = last_high
+                prev_low = last_low
                 prev_volume = float(np.sum(pd_volumes))
 
                 ema9 = float(ema_vectorized(closes, 9)[-1])
@@ -1046,10 +1069,22 @@ async def run_seeder(force: bool = False) -> None:
                 ema200 = float(ema_vectorized(closes, 200)[-1])
                 atr14 = compute_atr14(highs, lows, closes)
                 choppiness14 = compute_choppiness(highs, lows, closes)
+                if choppiness14 < 38.2:
+                    choppiness_class = "TRENDING"
+                elif choppiness14 > 61.8:
+                    choppiness_class = "CHOPPY"
+                else:
+                    choppiness_class = "NEUTRAL"
                 st_direction, st_band = compute_supertrend(highs, lows, closes)
                 rsi14, _, _ = compute_rsi14_wilder(closes)
-                classic = compute_pivots_classic(prev_high, prev_low, prev_close)
-                camarilla = compute_pivots_camarilla(prev_high, prev_low, prev_close)
+
+                # ltp = Friday's close (best known price, overwritten by
+                # live WebSocket at 9:15 AM Monday)
+                ltp = last_close
+
+                # Pivots computed from Friday's OHLC (correct for Monday trading)
+                classic = compute_pivots_classic(last_high, last_low, last_close)
+                camarilla = compute_pivots_camarilla(last_high, last_low, last_close)
 
                 raw_candles = [[c[0], c[1], c[2], c[3], c[4], 0] for c in candles]
                 candle_key_1m = f"candles:1m:{symbol}"
@@ -1104,6 +1139,7 @@ async def run_seeder(force: bool = False) -> None:
                         "camarilla": camarilla,
                     },
                     "choppiness14": round(choppiness14, 4) if choppiness14 == choppiness14 else None,
+                    "choppiness_class": choppiness_class,
                     "supertrend": {
                         "direction": st_direction,
                         "band": round(st_band, 4),
@@ -1112,12 +1148,15 @@ async def run_seeder(force: bool = False) -> None:
                     "token": token_str,
                     "sector": "INDEX",
                     "seeded_at": datetime.now(timezone.utc).isoformat(),
+                    "ltp": round(ltp, 2),
+                    "prev_close": round(prev_close, 2),
                 }
 
                 mapping = _snapshot_to_hash_mapping(snapshot)
                 mapping.update(
                     {
-                        "ltp": str(round(prev_close, 2)),
+                        "ltp": str(round(ltp, 2)),
+                        "prev_close": str(round(prev_close, 2)),
                         "symbol": symbol,
                         "sector": "INDEX",
                     }
