@@ -547,6 +547,21 @@
   }
   .drawer-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 13px; }
   .drawer-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 18px; padding: 0 4px; }
+  #history-drawer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 999;
+    background: #0f1117;
+    border-top: 1px solid #1e293b;
+    transform: translateY(calc(100% - 44px));
+    transition: transform 0.3s ease;
+    padding: 0;
+  }
+  #history-drawer.hist-open {
+    transform: translateY(0%);
+  }
 
   /* Position/Pending rows */
   .pos-row, .pend-row {
@@ -2629,7 +2644,12 @@ function closeAllDrawers() {
   ];
   drawers.forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.style.display = 'none';
+    if (!el) return;
+    if (id === 'history-drawer') {
+      el.classList.remove('hist-open');
+      return;
+    }
+    el.style.display = 'none';
   });
 }
 
@@ -2913,17 +2933,15 @@ async function cancelPendingOrder(orderId, symbol) {
 ══════════════════════════════════════════ */
 function toggleHistoryDrawer() {
     const d = document.getElementById('history-drawer')
-    const isOpen = d.style.display === 'block'
+    const isOpen = d.classList.contains('hist-open')
     if (isOpen) {
-        d.style.display = 'none'
-        d.style.transform = 'translateY(100%)'
+        d.classList.remove('hist-open')
     } else {
         const pos = document.getElementById('positions-drawer')
         const pend = document.getElementById('pending-drawer')
         if (pos) pos.style.display = 'none'
         if (pend) pend.style.display = 'none'
-        d.style.display = 'block'
-        d.style.transform = 'translateY(0%)'
+        d.classList.add('hist-open')
         const today = new Date().toISOString().slice(0,10)
         const fromEl = document.getElementById('hist-from')
         const toEl = document.getElementById('hist-to')
@@ -2936,6 +2954,8 @@ function toggleHistoryDrawer() {
         }
         fetchHistory()
     }
+    const toggleBtn = document.querySelector('#history-drawer .drawer-header button')
+    if (toggleBtn) toggleBtn.textContent = isOpen ? '↑' : '↓'
 }
 
 async function fetchHistory() {
