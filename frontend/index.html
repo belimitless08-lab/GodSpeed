@@ -64,17 +64,20 @@
     box-shadow: 0 4px 24px rgba(0,0,0,0.5);
   }
   .index-tile {
-    flex: 1; padding: 8px 14px;
+    flex: 1; padding: 8px 10px;
     border-right: 1px solid var(--border);
     cursor: pointer; transition: background 0.15s;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center;
   }
   .index-tile:last-child { border-right: none; }
   .index-tile:hover { background: rgba(255,255,255,0.04); }
   .index-name { font-size: 9px; letter-spacing: 0.12em; color: var(--muted); text-transform: uppercase; }
-  .index-ltp { font-size: 18px; font-weight: 700; color: var(--text); font-family: 'Syne', sans-serif; line-height: 1.2; }
+  .index-ltp { font-size: 17px; font-weight: 700; color: var(--text); font-family: 'Syne', sans-serif; line-height: 1.2; }
   .index-change { font-size: 11px; font-weight: 600; }
   .index-pcr { font-size: 9px; color: var(--muted); margin-top: 2px; }
-  .index-top-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .index-top-row { display: flex; align-items: center; justify-content: center; gap: 4px; }
   .index-chart-btn {
     background: rgba(56,189,248,0.1);
     border: 1px solid rgba(56,189,248,0.4);
@@ -950,47 +953,43 @@
 <div id="history-drawer" class="side-drawer" style="height:360px;">
   <!-- Single compact trigger row — always visible -->
   <div class="drawer-header" onclick="toggleHistoryDrawer()" style="
-    display:flex; align-items:center; gap:0;
-    padding:0 14px; height:42px; cursor:pointer;
-    user-select:none;">
+    display:flex; align-items:center;
+    padding:0 12px; height:42px; cursor:pointer;
+    user-select:none; gap:6px;">
 
-    <!-- Trades label + date range -->
+    <!-- Trades label -->
     <span style="font-size:10px;font-weight:600;color:#6366f1;
-      letter-spacing:0.5px;white-space:nowrap;margin-right:6px;">
-      TRADES
-    </span>
-    <span id="bar-date-range" style="font-size:10px;color:#64748b;
-      white-space:nowrap;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">
-      —
-    </span>
+      letter-spacing:0.5px;white-space:nowrap;">TRADES</span>
 
-    <!-- Hidden date inputs (still functional) -->
-    <input type="date" id="hist-from" style="display:none;"
-      onchange="fetchHistory()"/>
-    <input type="date" id="hist-to" style="display:none;"
-      onchange="fetchHistory()"/>
+    <!-- Date range — takes remaining space -->
+    <span id="bar-date-range" style="font-size:10px;color:#64748b;
+      flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap;">—</span>
+
+    <!-- Hidden date inputs -->
+    <input type="date" id="hist-from" style="display:none;" onchange="fetchHistory()"/>
+    <input type="date" id="hist-to" style="display:none;" onchange="fetchHistory()"/>
 
     <!-- Divider -->
-    <span style="color:#1e293b;margin:0 8px;">|</span>
+    <span style="color:#334155;">|</span>
 
-    <!-- U P/L — equal width section -->
-    <div style="display:flex;flex-direction:column;align-items:center;min-width:95px;">
-      <span style="font-size:9px;color:#64748b;letter-spacing:0.3px;">U P/L</span>
+    <!-- U P/L -->
+    <div style="display:flex;flex-direction:column;align-items:center;width:70px;flex-shrink:0;">
+      <span style="font-size:8px;color:#64748b;letter-spacing:0.3px;">U P/L</span>
       <span id="bar-unreal-pnl" style="font-size:11px;font-weight:700;color:#94a3b8;">₹0</span>
     </div>
 
     <!-- Divider -->
-    <span style="color:#1e293b;margin:0 8px;">|</span>
+    <span style="color:#334155;">|</span>
 
-    <!-- P/L — equal width section -->
-    <div style="display:flex;flex-direction:column;align-items:center;min-width:95px;">
-      <span style="font-size:9px;color:#64748b;letter-spacing:0.3px;">P/L</span>
+    <!-- P/L -->
+    <div style="display:flex;flex-direction:column;align-items:center;width:70px;flex-shrink:0;">
+      <span style="font-size:8px;color:#64748b;letter-spacing:0.3px;">P/L</span>
       <span id="bar-total-pnl" style="font-size:11px;font-weight:700;color:#94a3b8;">₹0</span>
     </div>
 
     <!-- Arrow -->
-    <span id="hist-toggle-btn" style="font-size:14px;color:#6366f1;
-      font-weight:700;margin-left:8px;">↑</span>
+    <span id="hist-toggle-btn" style="font-size:14px;color:#6366f1;font-weight:700;flex-shrink:0;">↑</span>
   </div>
     <!-- Date filter row — visible when drawer is open -->
     <div style="display:flex;align-items:center;gap:8px;
@@ -2993,16 +2992,7 @@ function updateBarDateRange() {
     if (from && to && from === to) {
         el.textContent = formatDateShort(from)
     } else if (from && to) {
-        // Compact: show just day numbers if same month
-        const fParts = from.split('-')
-        const tParts = to.split('-')
-        const months = ['Jan','Feb','Mar','Apr','May','Jun',
-                        'Jul','Aug','Sep','Oct','Nov','Dec']
-        if (fParts[1] === tParts[1]) {
-            el.textContent = fParts[2] + '–' + tParts[2] + ' ' + months[parseInt(fParts[1])-1]
-        } else {
-            el.textContent = formatDateShort(from) + '–' + formatDateShort(to)
-        }
+        el.textContent = formatDateShort(from) + ' – ' + formatDateShort(to)
     } else {
         el.textContent = '—'
     }
@@ -3086,21 +3076,23 @@ function renderHistory(trades) {
             : exitReason === 'TAKE_PROFIT' ? 'var(--green)'
             : 'var(--muted)'
         return `<div class="pos-row" style="overflow:hidden;">
-            <div class="pos-top" style="flex-wrap:nowrap;gap:6px;align-items:center;overflow:hidden;">
-                <span class="pos-sym" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:80px;">${t.symbol}</span>
-                <span class="pos-inst" style="flex-shrink:0;">${t.instrument || 'EQ'}</span>
-                <span style="color:${dirColor};font-weight:700;flex-shrink:0;">${dirLabel} ${t.direction}</span>
-                <span style="font-size:9px;color:var(--muted);flex-shrink:0;">${exitDate}</span>
-                <span style="margin-left:auto;color:${pnlColor};font-weight:700;flex-shrink:0;">
+            <div style="display:grid;grid-template-columns:25% 15% 18% 20% auto;
+              align-items:center;gap:4px;margin-bottom:3px;">
+                <span class="pos-sym" style="overflow:hidden;text-overflow:ellipsis;
+                  white-space:nowrap;">${t.symbol}</span>
+                <span class="pos-inst">${t.instrument || 'EQ'}</span>
+                <span style="color:${dirColor};font-weight:700;font-size:10px;">${dirLabel} ${t.direction}</span>
+                <span style="font-size:9px;color:var(--muted);white-space:nowrap;">${exitDate}</span>
+                <span style="color:${pnlColor};font-weight:700;font-size:11px;text-align:right;">
                     ${pnl >= 0 ? '+' : ''}₹${Math.abs(pnl).toFixed(0)}
                     <span style="font-size:9px;">(${(t.pnl_pct||0) >= 0?'+':''}${(t.pnl_pct||0).toFixed(1)}%)</span>
                 </span>
             </div>
             <div class="pos-sub" style="flex-wrap:wrap;gap:6px;overflow:hidden;">
-                <span>Entry: ₹${fmt(t.entry_price)}</span>
-                <span>Exit: ₹${fmt(t.exit_price)}</span>
+                <span>In: ₹${fmt(t.entry_price)}</span>
+                <span>Out: ₹${fmt(t.exit_price)}</span>
                 <span>Qty: ${t.quantity}</span>
-                <span style="color:${reasonColor};">Exit: ${exitReason}</span>
+                <span style="color:${reasonColor};">${exitReason}</span>
             </div>
         </div>`
     }).join('')
