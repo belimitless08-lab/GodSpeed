@@ -475,6 +475,20 @@
       overflow-x: auto;
       width: 100%;
     }
+
+    #history-drawer .drawer-header {
+      gap: 8px !important;
+      padding: 8px 10px !important;
+      justify-content: space-between;
+    }
+    #history-drawer .drawer-header > div:first-child span:last-child {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #history-drawer #history-date-filters { display: none !important; }
+    #history-drawer.history-open #history-date-filters { display: flex !important; }
+    #history-drawer .history-mobile-hide { display: none; }
   }
 
   [data-theme="light"] .popup-header,
@@ -885,30 +899,29 @@
 </div>
 
 <div id="history-drawer" class="side-drawer" style="height:360px;">
-    <div class="drawer-header" style="display:flex;flex-direction:column;align-items:stretch;gap:4px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-            <span class="drawer-title">TRADE HISTORY</span>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <span style="font-size:10px;color:#94a3b8;">From:</span>
-                <input type="date" id="hist-from"
-                    style="background:rgba(255,255,255,0.07);border:1px solid #334155;
-                           border-radius:4px;padding:3px 6px;color:#f1f5f9;
-                           font-size:10px;outline:none;cursor:pointer;"
-                    onchange="fetchHistory()"/>
-                <span style="font-size:10px;color:#94a3b8;">To:</span>
-                <input type="date" id="hist-to"
-                    style="background:rgba(255,255,255,0.07);border:1px solid #334155;
-                           border-radius:4px;padding:3px 6px;color:#f1f5f9;
-                           font-size:10px;outline:none;cursor:pointer;"
-                    onchange="fetchHistory()"/>
-            </div>
-            <button class="drawer-close" onclick="toggleHistoryDrawer()">↑</button>
-        </div>
-        <div style="font-size:10px;color:#aaa;font-weight:400;letter-spacing:0.02em;">
-            T: <span id="history-strip-total-pnl" style="font-weight:400;color:#aaa;">₹0</span>
-            <span style="color:#64748b;padding:0 8px;">|</span>
-            U: <span id="history-strip-unrealised-pnl" style="font-weight:400;color:#aaa;">₹0</span>
-        </div>
+    <div class="drawer-header" style="display:flex;align-items:center;gap:12px;padding:8px 14px;background:#1a1d2e;border-bottom:1px solid #334155;">
+      <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+        <span style="font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:1px;">TRADE HISTORY</span>
+        <span style="font-size:11px;color:#94a3b8;">
+          T: <span id="bar-total-pnl" style="font-weight:700;color:#22c55e;">₹0</span>
+          <span class="history-mobile-hide">&nbsp;|&nbsp; U: <span id="bar-unreal-pnl" style="font-weight:700;color:#94a3b8;">₹0</span></span>
+          <span class="history-mobile-hide">&nbsp;|&nbsp; Bal: <span id="bar-balance" style="font-weight:700;color:#f1f5f9;">₹0</span></span>
+        </span>
+      </div>
+      <div id="history-date-filters" style="display:flex;align-items:center;gap:6px;flex:1;justify-content:center;">
+        <span style="font-size:10px;color:#64748b;">From:</span>
+        <input type="date" id="hist-from"
+          style="background:rgba(255,255,255,0.07);border:1px solid #334155;border-radius:4px;padding:3px 6px;color:#f1f5f9;font-size:10px;outline:none;cursor:pointer;"
+          onchange="fetchHistory()"/>
+        <span style="font-size:10px;color:#64748b;">To:</span>
+        <input type="date" id="hist-to"
+          style="background:rgba(255,255,255,0.07);border:1px solid #334155;border-radius:4px;padding:3px 6px;color:#f1f5f9;font-size:10px;outline:none;cursor:pointer;"
+          onchange="fetchHistory()"/>
+      </div>
+      <button onclick="toggleHistoryDrawer()"
+        style="background:none;border:none;color:#94a3b8;font-size:16px;cursor:pointer;padding:4px 8px;border-radius:4px;transition:color 0.2s;"
+        onmouseover="this.style.color='#f1f5f9'"
+        onmouseout="this.style.color='#94a3b8'">↑</button>
     </div>
     <div style="display:flex;gap:16px;padding:6px 0 10px;
         font-size:11px;border-bottom:1px solid #334155;margin-bottom:8px;flex-wrap:wrap;">
@@ -1434,8 +1447,8 @@ function renderAccount(d) {
   document.getElementById('hist-avail-margin').textContent = fmtINR(availableMargin);
   document.getElementById('hist-unrealised-pnl').textContent = (upnl>=0?'+':'')+fmtINR(upnl);
   document.getElementById('hist-unrealised-pnl').style.color = colorClass(upnl);
-  document.getElementById('history-strip-total-pnl').textContent = (rpnl>=0?'+':'')+fmtINR(rpnl);
-  document.getElementById('history-strip-unrealised-pnl').textContent = (upnl>=0?'+':'')+fmtINR(upnl);
+  document.getElementById('bar-unreal-pnl').textContent = (upnl>=0?'+':'') + fmtINR(upnl);
+  document.getElementById('bar-balance').textContent = fmtINR(liveBalance);
   document.getElementById('acc-trades').textContent = d.trade_count ?? d.trades ?? 0;
   document.getElementById('acc-wl').textContent     = `W:${d.win_count ?? d.wins ?? 0} L:${d.loss_count ?? d.losses ?? 0}`;
 }
@@ -2459,7 +2472,9 @@ let positionsData = [];
 function closeAllDrawers() {
   document.getElementById('positions-drawer').style.transform = 'translateY(100%)';
   document.getElementById('pending-drawer').style.transform = 'translateY(100%)';
-  document.getElementById('history-drawer').style.transform = 'translateY(100%)';
+  const historyDrawer = document.getElementById('history-drawer');
+  historyDrawer.style.transform = 'translateY(100%)';
+  historyDrawer.classList.remove('history-open');
 }
 
 function togglePositionsDrawer() {
@@ -2744,9 +2759,12 @@ function toggleHistoryDrawer() {
     closeAllDrawers()
     if (!open) {
         d.style.transform = 'translateY(0%)'
+        d.classList.add('history-open')
         if (latestAccountData) renderAccount(latestAccountData);
         else fetchAccount();
         fetchHistory()
+    } else {
+        d.classList.remove('history-open')
     }
 }
 
@@ -2780,6 +2798,9 @@ function renderHistory(trades) {
         document.getElementById('hs-pnl').textContent = '₹0'
         document.getElementById('hist-realised-pnl').textContent = '₹0'
         document.getElementById('hist-realised-pnl').style.color = 'var(--muted)'
+        const barTotalEl = document.getElementById('bar-total-pnl')
+        barTotalEl.textContent = '₹0'
+        barTotalEl.style.color = 'var(--muted)'
         return
     }
     const nonFlatTrades = filteredTrades.filter(t => Math.abs(t.pnl_abs || 0) > 0)
@@ -2798,6 +2819,9 @@ function renderHistory(trades) {
     const realisedEl = document.getElementById('hist-realised-pnl')
     realisedEl.textContent = (totalPnl >= 0 ? '+' : '') + '₹' + Math.abs(totalPnl).toFixed(0)
     realisedEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)'
+    const barTotalEl = document.getElementById('bar-total-pnl')
+    barTotalEl.textContent = (totalPnl >= 0 ? '+' : '') + '₹' + Math.abs(totalPnl).toFixed(0)
+    barTotalEl.style.color = totalPnl > 0 ? 'var(--green)' : (totalPnl < 0 ? 'var(--red)' : 'var(--muted)')
     el.innerHTML = filteredTrades.map(t => {
         const pnl = t.pnl_abs || 0
         const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)'
