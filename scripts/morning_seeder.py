@@ -1259,6 +1259,21 @@ async def run_seeder(force: bool = False) -> None:
         "phase_a_seconds":  phase_a_seconds,
         "phase_b_seconds":  phase_b_seconds,
     }
+    # ── AI Pipeline (scrape + sentiment + decisions) ──────────────────────
+    logger.info("[seeder] Starting AI pipeline (scrape + LLM scoring)...")
+    try:
+        import os, redis as _redis_sync
+        from strategy_brain.ai_pipeline.ai_scraper import run_full_scrape
+        from strategy_brain.ai_pipeline.ai_engine import run_ai_pipeline
+
+        _r = _redis_sync.from_url(os.environ["REDIS_URL"])
+        scrape_stats = run_full_scrape(_r)
+        logger.info("[seeder] AI scrape done: %s", scrape_stats)
+        await run_ai_pipeline()
+        logger.info("[seeder] AI pipeline complete")
+    except Exception as _ai_exc:
+        logger.error("[seeder] AI pipeline failed (non-fatal): %s", _ai_exc)
+
     await redis.set("seeder:status", json.dumps(status))
 
     logger.info(
