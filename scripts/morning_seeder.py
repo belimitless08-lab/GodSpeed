@@ -1018,7 +1018,15 @@ async def run_seeder(force: bool = False) -> None:
                 continue
 
             try:
+                # Hard override — instrument_registry may write wrong token
+                _PREFERRED = {
+                    "NIFTY": "99926000", "BANKNIFTY": "99926009",
+                    "FINNIFTY": "99926037", "MIDCPNIFTY": "99926074",
+                    "SENSEX": "99919000",
+                }
                 token_str = token.decode() if isinstance(token, (bytes, bytearray)) else str(token)
+                if symbol in _PREFERRED:
+                    token_str = _PREFERRED[symbol]
                 exchange = "BSE" if symbol == "SENSEX" else "NSE"
                 candles = await fetch_candles(
                     session, exchange, token_str, "ONE_MINUTE", index_from_dt, to_dt, http_client
