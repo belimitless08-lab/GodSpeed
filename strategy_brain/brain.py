@@ -56,12 +56,18 @@ from strategy_brain.options_tracker    import (
     evaluate_options_for_signal, compute_tradability_badge
 )
 from strategy_brain.market_breadth     import compute_market_breadth
-from strategy_brain.ai_pipeline.news_scraper   import (
-    scrape_premarket_news, scrape_stock_news
-)
-from strategy_brain.ai_pipeline.groq_sentiment import (
-    analyze_premarket_sentiment, analyze_stock_alignment
-)
+try:
+    from strategy_brain.ai_pipeline.news_scraper import (
+        scrape_premarket_news, scrape_stock_news
+    )
+    from strategy_brain.ai_pipeline.groq_sentiment import (
+        analyze_premarket_sentiment, analyze_stock_alignment
+    )
+except ModuleNotFoundError:
+    async def scrape_premarket_news(): return []
+    async def scrape_stock_news(symbol): return []
+    async def analyze_premarket_sentiment(h): return {}
+    async def analyze_stock_alignment(s, n, snap): return {}
 
 # ---------------------------------------------------------------------------
 # Logging
