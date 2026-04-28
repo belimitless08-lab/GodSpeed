@@ -1326,8 +1326,9 @@ async def place_trigger_order(payload: dict) -> dict:
         # Market order — execute immediately
         return await place_paper_order_from_trigger(order)
 
-    # Store as pending trigger order
-    await redis.set(f"pending:order:{order_id}", json.dumps(order))
+    # Store as pending trigger order — TTL of 1 trading day so stale orders
+    # never survive a restart or an overnight Redis persistence flush.
+    await redis.set(f"pending:order:{order_id}", json.dumps(order), ex=86400)
     await redis.sadd("pending:orders", order_id)
     logger.info(
         "[order_manager] Trigger order PENDING — %s %s %s @ %.2f order_id=%s",
@@ -1342,6 +1343,13 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
     Called when a trigger fires or a market order is placed.
     Reads current LTP, calculates SL/TG prices, and creates a trade record.
     """
+    if not await check_market_open():
+        logger.warning(
+            "[order_manager] Trigger fill rejected — market closed. symbol=%s order_id=%s",
+            order.get("symbol"), order.get("id"),
+        )
+        return {"status": "REJECTED", "reason": "MARKET_CLOSED"}
+
     redis  = await get_redis()
     symbol = order["symbol"]
 
@@ -1485,14 +1493,30 @@ async def monitor_trigger_orders() -> None:
 
 async def _check_pending_orders(candle: dict) -> None:
     """Check whether any pending trigger order fires on this 5m candle close."""
-    redis      = await get_redis()
+    redis       = await get_redis()
     pending_ids = await redis.smembers("pending:orders")
+    today_str   = date.today().isoformat()   # "YYYY-MM-DD"
 
     for order_id in pending_ids:
         raw = await redis.get(f"pending:order:{order_id}")
         if not raw:
+            # Key expired or was deleted — clean up the set entry
+            await redis.srem("pending:orders", order_id)
             continue
         order = json.loads(raw)
+
+        # Expire orders from previous trading days — they must never fire
+        # across session boundaries.  created_at is "YYYY-MM-DDTHH:MM:SS..."
+        order_date = (order.get("created_at") or "")[:10]
+        if order_date and order_date != today_str:
+            logger.warning(
+                "[order_manager] Expiring stale pending order from %s — order_id=%s symbol=%s",
+                order_date, order_id, order.get("symbol"),
+            )
+            await redis.delete(f"pending:order:{order_id}")
+            await redis.srem("pending:orders", order_id)
+            continue
+
         if order["symbol"] != candle.get("symbol"):
             continue
 
