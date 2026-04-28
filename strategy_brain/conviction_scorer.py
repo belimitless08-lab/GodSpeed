@@ -159,30 +159,14 @@ def _score_relative_strength(
     return 0.0
 
 
-async def _score_options_flow_raw(
-    symbol: str,
+def _score_options_flow_raw(
+    prev: dict,
+    live_ce: dict,
+    live_pe: dict,
     weight: float,
     direction: str,
 ) -> float:
     """Pillar 3 — Options OI flow imbalance (raw component)."""
-    redis = await get_redis()
-
-    prev_raw = await redis.get(f"options:prev:{symbol}")
-    if not prev_raw:
-        return 0.0
-
-    try:
-        prev = json.loads(prev_raw)
-    except json.JSONDecodeError:
-        return 0.0
-
-    atm = prev.get("atm_strike") or prev.get("atm")
-    if not atm:
-        return 0.0
-
-    live_ce = await redis.hgetall(f"options:tick:{symbol}:{atm}CE") or {}
-    live_pe = await redis.hgetall(f"options:tick:{symbol}:{atm}PE") or {}
-
     prev_ce_oi = _safe_float(prev.get("ce_oi_prev"))
     prev_pe_oi = _safe_float(prev.get("pe_oi_prev"))
 
@@ -214,8 +198,11 @@ async def _score_options_flow_raw(
     return 0.0
 
 
-async def _score_options_flow(
-    symbol: str,
+def _score_options_flow(
+    prev: dict,
+    live_ce: dict,
+    live_pe: dict,
+    ai_sentiment: Optional[dict],
     weight: float,
     direction: str,
 ) -> float:
@@ -237,17 +224,12 @@ async def _score_options_flow(
     Key  : ``ai:sentiment:{symbol}``
     Value: ``{"score": <float -5 … +5>, ...}``   (extra keys ignored)
     """
-    options_flow_score = await _score_options_flow_raw(symbol, weight, direction)
-
-    # ── AI sentiment ────────────────────────────────────────────────────
-    redis = await get_redis()
-    ai_raw_bytes = await redis.get(f"ai:sentiment:{symbol}")
+    options_flow_score = _score_options_flow_raw(prev, live_ce, live_pe, weight, direction)
 
     ai_contribution = 0.0
-    if ai_raw_bytes:
+    if ai_sentiment:
         try:
-            ai_raw = json.loads(ai_raw_bytes)
-            ai_score_raw = float(ai_raw.get("score", 0))  # -5 to +5
+            ai_score_raw = float(ai_sentiment.get("score", 0))  # -5 to +5
 
             if direction == "LONG":
                 if ai_score_raw >= 2.0:
@@ -269,10 +251,6 @@ async def _score_options_flow(
                     ai_contribution = 0.0
 
         except (json.JSONDecodeError, TypeError, ValueError):
-            logger.warning(
-                "[scorer] Malformed ai:sentiment for %s — skipping AI contribution",
-                symbol,
-            )
             ai_contribution = 0.0
 
     # ── Blend: 60% options flow + 40% AI sentiment ──────────────────────
@@ -349,31 +327,17 @@ def _resolve_grade_action(total_score: float) -> tuple[str, str]:
 # Public API
 # ---------------------------------------------------------------------------
 
-async def calculate_ici_score(
+async def fetch_scoring_inputs(
     symbol: str,
     signal_direction: str,
-    signal_type: str,
-    active_signals: list[str],
     vix: float,
     market_time: str,
 ) -> dict:
-    """
-    Async wrapper:
-      1) Performs Redis/network reads.
-      2) Offloads CPU scoring math to a worker thread.
-    """
+    """Async Redis/network reads required by compute_ici_score."""
     redis = await get_redis()
 
-    # ── Load snapshot ───────────────────────────────────────────────────
     snap_raw = await redis.hgetall(f"snapshot:{symbol}")
     snap = snap_raw or {}
-
-    if not snap:
-        logger.warning("[scorer] No snapshot for %s — score=0", symbol)
-        _now = datetime.now(_IST)
-        return _zero_result(symbol, signal_type, _now)
-
-    # ── Load reference data ──────────────────────────────────────────────
     nifty_snap_raw = await redis.hgetall("snapshot:NIFTY")
     nifty_snap = nifty_snap_raw or {}
     nifty_prev  = _safe_float(nifty_snap.get("prev_close"), 1.0)
@@ -384,21 +348,106 @@ async def calculate_ici_score(
     sector_avg_raw = await redis.get(f"market:breadth:sector:{sector}")
     sector_avg_change = float(sector_avg_raw) if sector_avg_raw else 0.0
 
-    options_score = await _score_options_flow(symbol, _get_weights(vix, market_time)["options"], signal_direction)
+    prev: dict = {}
+    live_ce: dict = {}
+    live_pe: dict = {}
+    ai_sentiment: Optional[dict] = None
 
-    weights = _get_weights(vix, market_time)
+    prev_raw = await redis.get(f"options:prev:{symbol}")
+    if prev_raw:
+        try:
+            prev = json.loads(prev_raw)
+            atm = prev.get("atm_strike") or prev.get("atm")
+            if atm:
+                live_ce = await redis.hgetall(f"options:tick:{symbol}:{atm}CE") or {}
+                live_pe = await redis.hgetall(f"options:tick:{symbol}:{atm}PE") or {}
+        except json.JSONDecodeError:
+            prev = {}
 
-    return await asyncio.to_thread(
-        _calculate_ici_score_core,
+    ai_raw_bytes = await redis.get(f"ai:sentiment:{symbol}")
+    if ai_raw_bytes:
+        try:
+            ai_sentiment = json.loads(ai_raw_bytes)
+        except json.JSONDecodeError:
+            ai_sentiment = None
+
+    return {
+        "snap": snap,
+        "nifty_change": nifty_change,
+        "sector_avg_change": sector_avg_change,
+        "options_prev": prev,
+        "options_live_ce": live_ce,
+        "options_live_pe": live_pe,
+        "ai_sentiment": ai_sentiment,
+        "weights": _get_weights(vix, market_time),
+    }
+
+
+def compute_ici_score(
+    data: dict,
+    symbol: str,
+    signal_direction: str,
+    signal_type: str,
+    active_signals: list[str],
+    vix: float,
+    market_time: str,
+) -> dict:
+    """Pure synchronous score computation. No await, no Redis I/O."""
+    snap = data.get("snap", {})
+    if not snap:
+        logger.warning("[scorer] No snapshot for %s — score=0", symbol)
+        _now = datetime.now(_IST)
+        return _zero_result(symbol, signal_type, _now)
+
+    weights = data.get("weights") or _get_weights(vix, market_time)
+    options_score = _score_options_flow(
+        data.get("options_prev", {}),
+        data.get("options_live_ce", {}),
+        data.get("options_live_pe", {}),
+        data.get("ai_sentiment"),
+        weights["options"],
+        signal_direction,
+    )
+
+    return _calculate_ici_score_core(
         symbol,
         signal_direction,
         signal_type,
         active_signals,
         weights,
         snap,
-        nifty_change,
-        sector_avg_change,
+        data.get("nifty_change", 0.0),
+        data.get("sector_avg_change", 0.0),
         options_score,
+    )
+
+
+async def calculate_ici_score(
+    symbol: str,
+    signal_direction: str,
+    signal_type: str,
+    active_signals: list[str],
+    vix: float,
+    market_time: str,
+) -> dict:
+    """
+    Backward-compatible async wrapper around fetch + pure compute.
+    """
+    data = await fetch_scoring_inputs(
+        symbol=symbol,
+        signal_direction=signal_direction,
+        vix=vix,
+        market_time=market_time,
+    )
+    return await asyncio.to_thread(
+        compute_ici_score,
+        data,
+        symbol,
+        signal_direction,
+        signal_type,
+        active_signals,
+        vix,
+        market_time,
     )
 
 
