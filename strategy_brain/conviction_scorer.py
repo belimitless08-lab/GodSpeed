@@ -386,14 +386,15 @@ async def calculate_ici_score(
 
     options_score = await _score_options_flow(symbol, _get_weights(vix, market_time)["options"], signal_direction)
 
+    weights = _get_weights(vix, market_time)
+
     return await asyncio.to_thread(
-        sync_calculate_ici_score,
+        _calculate_ici_score_core,
         symbol,
         signal_direction,
         signal_type,
         active_signals,
-        vix,
-        market_time,
+        weights,
         snap,
         nifty_change,
         sector_avg_change,
@@ -401,13 +402,12 @@ async def calculate_ici_score(
     )
 
 
-def sync_calculate_ici_score(
+def _calculate_ici_score_core(
     symbol: str,
     signal_direction: str,
     signal_type: str,
     active_signals: list[str],
-    vix: float,
-    market_time: str,
+    weights: dict[str, float],
     snap: dict,
     nifty_change: float,
     sector_avg_change: float,
@@ -438,9 +438,6 @@ def sync_calculate_ici_score(
         "signal_type": str,
     }
     """
-    # ── Regime-aware weights ────────────────────────────────────────────
-    weights = _get_weights(vix, market_time)
-
     # ── Score each pillar ────────────────────────────────────────────────
     p1 = _score_rvol(snap, weights["rvol"], signal_direction)
     p2 = _score_relative_strength(snap, weights["rs"], signal_direction,
@@ -488,6 +485,35 @@ def sync_calculate_ici_score(
     )
 
     return result
+
+
+def sync_calculate_ici_score(
+    symbol: str,
+    signal_direction: str,
+    signal_type: str,
+    active_signals: list[str],
+    vix: float,
+    market_time: str,
+    snap: dict,
+    nifty_change: float,
+    sector_avg_change: float,
+    options_score: float,
+) -> dict:
+    """
+    Backward-compatible sync entrypoint retained for existing internal callers.
+    """
+    weights = _get_weights(vix, market_time)
+    return _calculate_ici_score_core(
+        symbol,
+        signal_direction,
+        signal_type,
+        active_signals,
+        weights,
+        snap,
+        nifty_change,
+        sector_avg_change,
+        options_score,
+    )
 
 
 def _zero_result(symbol: str, signal_type: str, now: datetime) -> dict:

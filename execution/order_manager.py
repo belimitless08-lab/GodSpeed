@@ -166,14 +166,13 @@ async def _get_execution_ltp(
         # Tier 2: Stale but usable (market closed or old tick but data present)
         return ltp, "LAST_CLOSE"
 
-    # ── Tier 1.5: Wait for fresh WS tick on CE/PE during market hours ───
-    # Rationale: place_trigger_order just published options:subscribe; tick
-    # typically arrives in 300-500ms. Poll at 50ms intervals up to 800ms
-    # before falling through to REST. In 95% of cases no REST call is needed.
+    # ── Tier 1.5: Short bounded wait for fresh WS tick on CE/PE ─────────
+    # TEMPORARY: this bounded fallback keeps execution latency predictable.
+    # Long-term this should become fully event-driven (await tick arrival).
     if instrument in ("CE", "PE") and atm_strike:
         market_is_open = await check_market_open()
         if market_is_open:
-            for _ in range(6):  # max ~300ms wait
+            for _ in range(3):  # max ~150ms wait
                 await asyncio.sleep(0.05)
                 tick = await redis.hgetall(tick_key)
                 ltp = _safe_float(tick.get("ltp"))
@@ -797,8 +796,8 @@ async def eod_close_all() -> None:
 
 async def monitor_stop_losses() -> None:
     """
-    Background task — checks every 5 seconds whether any open trade has hit
-    its stop loss at the current LTP and closes it automatically.
+    Legacy polling SL/TP monitor retained for backward compatibility only.
+    Primary authority is monitor_stop_losses_event_driven().
     """
     logger.info("[order_manager] Stop-loss monitor started.")
     redis = await get_redis()
