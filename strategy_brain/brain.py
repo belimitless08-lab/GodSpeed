@@ -52,7 +52,7 @@ from execution.order_manager import (
 )
 
 from strategy_brain.macro_gatekeeper  import check_macro_gates
-from strategy_brain.conviction_scorer  import calculate_ici_score as _calculate_ici_score_async
+from strategy_brain.conviction_scorer  import calculate_ici_score
 from strategy_brain.signal_engines     import scan_all_signals
 from strategy_brain.retest_watchlist   import (
     add_to_retest, check_retest_triggers, get_watchlist_snapshot
@@ -124,10 +124,6 @@ _VIX_CACHE_TTL_SEC = 60
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def sync_calculate_ici_score(**kwargs) -> dict:
-    """Sync adapter used with asyncio.to_thread to avoid loop blocking."""
-    return asyncio.run(_calculate_ici_score_async(**kwargs))
 
 def _now_ist() -> datetime:
     return datetime.now(_IST)
@@ -346,14 +342,13 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
 
         # ── ICI Score ──────────────────────────────────────────────────
         try:
-            score_result = await asyncio.to_thread(
-                sync_calculate_ici_score,
-                symbol           = symbol,
-                signal_direction = signal.get("direction", "LONG"),
-                signal_type      = signal["type"],
-                active_signals   = active_signal_types,
-                vix              = vix,
-                market_time      = mtime,
+            score_result = await calculate_ici_score(
+                symbol=symbol,
+                signal_direction=signal.get("direction", "LONG"),
+                signal_type=signal["type"],
+                active_signals=active_signal_types,
+                vix=vix,
+                market_time=mtime,
             )
         except Exception as exc:
             logger.error("[brain] ICI scorer error for %s: %s", symbol, exc, exc_info=True)
@@ -475,6 +470,7 @@ async def _subscribe_candles() -> None:
             async for message in pubsub.listen():
                 if message["type"] != "message":
                     continue
+                await asyncio.sleep(0)
 
                 channel = message["channel"]
 
@@ -547,9 +543,9 @@ async def _breadth_background_task() -> None:
 
 async def start_execution_engine() -> None:
     tasks = [
-        asyncio.create_task(run_execution_listener()),
-        asyncio.create_task(monitor_stop_losses_event_driven()),
-        asyncio.create_task(monitor_trigger_orders()),
+        asyncio.create_task(run_execution_listener(), name="execution_listener"),
+        asyncio.create_task(monitor_stop_losses_event_driven(), name="sl_monitor"),
+        asyncio.create_task(monitor_trigger_orders(), name="trigger_monitor"),
     ]
 
     for t in tasks:
@@ -579,8 +575,12 @@ async def run_brain() -> None:
 
     # Launch background tasks
     await start_execution_engine()
-    asyncio.create_task(_premarket_news_task(),     name="premarket_news")
-    asyncio.create_task(_breadth_background_task(), name="breadth_bg")
+    premarket_task = asyncio.create_task(_premarket_news_task(), name="premarket_news")
+    breadth_task = asyncio.create_task(_breadth_background_task(), name="breadth_bg")
+    background_tasks.add(premarket_task)
+    background_tasks.add(breadth_task)
+    premarket_task.add_done_callback(background_tasks.discard)
+    breadth_task.add_done_callback(background_tasks.discard)
 
     # Prime market breadth once on startup
     asyncio.create_task(_run_breadth_safe())
@@ -602,6 +602,10 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             logger.info("[brain] Shutting down…")
         finally:
+            for task in list(background_tasks):
+                task.cancel()
+            if background_tasks:
+                await asyncio.gather(*background_tasks, return_exceptions=True)
             await close_redis()
 
     try:
