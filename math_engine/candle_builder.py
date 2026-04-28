@@ -302,6 +302,11 @@ async def _flush_candle_to_redis(
         "updated_at":      now_iso,
         "rvol":            str(updated_ind.get("rvol", 0.0)),
         "live_volume_ratio": str(updated_ind.get("rvol", 0.0)),
+        # ltp = close of the last completed 1m candle — consumed by macro gates,
+        # conviction scorer, and signal engines.  Must be kept current or Gate 2
+        # (BELOW_VWAP) will compare stale prev_close against today's VWAP and
+        # block every LONG signal.
+        "ltp":             str(c),
     }
     if is_index:
         snapshot_mapping["is_index"] = "1"
