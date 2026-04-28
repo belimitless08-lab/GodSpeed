@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -541,8 +542,9 @@
     position: fixed; bottom: 48px; left: 0; right: 0;
     background: #111827; border-top: 1px solid #334155;
     transform: translateY(100%);
-    transition: transform 0.25s ease;
-    z-index: 120; overflow-y: auto; padding: 12px 16px;
+    transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+    z-index: 500; overflow-y: auto; padding: 12px 16px;
+    overscroll-behavior: contain;
   }
   .drawer-header {
     display: flex; justify-content: space-between; align-items: center;
@@ -555,13 +557,14 @@
     bottom: 0;
     left: 0;
     right: 0;
-    z-index: 999;
+    z-index: 600;
     background: #0f1117;
     border-top: 2px solid #6366f1;
     transform: translateY(calc(100% - 48px));
-    transition: transform 0.3s ease;
+    transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
     padding: 0;
     overflow: hidden;
+    overscroll-behavior: contain;
   }
   #history-drawer.hist-open {
     transform: translateY(0%);
@@ -1341,14 +1344,18 @@ function renderWorldIndices(data) {
 }
 
 async function fetchIndices() {
-  const [_, idx, world] = await Promise.all([
+  const [_, idx, worldRaw] = await Promise.all([
     fetchIndexSnapshots(),
     apiFetch('/api/indices'),
     apiFetch('/api/world-indices')
   ]);
 
-  const hasRealIdx   = idx   && Array.isArray(idx)   && idx.length   > 0;
-  const hasRealWorld = world && Array.isArray(world)  && world.length > 0;
+  // API returns {"indices":[...]} with field "pct" — normalise to array with change_pct
+  const worldArr = worldRaw?.indices ?? (Array.isArray(worldRaw) ? worldRaw : []);
+  const world = worldArr.map(w => ({ ...w, change_pct: w.change_pct ?? w.pct ?? 0 }));
+
+  const hasRealIdx   = idx   && Array.isArray(idx)  && idx.length  > 0;
+  const hasRealWorld = world && world.length > 0;
 
   if (hasRealIdx) {
     renderIndices(idx);
@@ -1513,6 +1520,7 @@ const SIGNAL_TYPES = [
 ];
 
 let signalData = {};
+window._symbolIciMap = {};  // symbol → best ici_score across all active signals
 
 function tradDot(val) {
   const map = {GREEN:'trad-green', AMBER:'trad-amber', RED:'trad-red'};
@@ -1567,12 +1575,36 @@ function renderSignalCards(data) {
 
 async function fetchSignals() {
   const data = await apiFetch('/api/signals');
-  if (data) {
-    signalData = data;
-    renderSignalCards(data);
+  if (data && Array.isArray(data)) {
+    // API returns a flat list; group by signal_type for renderSignalCards
+    const TYPE_MAP = {
+      'OPENING_DRIVE':                   'opening_drive',
+      'ORB_BREAKOUT':                    'orb_breakout',
+      'HOURLY_BREAKOUT':                 'hourly_breakout',
+      'CHOPPINESS_BREAKOUT_CONFIRMED':   'choppiness_break',
+      'CHOPPINESS_BREAKOUT_UNCONFIRMED': 'choppiness_break',
+      'SUPERTREND_FLIP':                 'supertrend_flip',
+      'VOLUME_SURGE_STRONG':             'volume_surge',
+      'VOLUME_SURGE_MODERATE':           'volume_surge',
+    };
+    const grouped = {};
+    const iciMap  = {};
+    for (const sig of data) {
+      const key = TYPE_MAP[sig.signal_type];
+      if (key) {
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(sig);
+      }
+      if (sig.ici_score != null &&
+          (iciMap[sig.symbol] == null || sig.ici_score > iciMap[sig.symbol])) {
+        iciMap[sig.symbol] = sig.ici_score;
+      }
+    }
+    signalData = grouped;
+    window._symbolIciMap = iciMap;
+    renderSignalCards(grouped);
   }
-  // API unavailable (market closed / service down):
-  // keep signalData as-is so last known signals stay visible.
+  // API unavailable: keep last known signals visible
 }
 
 /* ══════════════════════════════════════════
@@ -1812,12 +1844,12 @@ async function loadChart(symbol, tf) {
 
     // EMAs
     if (data && data.ema16) {
-      ema16Series.setData(data.ema16.map((v, i) => ({ time: rawCandles[i].time, value: v })).filter(x => x.value));
+      ema16Series.setData(data.ema16.slice(0, rawCandles.length).map((v, i) => ({ time: rawCandles[i].time, value: v })).filter(x => x.value != null));
     } else {
       ema16Series.setData(computeEMA(mapped, 16));
     }
     if (data && data.ema200) {
-      ema200Series.setData(data.ema200.map((v, i) => ({ time: rawCandles[i].time, value: v })).filter(x => x.value));
+      ema200Series.setData(data.ema200.slice(0, rawCandles.length).map((v, i) => ({ time: rawCandles[i].time, value: v })).filter(x => x.value != null));
     } else {
       ema200Series.setData(computeEMA(mapped, 200));
     }
@@ -2049,7 +2081,7 @@ function handleTickUpdate(data) {
 
 /* ── 100ms render loop: live LTP + PnL in positions drawer ── */
 setInterval(() => {
-  if (document.getElementById('positions-drawer').style.transform === 'translateY(0%)') {
+  if (document.getElementById('positions-drawer').style.display === 'block') {
     state.openTrades.forEach(t => {
       let tick;
       if ((t.instrument === 'CE' || t.instrument === 'PE') && (t.atm_strike || t.strike)) {
@@ -2548,9 +2580,6 @@ function toggleOrderModal(prefilSymbol) {
   }
   if (!visible) m.onclick = e => { if (e.target === m) toggleOrderModal() }
 }
-document.getElementById('order-modal').addEventListener('click', e => {
-  if (e.target === e.currentTarget) toggleOrderModal();
-});
 
 /* ══════════════════════════════════════════
    HEALTH MODAL (Change 2)
@@ -2653,29 +2682,27 @@ const state = {
 let positionsData = [];
 
 function closeAllDrawers() {
-  const drawers = [
-    'positions-drawer',
-    'pending-drawer',
-    'history-drawer'
-  ];
-  drawers.forEach(id => {
+  ['positions-drawer', 'pending-drawer'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
-    if (id === 'history-drawer') {
-      el.classList.remove('hist-open');
-      return;
-    }
     el.style.display = 'none';
+    el.style.transform = '';          // reset so CSS transition fires on next open
   });
+  const hist = document.getElementById('history-drawer');
+  if (hist) hist.classList.remove('hist-open');
+  document.body.style.overflow = ''; // restore page scroll
 }
 
 function togglePositionsDrawer() {
+  const d   = document.getElementById('positions-drawer');
+  const wasOpen = d.style.display === 'block'; // check BEFORE closeAllDrawers clears it
   closeAllDrawers();
-  const d = document.getElementById('positions-drawer');
-  const open = d.style.transform === 'translateY(0%)';
-  if (!open) {
+  if (!wasOpen) {
     d.style.display = 'block';
+    // Force reflow so the CSS transition from translateY(100%) → 0% fires
+    d.getBoundingClientRect();
     d.style.transform = 'translateY(0%)';
+    document.body.style.overflow = 'hidden';
     fetchPositions();
   }
 }
@@ -2863,12 +2890,14 @@ async function confirmClosePosition(tradeId) {
    PENDING ORDERS DRAWER (Change 5)
 ══════════════════════════════════════════ */
 function togglePendingDrawer() {
+  const d   = document.getElementById('pending-drawer');
+  const wasOpen = d.style.display === 'block';
   closeAllDrawers();
-  const d = document.getElementById('pending-drawer');
-  const open = d.style.transform === 'translateY(0%)';
-  if (!open) {
+  if (!wasOpen) {
     d.style.display = 'block';
+    d.getBoundingClientRect();        // force reflow for CSS transition
     d.style.transform = 'translateY(0%)';
+    document.body.style.overflow = 'hidden';
     fetchPendingOrders();
   }
 }
@@ -2952,14 +2981,16 @@ function toggleHistoryDrawer() {
     const isOpen = d.classList.contains('hist-open')
     if (isOpen) {
         d.classList.remove('hist-open')
+        document.body.style.overflow = ''
         const btn = document.getElementById('hist-toggle-btn')
         if (btn) btn.textContent = '↑'
     } else {
         const pos = document.getElementById('positions-drawer')
         const pend = document.getElementById('pending-drawer')
-        if (pos) pos.style.display = 'none'
-        if (pend) pend.style.display = 'none'
+        if (pos) { pos.style.display = 'none'; pos.style.transform = ''; }
+        if (pend) { pend.style.display = 'none'; pend.style.transform = ''; }
         d.classList.add('hist-open')
+        document.body.style.overflow = 'hidden'
         const btn = document.getElementById('hist-toggle-btn')
         if (btn) btn.textContent = '↓'
         const today = new Date().toISOString().slice(0,10)
@@ -3193,8 +3224,8 @@ function renderWatchlist() {
         const chgStr   = chgPct === null ? '\u2014'
             : (chgPct >= 0 ? '+' : '') + chgPct.toFixed(2) + '%';
 
-        // ICI — snap.ici_score is the number; grade computed client-side
-        const iciScore = snap.ici_score != null ? Math.round(snap.ici_score) : null;
+        // ICI — read from latest signal data (not in snapshot hash)
+        const iciScore = window._symbolIciMap?.[sym] != null ? Math.round(window._symbolIciMap[sym]) : null;
         const iciGrade = iciScore == null ? '' : iciScore >= 90 ? 'GOD' : iciScore >= 75 ? 'A' : iciScore >= 60 ? 'B' : 'C';
         const iciColor = iciGrade === 'GOD' ? '#f59e0b' : iciGrade === 'A' ? 'var(--green)'
             : iciGrade === 'B' ? 'var(--accent)' : 'var(--muted)';
@@ -3202,12 +3233,8 @@ function renderWatchlist() {
             ? `<span style="font-size:10px;font-weight:700;color:${iciColor};background:rgba(0,0,0,0.3);padding:2px 4px;border-radius:3px;">${iciGrade === 'GOD' ? '\u2605' : iciGrade}\u00a0${iciScore}</span>`
             : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
 
-        // Chop — snap.choppiness (number) vs snap.chop_baseline (number)
-        // trending = choppiness < chop_baseline
-        const chopVal  = snap.choppiness;
-        const chopBase = snap.chop_baseline;
-        const chopClass = (chopVal != null && chopBase != null)
-            ? (chopVal < chopBase ? 'TRENDING' : 'CHOPPY') : null;
+        // Chop — read choppiness_class written by candle builder: "TRENDING"|"NEUTRAL"|"CHOPPY"
+        const chopClass = snap.choppiness_class || null;
         const chopColor = chopClass === 'TRENDING' ? 'var(--green)' : chopClass === 'CHOPPY' ? 'var(--red)' : 'var(--gold)';
         const chopLabel = chopClass === 'TRENDING' ? 'TRD' : chopClass === 'CHOPPY' ? 'CHOP' : null;
         const chopHtml = chopLabel
@@ -3229,9 +3256,8 @@ function renderWatchlist() {
             ? `<span style="font-size:9px;font-weight:700;color:${tC(b)};border:1px solid ${tC(b)};padding:1px 4px;border-radius:3px;">${b}</span>`
             : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
 
-        // Supertrend — snap.supertrend is a number (positive=BULL, negative=BEAR)
-        const stNum   = snap.supertrend;
-        const st      = stNum == null ? null : stNum > 0 ? 'BULL' : 'BEAR';
+        // Supertrend — supertrend_dir written by candle builder: "BULL"|"BEAR"
+        const st = snap.supertrend_dir || null;
         const stColor = st === 'BULL' ? 'var(--green)' : st === 'BEAR' ? 'var(--red)' : 'var(--muted)';
         const stBg    = st === 'BULL' ? 'rgba(34,197,94,0.12)' : st === 'BEAR' ? 'rgba(239,68,68,0.12)' : 'transparent';
         const stHtml  = st
@@ -3271,8 +3297,10 @@ setInterval(() => { if (watchlist.length) renderWatchlist() }, 10000)
 
 async function fetchWatchlistSnapshots() {
     if (!state.snapshots) state.snapshots = {};
-    for (const sym of watchlist) {
-        const snap = await apiFetch(`/api/snapshot/${sym}`);
+    const results = await Promise.all(
+        watchlist.map(sym => apiFetch(`/api/snapshot/${sym}`).then(snap => ({ sym, snap })))
+    );
+    for (const { sym, snap } of results) {
         if (snap) state.snapshots[sym] = snap;
     }
     renderWatchlist();
