@@ -168,25 +168,30 @@ def scrape_global_indices() -> list[dict]:
 
 # ── Redis writer ─────────────────────────────────────────────────────────────
 
-def scrape_and_store(redis_client, ttl: int = REDIS_TTL) -> bool:
+def scrape_and_store(ttl: int = REDIS_TTL) -> bool:
     """
-    Scrape Groww and write result to Redis.
+    Scrape Groww and write result to Redis using its own sync connection.
 
     Args:
-        redis_client:  existing redis.Redis() instance
-        ttl:           key TTL in seconds
-                       REDIS_TTL (310)       → 5-min background refresh thread
-                       REDIS_TTL_SEED (3600) → morning seeder at 8:30 AM
+        ttl: key TTL in seconds
+             REDIS_TTL (310)       → hourly background refresh
+             REDIS_TTL_SEED (3600) → morning seeder at 8:30 AM
 
     Returns:
         True on success, False on any failure (error is logged).
     """
+    import os
+    import redis as _redis_sync
+    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+    r = _redis_sync.from_url(redis_url)
     try:
         data    = scrape_global_indices()
         payload = json.dumps(data)
-        redis_client.setex(REDIS_KEY,    ttl, payload)
-        redis_client.setex(REDIS_KEY_TS, ttl, str(int(time.time())))
+        r.setex(REDIS_KEY,    ttl, payload)
+        r.setex(REDIS_KEY_TS, ttl, str(int(time.time())))
         return True
     except Exception as e:
         logger.error(f"[global_indices] scrape_and_store failed: {e}")
         return False
+    finally:
+        r.close()
