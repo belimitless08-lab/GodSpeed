@@ -288,16 +288,20 @@ async def lifespan(app: FastAPI):
     await init_paper_account()
 
     # Launch background tasks
-    asyncio.create_task(broadcast_ticks(),         name="broadcast_ticks")
-    asyncio.create_task(broadcast_signals(),       name="broadcast_signals")
-    asyncio.create_task(broadcast_account(),       name="broadcast_account")
-    asyncio.create_task(broadcast_order_fills(),   name="broadcast_order_fills")
+    tasks = [
+        asyncio.create_task(broadcast_ticks(),       name="broadcast_ticks"),
+        asyncio.create_task(broadcast_signals(),     name="broadcast_signals"),
+        asyncio.create_task(broadcast_account(),     name="broadcast_account"),
+        asyncio.create_task(broadcast_order_fills(), name="broadcast_order_fills"),
+    ]
 
     logger.info("[api_server] All background tasks started.")
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
     logger.info("[api_server] Shutting down …")
+    for t in tasks:
+        t.cancel()
     await close()
 
 

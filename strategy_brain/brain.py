@@ -52,7 +52,7 @@ from execution.order_manager import (
 )
 
 from strategy_brain.macro_gatekeeper  import check_macro_gates
-from strategy_brain.conviction_scorer  import calculate_ici_score
+from strategy_brain.conviction_scorer  import calculate_ici_score as _calculate_ici_score_async
 from strategy_brain.signal_engines     import scan_all_signals
 from strategy_brain.retest_watchlist   import (
     add_to_retest, check_retest_triggers, get_watchlist_snapshot
@@ -108,6 +108,7 @@ _PENDING_SCORE_KEY = "brain:pending_score"
 # 213 symbols all close at the same second — without this, they stampede Redis.
 # 30 concurrent = ~30 Redis connections in flight at once, well within pool.
 _SCAN_SEMAPHORE = asyncio.Semaphore(30)
+background_tasks: set[asyncio.Task] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,10 @@ _VIX_CACHE_TTL_SEC = 60
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def sync_calculate_ici_score(**kwargs) -> dict:
+    """Sync adapter used with asyncio.to_thread to avoid loop blocking."""
+    return asyncio.run(_calculate_ici_score_async(**kwargs))
 
 def _now_ist() -> datetime:
     return datetime.now(_IST)
@@ -341,7 +346,8 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
 
         # ── ICI Score ──────────────────────────────────────────────────
         try:
-            score_result = await calculate_ici_score(
+            score_result = await asyncio.to_thread(
+                sync_calculate_ici_score,
                 symbol           = symbol,
                 signal_direction = signal.get("direction", "LONG"),
                 signal_type      = signal["type"],
@@ -539,6 +545,18 @@ async def _breadth_background_task() -> None:
             await _run_breadth_safe()
 
 
+async def start_execution_engine() -> None:
+    tasks = [
+        asyncio.create_task(run_execution_listener()),
+        asyncio.create_task(monitor_stop_losses_event_driven()),
+        asyncio.create_task(monitor_trigger_orders()),
+    ]
+
+    for t in tasks:
+        background_tasks.add(t)
+        t.add_done_callback(background_tasks.discard)
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -560,9 +578,7 @@ async def run_brain() -> None:
     logger.info("[brain] Universe loaded — %d symbols", len(symbols))
 
     # Launch background tasks
-    asyncio.create_task(run_execution_listener(),             name="execution_listener")
-    asyncio.create_task(monitor_stop_losses_event_driven(),   name="monitor_stop_losses_event_driven")
-    asyncio.create_task(monitor_trigger_orders(),             name="trigger_monitor")
+    await start_execution_engine()
     asyncio.create_task(_premarket_news_task(),     name="premarket_news")
     asyncio.create_task(_breadth_background_task(), name="breadth_bg")
 

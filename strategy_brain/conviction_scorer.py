@@ -29,6 +29,7 @@ Usage
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone, date
@@ -357,6 +358,62 @@ async def calculate_ici_score(
     market_time: str,
 ) -> dict:
     """
+    Async wrapper:
+      1) Performs Redis/network reads.
+      2) Offloads CPU scoring math to a worker thread.
+    """
+    redis = await get_redis()
+
+    # ── Load snapshot ───────────────────────────────────────────────────
+    snap_raw = await redis.hgetall(f"snapshot:{symbol}")
+    snap = snap_raw or {}
+
+    if not snap:
+        logger.warning("[scorer] No snapshot for %s — score=0", symbol)
+        _now = datetime.now(_IST)
+        return _zero_result(symbol, signal_type, _now)
+
+    # ── Load reference data ──────────────────────────────────────────────
+    nifty_snap_raw = await redis.hgetall("snapshot:NIFTY")
+    nifty_snap = nifty_snap_raw or {}
+    nifty_prev  = _safe_float(nifty_snap.get("prev_close"), 1.0)
+    nifty_ltp   = _safe_float(nifty_snap.get("ltp"), nifty_prev)
+    nifty_change = _safe_divide(nifty_ltp - nifty_prev, nifty_prev) * 100
+
+    sector = snap.get("sector", "UNKNOWN")
+    sector_avg_raw = await redis.get(f"market:breadth:sector:{sector}")
+    sector_avg_change = float(sector_avg_raw) if sector_avg_raw else 0.0
+
+    options_score = await _score_options_flow(symbol, _get_weights(vix, market_time)["options"], signal_direction)
+
+    return await asyncio.to_thread(
+        sync_calculate_ici_score,
+        symbol,
+        signal_direction,
+        signal_type,
+        active_signals,
+        vix,
+        market_time,
+        snap,
+        nifty_change,
+        sector_avg_change,
+        options_score,
+    )
+
+
+def sync_calculate_ici_score(
+    symbol: str,
+    signal_direction: str,
+    signal_type: str,
+    active_signals: list[str],
+    vix: float,
+    market_time: str,
+    snap: dict,
+    nifty_change: float,
+    sector_avg_change: float,
+    options_score: float,
+) -> dict:
+    """
     Compute the Intraday Conviction Index score for a signal.
 
     Parameters
@@ -381,28 +438,6 @@ async def calculate_ici_score(
         "signal_type": str,
     }
     """
-    redis = await get_redis()
-
-    # ── Load snapshot ───────────────────────────────────────────────────
-    snap_raw = await redis.hgetall(f"snapshot:{symbol}")
-    snap = snap_raw or {}
-
-    if not snap:
-        logger.warning("[scorer] No snapshot for %s — score=0", symbol)
-        _now = datetime.now(_IST)
-        return _zero_result(symbol, signal_type, _now)
-
-    # ── Load reference data ──────────────────────────────────────────────
-    nifty_snap_raw = await redis.hgetall("snapshot:NIFTY")
-    nifty_snap = nifty_snap_raw or {}
-    nifty_prev  = _safe_float(nifty_snap.get("prev_close"), 1.0)
-    nifty_ltp   = _safe_float(nifty_snap.get("ltp"), nifty_prev)
-    nifty_change = _safe_divide(nifty_ltp - nifty_prev, nifty_prev) * 100
-
-    sector = snap.get("sector", "UNKNOWN")
-    sector_avg_raw = await redis.get(f"market:breadth:sector:{sector}")
-    sector_avg_change = float(sector_avg_raw) if sector_avg_raw else 0.0
-
     # ── Regime-aware weights ────────────────────────────────────────────
     weights = _get_weights(vix, market_time)
 
@@ -410,7 +445,7 @@ async def calculate_ici_score(
     p1 = _score_rvol(snap, weights["rvol"], signal_direction)
     p2 = _score_relative_strength(snap, weights["rs"], signal_direction,
                                    nifty_change, sector_avg_change)
-    p3 = await _score_options_flow(symbol, weights["options"], signal_direction)
+    p3 = options_score
     p4 = _score_vwap_trend(snap, weights["vwap"], signal_direction)
     p5 = _score_choppiness(snap, weights["chop"])
 

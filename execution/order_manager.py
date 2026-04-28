@@ -173,7 +173,7 @@ async def _get_execution_ltp(
     if instrument in ("CE", "PE") and atm_strike:
         market_is_open = await check_market_open()
         if market_is_open:
-            for _ in range(16):  # 16 × 50ms = 800ms maximum wait
+            for _ in range(6):  # max ~300ms wait
                 await asyncio.sleep(0.05)
                 tick = await redis.hgetall(tick_key)
                 ltp = _safe_float(tick.get("ltp"))
