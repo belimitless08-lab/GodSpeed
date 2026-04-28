@@ -967,39 +967,23 @@ async def get_indices():
 async def get_world_indices():
     """Dow futures, Nasdaq futures, Hang Seng, SGX Nifty, Crude."""
     redis = await get_redis()
-    # Support both potential storage formats:
-    # 1) JSON string array/object at key market:world_indices
-    # 2) Redis hash field->json entries at key market:world_indices
-    raw_json = await redis.get("market:world_indices")
-    if raw_json:
-        try:
-            parsed = json.loads(raw_json)
-            if isinstance(parsed, list):
-                return {"indices": parsed}
-            if isinstance(parsed, dict):
-                # Accept {"indices":[...]} envelope or key->payload mapping
-                if isinstance(parsed.get("indices"), list):
-                    return {"indices": parsed["indices"]}
-                return {"indices": list(parsed.values())}
-        except json.JSONDecodeError:
-            pass
+    # Scraper writes to global:indices (list[dict] JSON string)
+    # Legacy fallback: market:world_indices (hash or JSON)
+    for key in ("global:indices", "market:world_indices"):
+        raw_json = await redis.get(key)
+        if raw_json:
+            try:
+                parsed = json.loads(raw_json)
+                if isinstance(parsed, list):
+                    return {"indices": parsed}
+                if isinstance(parsed, dict):
+                    if isinstance(parsed.get("indices"), list):
+                        return {"indices": parsed["indices"]}
+                    return {"indices": list(parsed.values())}
+            except json.JSONDecodeError:
+                pass
 
-    raw_hash: dict = {}
-    try:
-        raw_hash = await redis.hgetall("market:world_indices")
-    except Exception:
-        raw_hash = {}
-    if not raw_hash:
-        return {"indices": []}
-
-    indices = []
-    for _, value in raw_hash.items():
-        try:
-            indices.append(json.loads(value))
-        except json.JSONDecodeError:
-            pass
-
-    return {"indices": indices}
+    return {"indices": []}
 
 
 # ===========================================================================
@@ -1725,9 +1709,8 @@ async def _global_indices_refresh() -> None:
         now = _now_ist()
         if now.weekday() < 5 and dtime(8, 0) <= now.time() <= dtime(16, 30):
             try:
-                redis = await get_redis()
                 ok = await loop.run_in_executor(
-                    None, lambda: _scrape_global_indices(redis, ttl=_GLOBAL_TTL)
+                    None, lambda: _scrape_global_indices(ttl=_GLOBAL_TTL)
                 )
                 if ok:
                     logger.info("[global_indices] hourly refresh OK")
