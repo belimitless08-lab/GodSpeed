@@ -109,6 +109,7 @@ _PENDING_SCORE_KEY = "brain:pending_score"
 # 30 concurrent = ~30 Redis connections in flight at once, well within pool.
 _SCAN_SEMAPHORE = asyncio.Semaphore(30)
 background_tasks: set[asyncio.Task] = set()
+_execution_engine_started = False
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +551,11 @@ async def _breadth_background_task() -> None:
 
 
 async def start_execution_engine() -> None:
+    global _execution_engine_started
+    if _execution_engine_started:
+        logger.info("[brain] execution engine already started; skipping duplicate start")
+        return
+
     tasks = [
         asyncio.create_task(run_execution_listener(), name="execution_listener"),
         asyncio.create_task(monitor_stop_losses_event_driven(), name="sl_monitor"),
@@ -559,6 +565,8 @@ async def start_execution_engine() -> None:
     for t in tasks:
         background_tasks.add(t)
         t.add_done_callback(background_tasks.discard)
+
+    _execution_engine_started = True
 
 
 # ---------------------------------------------------------------------------
