@@ -1235,10 +1235,9 @@ async def run_seeder(force: bool = False) -> None:
     # -----------------------------------------------------------------------
     logger.info("[seeder] seeding global indices from Groww...")
     try:
-        redis_sync = await get_redis()
-        # scrape_and_store is synchronous (requests) — run in thread pool
+        # scrape_and_store creates its own sync Redis connection — no client needed
         ok = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: _scrape_global_indices(redis_sync, ttl=_GLOBAL_TTL)
+            None, lambda: _scrape_global_indices(ttl=_GLOBAL_TTL)
         )
         if ok:
             logger.info("[seeder] global indices seeded ✅")
