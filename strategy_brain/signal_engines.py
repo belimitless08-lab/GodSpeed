@@ -446,6 +446,7 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
         Additional keys vary by signal type.
     """
     if snapshot is None:
+        print("DEBUG:", symbol, snapshot.get("ltp"), snapshot.get("ema9"), snapshot.get("ema200"))
         snapshot = await _load_snapshot(symbol)
 
     if not snapshot:
