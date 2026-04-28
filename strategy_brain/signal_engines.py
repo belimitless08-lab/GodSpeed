@@ -104,8 +104,9 @@ def _detect_opening_drive(snapshot: dict, candles_5m: list[dict]) -> Optional[di
     Requires: close > R1, body ratio > 60%, RVOL > 2x, gap < 3%.
     """
     now = _now_ist()
-    after_open  = now.hour == 9 or (now.hour == _OPENING_DRIVE_END_H and now.minute < _OPENING_DRIVE_END_M)
-    if not after_open:
+    # Opening Drive window: 9:15 – 10:00 IST (inclusive of the 10:00 candle)
+    in_opening_window = (now.hour == 9) or (now.hour == _OPENING_DRIVE_END_H and now.minute <= _OPENING_DRIVE_END_M)
+    if not in_opening_window:
         return None
 
     if not candles_5m:
@@ -335,13 +336,16 @@ def _detect_volume_surge(snapshot: dict) -> Optional[dict]:
 # Public API
 # ---------------------------------------------------------------------------
 
-async def scan_all_signals(symbol: str) -> list[dict]:
+async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[dict]:
     """
     Scan all signal detectors for *symbol* and return detected signals.
 
     Parameters
     ----------
-    symbol : NSE underlying symbol
+    symbol   : NSE underlying symbol
+    snapshot : Pre-loaded snapshot dict (optional).  Pass it in when the
+               caller already fetched the snapshot to avoid a redundant
+               Redis round-trip.
 
     Returns
     -------
@@ -349,7 +353,8 @@ async def scan_all_signals(symbol: str) -> list[dict]:
         type, direction (if directional), entry_price, stop_loss, detected_at
         Additional keys vary by signal type.
     """
-    snapshot      = await _load_snapshot(symbol)
+    if snapshot is None:
+        snapshot = await _load_snapshot(symbol)
     prev_snapshot = await _load_prev_snapshot(symbol)
     candles_5m    = await _load_candles_5m(symbol, n=15)
 
