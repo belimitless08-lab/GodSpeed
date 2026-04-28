@@ -99,6 +99,11 @@ _CH_15M = "candles:15m"
 
 _PENDING_SCORE_KEY = "brain:pending_score"
 
+# Limits how many on_1m_candle / on_5m_candle coroutines run concurrently.
+# 213 symbols all close at the same second — without this, they stampede Redis.
+# 30 concurrent = ~30 Redis connections in flight at once, well within pool.
+_SCAN_SEMAPHORE = asyncio.Semaphore(30)
+
 
 # ---------------------------------------------------------------------------
 # State
@@ -212,7 +217,8 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
 
     # ── Signal scan ────────────────────────────────────────────────────
     try:
-        raw_signals = await scan_all_signals(symbol)
+        # Pass the already-loaded snapshot to avoid a redundant Redis read
+        raw_signals = await scan_all_signals(symbol, snapshot=snapshot)
     except Exception as exc:
         logger.warning("[brain] signal scan failed for %s: %s", symbol, exc)
         raw_signals = []
@@ -253,7 +259,10 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
                 logger.info("[brain] %s %s → BLOCKED gates=%s", symbol, signal["type"], failed_gates)
             continue
 
-        # Gates passed — queue for ICI scoring on next 5m candle
+        # Gates passed — queue for ICI scoring on next 5m candle.
+        # Use a Redis hash keyed by "symbol:signal_type:direction" so a
+        # repeated signal at the next 1m candle overwrites the previous entry
+        # instead of stacking — prevents double-execution on the same signal.
         now = _now_ist()
         expires_at = now + timedelta(minutes=_SCORE_EXPIRY_MINUTES)
 
@@ -265,10 +274,12 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
             "expires_at":         expires_at.isoformat(),
         })
 
+        field_key = f"{symbol}:{signal['type']}:{signal.get('direction', 'NONE')}"
+
         try:
             redis = await get_redis()
-            await redis.sadd(_PENDING_SCORE_KEY, pending_item)
-            logger.info("[brain] %s %s → queued for scoring", symbol, signal["type"])
+            await redis.hset(_PENDING_SCORE_KEY, field_key, pending_item)
+            logger.info("[brain] %s %s → queued for scoring (key=%s)", symbol, signal["type"], field_key)
         except Exception as exc:
             logger.error("[brain] failed to queue score for %s: %s", symbol, exc)
 
@@ -289,26 +300,33 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
     mtime = _current_time_ist()
 
     # ── Process pending scores for this symbol ──────────────────────────
+    # _PENDING_SCORE_KEY is a Redis HASH: field = "symbol:type:direction",
+    # value = JSON item.  Using a hash prevents duplicate entries for the same
+    # signal — a later 1m candle simply overwrites the earlier one.
     try:
-        all_pending_raw = await redis.smembers(_PENDING_SCORE_KEY)
+        # Fetch only fields that belong to this symbol
+        all_fields = await redis.hkeys(_PENDING_SCORE_KEY)
     except Exception as exc:
-        logger.error("[brain] smembers failed: %s", exc)
+        logger.error("[brain] hkeys failed: %s", exc)
         return
 
-    for raw_item in all_pending_raw:
+    symbol_fields = [f for f in all_fields if f.startswith(f"{symbol}:")]
+
+    for field_key in symbol_fields:
+        raw_item = await redis.hget(_PENDING_SCORE_KEY, field_key)
+        if not raw_item:
+            continue
+
         try:
             item = json.loads(raw_item)
         except (json.JSONDecodeError, TypeError):
-            await redis.srem(_PENDING_SCORE_KEY, raw_item)
-            continue
-
-        if item.get("symbol") != symbol:
+            await redis.hdel(_PENDING_SCORE_KEY, field_key)
             continue
 
         # Drop stale items
         if await _is_score_expired(item):
             logger.debug("[brain] dropping expired pending score for %s", symbol)
-            await redis.srem(_PENDING_SCORE_KEY, raw_item)
+            await redis.hdel(_PENDING_SCORE_KEY, field_key)
             continue
 
         signal              = item["signal"]
@@ -326,7 +344,7 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
             )
         except Exception as exc:
             logger.error("[brain] ICI scorer error for %s: %s", symbol, exc, exc_info=True)
-            await redis.srem(_PENDING_SCORE_KEY, raw_item)
+            await redis.hdel(_PENDING_SCORE_KEY, field_key)
             continue
 
         action = score_result.get("action", "IGNORE")
@@ -392,8 +410,8 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
             except Exception as exc:
                 logger.error("[brain] publish failed for %s: %s", symbol, exc)
 
-        # Always remove processed item
-        await redis.srem(_PENDING_SCORE_KEY, raw_item)
+        # Always remove processed item from the hash
+        await redis.hdel(_PENDING_SCORE_KEY, field_key)
 
     # ── Market breadth (amortised per 5m cycle) ─────────────────────────
     # Use a Redis lock-like flag so only one symbol's 5m close triggers it
@@ -416,6 +434,12 @@ async def _run_breadth_safe() -> None:
         await compute_market_breadth()
     except Exception as exc:
         logger.error("[brain] market breadth error: %s", exc, exc_info=True)
+
+
+async def _guarded(coro) -> None:
+    """Run *coro* under the scan semaphore to cap concurrent Redis load."""
+    async with _SCAN_SEMAPHORE:
+        await coro
 
 
 # ---------------------------------------------------------------------------
@@ -455,9 +479,9 @@ async def _subscribe_candles() -> None:
                         continue
 
                     if channel == _CH_1M:
-                        asyncio.create_task(on_1m_candle(symbol, candle))
+                        asyncio.create_task(_guarded(on_1m_candle(symbol, candle)))
                     elif channel == _CH_5M:
-                        asyncio.create_task(on_5m_candle(symbol, candle))
+                        asyncio.create_task(_guarded(on_5m_candle(symbol, candle)))
                 except Exception as e:
                     logger.error("[brain] Message processing error: %s", e)
         except Exception as e:
