@@ -97,7 +97,7 @@ def _get_weights(vix: float, market_time: str) -> dict[str, float]:
     except (ValueError, AttributeError):
         hour, minute = 10, 30  # safe default — mid-session
 
-    is_opening = hour == 9 or (hour == 10 and minute < 0)  # 9:15–9:59
+    is_opening = hour == 9 or (hour == 10 and minute == 0)  # 9:15–10:00
 
     if is_opening and vix > 18:
         return {"rvol": 35, "rs": 25, "options": 25, "vwap":  5, "chop": 10}
