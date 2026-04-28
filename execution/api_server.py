@@ -50,16 +50,11 @@ from execution.order_manager import (
     close_trade,
     place_paper_order,
     eod_close_all,
-    monitor_stop_losses,
-    monitor_stop_losses_event_driven,
-    update_unrealised_pnl,
-    run_execution_listener,
     # trigger-order system
     place_trigger_order,
     get_pending_orders,
     cancel_pending_order,
     update_trade_levels,
-    monitor_trigger_orders,
 )
 
 # ---------------------------------------------------------------------------
@@ -293,17 +288,10 @@ async def lifespan(app: FastAPI):
     await init_paper_account()
 
     # Launch background tasks
-    asyncio.create_task(monitor_stop_losses(),               name="sl_monitor")
-    asyncio.create_task(monitor_stop_losses_event_driven(),  name="monitor_stop_losses_event_driven")
-    asyncio.create_task(update_unrealised_pnl(),   name="unrealised_updater")
-    asyncio.create_task(run_execution_listener(),  name="execution_listener")
-    asyncio.create_task(_scheduler(),              name="scheduler")
     asyncio.create_task(broadcast_ticks(),         name="broadcast_ticks")
     asyncio.create_task(broadcast_signals(),       name="broadcast_signals")
     asyncio.create_task(broadcast_account(),       name="broadcast_account")
-    asyncio.create_task(monitor_trigger_orders(),  name="trigger_monitor")
     asyncio.create_task(broadcast_order_fills(),   name="broadcast_order_fills")
-    asyncio.create_task(_global_indices_refresh(), name="global_indices_refresh")
 
     logger.info("[api_server] All background tasks started.")
     yield

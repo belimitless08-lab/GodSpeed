@@ -43,8 +43,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from core.config import cfg, validate
-from core.redis_client import get_redis
+from core.redis_client import get_redis, close as close_redis
 from core.universe_builder import get_symbols
+from execution.order_manager import (
+    run_execution_listener,
+    monitor_stop_losses_event_driven,
+    monitor_trigger_orders,
+)
 
 from strategy_brain.macro_gatekeeper  import check_macro_gates
 from strategy_brain.conviction_scorer  import calculate_ici_score
@@ -239,6 +244,7 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
     active_signal_types = [s["type"] for s in all_signals]
 
     for signal in directional:
+        await asyncio.sleep(0)
         direction = signal.get("direction", "LONG")
 
         try:
@@ -313,6 +319,7 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
     symbol_fields = [f for f in all_fields if f.startswith(f"{symbol}:")]
 
     for field_key in symbol_fields:
+        await asyncio.sleep(0)
         raw_item = await redis.hget(_PENDING_SCORE_KEY, field_key)
         if not raw_item:
             continue
@@ -431,6 +438,7 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
 
 async def _run_breadth_safe() -> None:
     try:
+        await asyncio.sleep(0)
         await compute_market_breadth()
     except Exception as exc:
         logger.error("[brain] market breadth error: %s", exc, exc_info=True)
@@ -552,6 +560,9 @@ async def run_brain() -> None:
     logger.info("[brain] Universe loaded — %d symbols", len(symbols))
 
     # Launch background tasks
+    asyncio.create_task(run_execution_listener(),             name="execution_listener")
+    asyncio.create_task(monitor_stop_losses_event_driven(),   name="monitor_stop_losses_event_driven")
+    asyncio.create_task(monitor_trigger_orders(),             name="trigger_monitor")
     asyncio.create_task(_premarket_news_task(),     name="premarket_news")
     asyncio.create_task(_breadth_background_task(), name="breadth_bg")
 
