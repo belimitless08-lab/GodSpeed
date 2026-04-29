@@ -3,27 +3,27 @@ core/redis_client.py
 Single shared Redis connection pool for all modules.
 Never creates more than one pool per process.
 """
-import redis.asyncio as aioredis
+import redis.asyncio as redis
 import os
 import logging
 
 log = logging.getLogger(__name__)
 
 # Single global pool — created once per process
-_pool: aioredis.Redis | None = None
+redis_client: redis.Redis | None = None
 
 
-async def get_redis() -> aioredis.Redis:
+async def get_redis() -> redis.Redis:
     """
     Returns the shared Redis client.
     Creates it once on first call, reuses forever after.
     Thread-safe for asyncio.
     """
-    global _pool
-    if _pool is None:
+    global redis_client
+    if redis_client is None:
         url = os.environ.get("REDIS_URL", "redis://localhost:6379")
         max_conns = int(os.environ.get("REDIS_MAX_CONNECTIONS", "20"))
-        _pool = aioredis.from_url(
+        redis_client = redis.from_url(
             url,
             encoding="utf-8",
             decode_responses=True,
@@ -33,7 +33,7 @@ async def get_redis() -> aioredis.Redis:
             retry_on_timeout=True,
         )
         log.info(f"[redis] Connection pool created (max_connections={max_conns})")
-    return _pool
+    return redis_client
 
 
 async def ping() -> bool:
@@ -49,8 +49,8 @@ async def ping() -> bool:
 
 async def close():
     """Close the connection pool on shutdown."""
-    global _pool
-    if _pool:
-        await _pool.aclose()
-        _pool = None
+    global redis_client
+    if redis_client:
+        await redis_client.aclose()
+        redis_client = None
         log.info("[redis] Connection pool closed")
