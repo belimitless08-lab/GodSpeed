@@ -608,6 +608,7 @@ async def run_brain() -> None:
     Never returns under normal operation.
     """
     logger.info("[brain] ═══ Strategy Brain v2 starting ═══")
+    print("REDIS URL:", cfg.REDIS_URL)
 
     # Validate config early
     validate()

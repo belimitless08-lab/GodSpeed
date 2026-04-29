@@ -309,6 +309,7 @@ async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
     print("🚀 [API] Lifespan started")
     logger.info("[api_server] Starting up …")
+    print("REDIS URL:", cfg.REDIS_URL)
     validate()
 
     # Launch background tasks
@@ -1600,16 +1601,20 @@ async def broadcast_ticks() -> None:
 
 
 async def broadcast_signals() -> None:
-    print("🟢 [API-DEBUG] broadcast_signals STARTED")
+    print("STARTED")
 
     try:
         redis = await get_redis()
+        print("Redis OK:", redis)
         pubsub = redis.pubsub()
+        print("PubSub created")
 
+        print("Subscribing...")
         await pubsub.subscribe("trade_execution", "signals_aux")
-        print("🟢 [API-DEBUG] SUBSCRIBED to Redis channels")
+        print("SUBSCRIBED SUCCESS")
 
         async for msg in pubsub.listen():
+            print("RAW MSG:", msg)
             if msg["type"] != "message":
                 continue
 
@@ -1621,14 +1626,14 @@ async def broadcast_signals() -> None:
             if not isinstance(data, str):
                 data = json.dumps(data)
 
-            print(f"🔵 [API-DEBUG] REDIS MSG: {data[:100]}")
+            print("MESSAGE:", data)
 
             await signal_manager.broadcast(data)
 
     except asyncio.CancelledError:
         print("🔴 [API-DEBUG] Task cancelled")
     except Exception as e:
-        print(f"🔴 [API-DEBUG] ERROR: {e}")
+        print("ERROR:", e)
 
 
 async def broadcast_account() -> None:
