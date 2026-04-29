@@ -1601,39 +1601,51 @@ async def broadcast_ticks() -> None:
 
 
 async def broadcast_signals() -> None:
-    print("STARTED")
+    print("🟢 [API] broadcast_signals started (resilient mode)")
 
-    try:
-        redis = await get_redis()
-        print("Redis OK:", redis)
-        pubsub = redis.pubsub()
-        print("PubSub created")
+    while True:
+        pubsub = None
+        try:
+            redis = await get_redis()
+            pubsub = redis.pubsub()
 
-        print("Subscribing...")
-        await pubsub.subscribe("trade_execution", "signals_aux")
-        print("SUBSCRIBED SUCCESS")
+            print("⏳ [API] Subscribing...")
+            await pubsub.subscribe("trade_execution", "signals_aux")
+            print("🟢 [API] Subscribed OK")
 
-        async for msg in pubsub.listen():
-            print("RAW MSG:", msg)
-            if msg["type"] != "message":
-                continue
+            async for msg in pubsub.listen():
+                if msg["type"] != "message":
+                    continue
 
-            data = msg["data"]
+                data = msg["data"]
 
-            if isinstance(data, bytes):
-                data = data.decode()
+                if isinstance(data, bytes):
+                    data = data.decode()
 
-            if not isinstance(data, str):
-                data = json.dumps(data)
+                if not isinstance(data, str):
+                    data = json.dumps(data)
 
-            print("MESSAGE:", data)
+                print(f"🔵 [API] MSG: {data[:100]}")
 
-            await signal_manager.broadcast(data)
+                await signal_manager.broadcast(data)
 
-    except asyncio.CancelledError:
-        print("🔴 [API-DEBUG] Task cancelled")
-    except Exception as e:
-        print("ERROR:", e)
+        except asyncio.CancelledError:
+            print("🛑 [API] Shutdown signal received, exiting loop")
+            break
+
+        except Exception as e:
+            print(f"🔴 [API] ERROR: {e}")
+            _tb.print_exc()
+
+            print("⏳ [API] Reconnecting in 2s...")
+            await asyncio.sleep(2)
+
+        finally:
+            if pubsub:
+                try:
+                    await pubsub.close()
+                except Exception:
+                    pass
 
 
 async def broadcast_account() -> None:
