@@ -270,8 +270,35 @@ class AIAlignment(BaseModel):
 # ===========================================================================
 
 tick_clients:    set[WebSocket] = set()
-signal_clients:  set[WebSocket] = set()
 account_clients: set[WebSocket] = set()
+background_tasks: set[asyncio.Task] = set()
+
+
+class SignalConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        dead = []
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_text(message)
+            except Exception:
+                dead.append(connection)
+
+        for connection in dead:
+            self.disconnect(connection)
+
+
+signal_manager = SignalConnectionManager()
 
 
 # ===========================================================================
@@ -291,6 +318,9 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(broadcast_account(),     name="broadcast_account"),
         asyncio.create_task(broadcast_order_fills(), name="broadcast_order_fills"),
     ]
+    for task in tasks:
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
 
     logger.info("[api_server] All background tasks started.")
     yield
@@ -1574,31 +1604,22 @@ async def broadcast_signals() -> None:
             redis = await get_redis()
             pubsub = redis.pubsub()
             await pubsub.subscribe("trade_execution", "signals_aux")
+            logger.info("[API] Subscribed to channels")
             async for message in pubsub.listen():
                 if message["type"] != "message":
                     continue
                 try:
+                    channel = message["channel"]
+                    if isinstance(channel, bytes):
+                        channel = channel.decode()
                     raw_data = message["data"]
                     if isinstance(raw_data, bytes):
                         raw_data = raw_data.decode()
                     payload = json.loads(raw_data)
-
-                    channel = message["channel"]
-                    if isinstance(channel, bytes):
-                        channel = channel.decode()
-
-                    payload["signal_class"] = (
-                        "EXECUTION" if channel == "trade_execution" else "ALERT"
-                    )
-                    logger.info(f"[WS] {payload.get('symbol')} {payload.get('signal_class')}")
+                    payload["signal_class"] = "EXECUTION" if channel == "trade_execution" else "ALERT"
                     serialized = json.dumps(payload)
-                    dead: set[WebSocket] = set()
-                    for ws in signal_clients.copy():
-                        try:
-                            await ws.send_text(serialized)
-                        except Exception:
-                            dead.add(ws)
-                    signal_clients -= dead
+                    logger.info("[API] REDIS MESSAGE RECEIVED: %s", serialized)
+                    await signal_manager.broadcast(serialized)
                 except Exception as e:
                     logger.error("[api_server] broadcast_signals message processing error: %s", e)
         except Exception as e:
@@ -1639,12 +1660,13 @@ async def broadcast_order_fills() -> None:
                 if message.get("type") != "message":
                     continue
                 dead: set[WebSocket] = set()
-                for ws in signal_clients.copy():
+                for ws in list(signal_manager.active_connections):
                     try:
                         await ws.send_text(message["data"])
                     except Exception:
                         dead.add(ws)
-                signal_clients -= dead
+                for ws in dead:
+                    signal_manager.disconnect(ws)
         except Exception as exc:
             logger.warning("[api_server] broadcast_order_fills dropped, reconnecting: %s", exc)
             await asyncio.sleep(2)
@@ -1669,13 +1691,12 @@ async def ws_ticks(websocket: WebSocket):
 @app.websocket("/ws/signals")
 async def ws_signals(websocket: WebSocket):
     """Register client; signals are pushed by broadcast_signals()."""
-    await websocket.accept()
-    signal_clients.add(websocket)
+    await signal_manager.connect(websocket)
     try:
         while True:
             await websocket.receive_text()
-    except Exception:
-        signal_clients.discard(websocket)
+    except WebSocketDisconnect:
+        signal_manager.disconnect(websocket)
 
 
 @app.websocket("/ws/account")
