@@ -96,7 +96,7 @@ async def _load_snapshot(symbol: str) -> dict:
     return raw or {}
 
 
-async def _load_candles_5m(symbol: str, n: int = 15) -> list[dict]:
+async def _load_candles_5m(symbol: str, n: int = 15) -> list:
     """
     Load last *n* five-minute candles from Redis list candles:5m:{symbol}.
     Each candle stored as JSON string: {ts, open, high, low, close, volume}.
@@ -457,16 +457,8 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
         type, direction (if directional), entry_price, stop_loss, detected_at
         Additional keys vary by signal type.
     """
-    if isinstance(snapshot, list):
-        logger.error(f"[FATAL] snapshot is list for {symbol}, skipping")
-        return []
-
     if snapshot is None:
         snapshot = await _load_snapshot(symbol)
-
-    if isinstance(snapshot, list):
-        logger.error(f"[FATAL] snapshot is list for {symbol}, skipping")
-        return []
 
     if not snapshot:
         logger.warning("[signal_engines] No snapshot for %s — skipping scan", symbol)
@@ -491,16 +483,21 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
         return []
 
     prev_snapshot = normalize_snapshot(await _load_prev_snapshot(symbol))
-    candles_5m = await _load_candles_5m(symbol, n=15)
-
-    clean_candles = []
-    for c in candles_5m:
-        if isinstance(c, dict):
-            clean_candles.append(c)
-        else:
-            logger.warning(f"[signal_engines] Invalid candle format for {symbol}: {type(c)}")
-
-    candles_5m = clean_candles
+    raw_candles_5m = await _load_candles_5m(symbol, n=15)
+    candles_5m = [
+        {
+            "timestamp": c[0],
+            "open": c[1],
+            "high": c[2],
+            "low": c[3],
+            "close": c[4],
+            "volume": c[5],
+        }
+        for c in raw_candles_5m
+        if isinstance(c, list) and len(c) >= 6
+    ]
+    if not candles_5m:
+        return []
 
     detected: list[dict] = []
 
@@ -543,7 +540,7 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
 
     if detected:
         types = [s["type"] for s in detected]
-        if symbol == DEBUG_SYMBOL:
+        if symbol == "NIFTY":
             logger.info("[signal_engines] %s — detected signals: %s", symbol, types)
 
     return detected
