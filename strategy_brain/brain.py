@@ -245,6 +245,31 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
     directional = [s for s in all_signals if "direction" in s]
     auxiliary   = [s for s in all_signals if "direction" not in s]
 
+    for signal in auxiliary:
+        try:
+            payload = {
+                "symbol": symbol,
+                "signal": signal,
+                "type": "AUXILIARY",
+                "published_at": _now_ist().isoformat(),
+            }
+
+            redis = await get_redis()
+
+            # store for frontend
+            signal_id = uuid.uuid4().hex[:8]
+            key = f"signal:aux:{symbol}:{signal_id}"
+
+            await redis.setex(key, 120, json.dumps(payload))
+
+            # publish to websocket
+            await redis.publish("signals_aux", json.dumps(payload))
+
+            logger.info(f"[brain] AUX SIGNAL → {symbol} {signal['type']}")
+
+        except Exception as e:
+            logger.error(f"[brain] failed to publish aux signal: {e}")
+
     active_signal_types = [s["type"] for s in all_signals]
 
     for signal in directional:
