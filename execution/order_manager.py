@@ -58,6 +58,7 @@ _INTRADAY_MARGIN_RATE: float = 0.20
 _ACCT_KEY         = "paper:account"
 _OPEN_TRADES_KEY  = "paper:open_trades"
 _CLOSED_TRADES_KEY= "paper:closed_trades"
+_TRADE_HISTORY_KEY = "trades:history"
 _TRADE_KEY_PREFIX = "paper:trade:"
 _CH_EXECUTION     = "trade_execution"
 _CH_OPTS_UNSUB    = "options:unsubscribe"
@@ -470,15 +471,16 @@ async def get_open_trades() -> list[dict]:
 async def get_closed_trades(limit: int = 50) -> list[dict]:
     """Return the most-recently closed paper trades (up to ``limit``)."""
     redis = await get_redis()
-    trade_ids = await redis.lrange(_CLOSED_TRADES_KEY, 0, limit - 1)
-    trades = []
-    for tid in trade_ids:
-        raw = await redis.get(f"{_TRADE_KEY_PREFIX}{tid}")
-        if raw:
-            try:
-                trades.append(json.loads(raw))
-            except json.JSONDecodeError:
-                logger.warning("[order_manager] Corrupt trade JSON for id=%s", tid)
+    raw_trades = await redis.lrange(_TRADE_HISTORY_KEY, 0, max(limit - 1, 0))
+    trades: list[dict] = []
+    for raw in raw_trades:
+        try:
+            trade = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("[order_manager] Corrupt trade JSON in %s", _TRADE_HISTORY_KEY)
+            continue
+        if trade.get("status") == "CLOSED":
+            trades.append(trade)
     return trades
 
 
@@ -599,6 +601,8 @@ async def place_paper_order(execution_payload: dict) -> dict:
     async with redis.pipeline(transaction=True) as pipe:
         pipe.set(f"{_TRADE_KEY_PREFIX}{trade_id}", json.dumps(trade))
         pipe.lpush(_OPEN_TRADES_KEY, trade_id)
+        pipe.lpush(_TRADE_HISTORY_KEY, json.dumps(trade))
+        pipe.ltrim(_TRADE_HISTORY_KEY, 0, 200)
         await pipe.execute()
 
     await redis.sadd("paper:trades:open", trade["id"])
@@ -671,6 +675,8 @@ async def close_trade(trade_id: str, exit_price: float, reason: str) -> dict:
         pipe.set(f"{_TRADE_KEY_PREFIX}{trade_id}", json.dumps(trade))
         pipe.lrem(_OPEN_TRADES_KEY, 0, trade_id)
         pipe.lpush(_CLOSED_TRADES_KEY, trade_id)
+        pipe.lpush(_TRADE_HISTORY_KEY, json.dumps(trade))
+        pipe.ltrim(_TRADE_HISTORY_KEY, 0, 200)
         await pipe.execute()
 
     await redis.srem("paper:trades:open", trade_id)
@@ -1454,8 +1460,12 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
             age = (_now_ist() - _parse_ts(ts_raw)).total_seconds()
             trade["price_age_seconds"] = round(age, 1)
 
-    await redis.set(f"paper:trade:{trade['id']}", json.dumps(trade))
-    await redis.sadd("paper:trades:open", trade["id"])
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.set(f"paper:trade:{trade['id']}", json.dumps(trade))
+        pipe.sadd("paper:trades:open", trade["id"])
+        pipe.lpush(_TRADE_HISTORY_KEY, json.dumps(trade))
+        pipe.ltrim(_TRADE_HISTORY_KEY, 0, 200)
+        await pipe.execute()
     await _update_paper_account(margin_used=margin, trade_opened=True)
 
     logger.info(
