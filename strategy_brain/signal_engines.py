@@ -150,6 +150,9 @@ def _detect_opening_drive(symbol: str, snapshot: dict, candles_5m: list[dict]) -
             logger.debug(f"{symbol}: opening drive skipped - no 5m candles")
         return None
 
+    if not candles_5m or not isinstance(candles_5m[-1], dict):
+        return None
+
     current_5m = candles_5m[-1]
     o = _safe_float(current_5m.get("open"))
     c = _safe_float(current_5m.get("close"))
@@ -203,6 +206,9 @@ def _detect_orb_breakout(symbol: str, snapshot: dict, candles_5m: list[dict]) ->
     if not candles_5m:
         if symbol == DEBUG_SYMBOL:
             logger.debug(f"{symbol}: ORB rejected - no 5m candles")
+        return None
+
+    if not candles_5m or not isinstance(candles_5m[-1], dict):
         return None
 
     current_5m = candles_5m[-1]
@@ -264,6 +270,9 @@ def _detect_hourly_breakout(symbol: str, snapshot: dict, candles_5m: list[dict])
             logger.debug(f"{symbol}: hourly breakout rejected - no 5m candles")
         return None
 
+    if not candles_5m or not isinstance(candles_5m[-1], dict):
+        return None
+
     current_5m = candles_5m[-1]
     c = _safe_float(current_5m.get("close"))
     lo = _safe_float(current_5m.get("low"))
@@ -323,6 +332,9 @@ def _detect_choppiness_breakout(symbol: str, snapshot: dict, candles_5m: list[di
     if not candles_5m:
         if symbol == DEBUG_SYMBOL:
             logger.debug(f"{symbol}: choppiness breakout rejected - no 5m candles")
+        return None
+
+    if not candles_5m or not isinstance(candles_5m[-1], dict):
         return None
 
     current_5m = candles_5m[-1]
@@ -481,6 +493,15 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
     prev_snapshot = normalize_snapshot(await _load_prev_snapshot(symbol))
     candles_5m = await _load_candles_5m(symbol, n=15)
 
+    clean_candles = []
+    for c in candles_5m:
+        if isinstance(c, dict):
+            clean_candles.append(c)
+        else:
+            logger.warning(f"[signal_engines] Invalid candle format for {symbol}: {type(c)}")
+
+    candles_5m = clean_candles
+
     detected: list[dict] = []
 
     # ── Directional signals ─────────────────────────────────────────────
@@ -522,6 +543,7 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
 
     if detected:
         types = [s["type"] for s in detected]
-        logger.info("[signal_engines] %s — detected signals: %s", symbol, types)
+        if symbol == DEBUG_SYMBOL:
+            logger.info("[signal_engines] %s — detected signals: %s", symbol, types)
 
     return detected
