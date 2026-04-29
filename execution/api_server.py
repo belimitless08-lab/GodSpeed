@@ -307,6 +307,7 @@ signal_manager = SignalConnectionManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
+    print("🚀 [API] Lifespan started")
     logger.info("[api_server] Starting up …")
     validate()
 
@@ -325,8 +326,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
+    print("🛑 [API] Lifespan shutdown")
     logger.info("[api_server] Shutting down …")
-    for t in tasks:
+    for t in list(background_tasks):
         t.cancel()
     await close()
 
@@ -1598,28 +1600,35 @@ async def broadcast_ticks() -> None:
 
 
 async def broadcast_signals() -> None:
-    while True:
-        try:
-            redis = await get_redis()
-            pubsub = redis.pubsub()
-            await pubsub.subscribe("trade_execution", "signals_aux")
-            logger.info("[API] Subscribed to channels")
-            async for message in pubsub.listen():
-                if message.get("type") != "message":
-                    continue
-                try:
-                    data = message.get("data")
-                    if isinstance(data, bytes):
-                        data = data.decode()
-                    if not isinstance(data, str):
-                        data = json.dumps(data)
-                    logger.info("[API] REDIS MESSAGE RECEIVED: %s", data)
-                    await signal_manager.broadcast(data)
-                except Exception as e:
-                    logger.error("[api_server] broadcast_signals message processing error: %s", e)
-        except Exception as e:
-            logger.warning("[api_server] broadcast_signals pub/sub connection dropped, reconnecting in 2s: %s", e)
-            await asyncio.sleep(2)
+    print("🟢 [API-DEBUG] broadcast_signals STARTED")
+
+    try:
+        redis = await get_redis()
+        pubsub = redis.pubsub()
+
+        await pubsub.subscribe("trade_execution", "signals_aux")
+        print("🟢 [API-DEBUG] SUBSCRIBED to Redis channels")
+
+        async for msg in pubsub.listen():
+            if msg["type"] != "message":
+                continue
+
+            data = msg["data"]
+
+            if isinstance(data, bytes):
+                data = data.decode()
+
+            if not isinstance(data, str):
+                data = json.dumps(data)
+
+            print(f"🔵 [API-DEBUG] REDIS MSG: {data[:100]}")
+
+            await signal_manager.broadcast(data)
+
+    except asyncio.CancelledError:
+        print("🔴 [API-DEBUG] Task cancelled")
+    except Exception as e:
+        print(f"🔴 [API-DEBUG] ERROR: {e}")
 
 
 async def broadcast_account() -> None:
