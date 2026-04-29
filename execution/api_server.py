@@ -1573,15 +1573,29 @@ async def broadcast_signals() -> None:
         try:
             redis = await get_redis()
             pubsub = redis.pubsub()
-            await pubsub.subscribe("trade_execution")
+            await pubsub.subscribe("trade_execution", "signals_aux")
             async for message in pubsub.listen():
                 if message["type"] != "message":
                     continue
                 try:
+                    raw_data = message["data"]
+                    if isinstance(raw_data, bytes):
+                        raw_data = raw_data.decode()
+                    payload = json.loads(raw_data)
+
+                    channel = message["channel"]
+                    if isinstance(channel, bytes):
+                        channel = channel.decode()
+
+                    payload["signal_class"] = (
+                        "EXECUTION" if channel == "trade_execution" else "ALERT"
+                    )
+                    logger.info(f"[WS] {payload.get('symbol')} {payload.get('signal_class')}")
+                    serialized = json.dumps(payload)
                     dead: set[WebSocket] = set()
                     for ws in signal_clients.copy():
                         try:
-                            await ws.send_text(message["data"])
+                            await ws.send_text(serialized)
                         except Exception:
                             dead.add(ws)
                     signal_clients -= dead
