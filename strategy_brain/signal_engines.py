@@ -445,9 +445,16 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
         type, direction (if directional), entry_price, stop_loss, detected_at
         Additional keys vary by signal type.
     """
+    if isinstance(snapshot, list):
+        logger.error(f"[FATAL] snapshot is list for {symbol}, skipping")
+        return []
+
     if snapshot is None:
-        print("DEBUG:", symbol, snapshot.get("ltp"), snapshot.get("ema9"), snapshot.get("ema200"))
         snapshot = await _load_snapshot(symbol)
+
+    if isinstance(snapshot, list):
+        logger.error(f"[FATAL] snapshot is list for {symbol}, skipping")
+        return []
 
     if not snapshot:
         logger.warning("[signal_engines] No snapshot for %s — skipping scan", symbol)
