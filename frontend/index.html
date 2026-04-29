@@ -1573,6 +1573,86 @@ function renderSignalCards(data) {
   }).join('');
 }
 
+
+function normalizeRealtimeSignal(payload) {
+  const typeRaw = String(payload.signal_type || payload.signal || payload.type || '').toUpperCase();
+  const TYPE_MAP = {
+    'OPENING_DRIVE':                   'opening_drive',
+    'ORB_BREAKOUT':                    'orb_breakout',
+    'HOURLY_BREAKOUT':                 'hourly_breakout',
+    'CHOPPINESS_BREAKOUT_CONFIRMED':   'choppiness_break',
+    'CHOPPINESS_BREAKOUT_UNCONFIRMED': 'choppiness_break',
+    'SUPERTREND_FLIP':                 'supertrend_flip',
+    'VOLUME_SURGE_STRONG':             'volume_surge',
+    'VOLUME_SURGE_MODERATE':           'volume_surge',
+  };
+  const groupedType = TYPE_MAP[typeRaw] || 'volume_surge';
+  return {
+    ...payload,
+    symbol: payload.symbol,
+    signal_type: payload.signal_type || payload.signal || payload.type || 'REALTIME',
+    direction: payload.direction || 'LONG',
+    ce_tradability: payload.ce_tradability || 'NONE',
+    pe_tradability: payload.pe_tradability || 'NONE',
+    choppiness_class: payload.choppiness_class || payload.signal_class || 'NEUTRAL',
+    ici_score: payload.ici_score ?? null,
+    _groupedType: groupedType,
+  };
+}
+
+function injectSignal(payload) {
+  const container = document.getElementById('signals-grid');
+  if (!container) return;
+
+  const signal = normalizeRealtimeSignal(payload);
+  const key = signal._groupedType;
+
+  if (!signalData[key]) signalData[key] = [];
+  signalData[key].unshift(signal);
+
+  if (signalData[key].length > 50) {
+    signalData[key] = signalData[key].slice(0, 50);
+  }
+
+  if (signal.ici_score != null &&
+      (window._symbolIciMap[signal.symbol] == null || signal.ici_score > window._symbolIciMap[signal.symbol])) {
+    window._symbolIciMap[signal.symbol] = signal.ici_score;
+  }
+
+  renderSignalCards(signalData);
+}
+
+function connectSignalsWS() {
+  const wsUrl = BASE.replace('http', 'ws') + '/ws/signals';
+  const ws = new WebSocket(wsUrl);
+
+  ws.onmessage = (e) => {
+    try {
+      const payload = JSON.parse(e.data);
+
+      // Ignore malformed messages
+      if (!payload || !payload.symbol) return;
+
+      // Prevent duplicates (important)
+      const id = `${payload.symbol}-${payload.signal || payload.type || payload.signal_type}`;
+      if (window._seenSignals?.has(id)) return;
+
+      window._seenSignals = window._seenSignals || new Set();
+      window._seenSignals.add(id);
+
+      // Inject into UI
+      injectSignal(payload);
+
+    } catch (err) {
+      console.error("WS signal parse error", err);
+    }
+  };
+
+  ws.onclose = () => {
+    setTimeout(connectSignalsWS, 3000);
+  };
+}
+
 async function fetchSignals() {
   const data = await apiFetch('/api/signals');
   if (data && Array.isArray(data)) {
@@ -3420,6 +3500,7 @@ fetchIndices();
 
 // Init WebSockets
 initWebSockets();
+connectSignalsWS();
 
 // Resize chart on window resize
 window.addEventListener('resize', () => {
