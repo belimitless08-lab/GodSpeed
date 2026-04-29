@@ -1599,36 +1599,37 @@ async def broadcast_ticks() -> None:
             await asyncio.sleep(2)
 
 
-async def broadcast_signals() -> None:
-    print("🟢 [API-DEBUG] broadcast_signals STARTED")
+async def broadcast_signals():
+    print("[DEBUG] broadcast_signals STARTED")
 
     try:
         redis = await get_redis()
-        pubsub = redis.pubsub()
+        print("[DEBUG] Redis acquired:", type(redis))
 
-        await pubsub.subscribe("trade_execution", "signals_aux")
-        print("🟢 [API-DEBUG] SUBSCRIBED to Redis channels")
+        pubsub = redis.pubsub()
+        print("[DEBUG] PubSub created")
+
+        await pubsub.subscribe("signals_aux")
+        print("[DEBUG] SUBSCRIBED to signals_aux")
 
         async for msg in pubsub.listen():
+            print("[DEBUG] RAW MSG:", msg)
+
             if msg["type"] != "message":
                 continue
 
             data = msg["data"]
-
             if isinstance(data, bytes):
                 data = data.decode()
 
-            if not isinstance(data, str):
-                data = json.dumps(data)
-
-            print(f"🔵 [API-DEBUG] REDIS MSG: {data[:100]}")
+            print("[DEBUG] MESSAGE:", data)
 
             await signal_manager.broadcast(data)
 
     except asyncio.CancelledError:
-        print("🔴 [API-DEBUG] Task cancelled")
+        pass
     except Exception as e:
-        print(f"🔴 [API-DEBUG] ERROR: {e}")
+        print("[ERROR] broadcast_signals:", e)
 
 
 async def broadcast_account() -> None:
