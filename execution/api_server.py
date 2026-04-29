@@ -276,23 +276,22 @@ background_tasks: set[asyncio.Task] = set()
 
 class SignalConnectionManager:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        self.active_connections: set[WebSocket] = set()
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections.add(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        self.active_connections.discard(websocket)
 
     async def broadcast(self, message: str):
-        dead = []
-        for connection in list(self.active_connections):
+        dead: set[WebSocket] = set()
+        for connection in self.active_connections:
             try:
                 await connection.send_text(message)
             except Exception:
-                dead.append(connection)
+                dead.add(connection)
 
         for connection in dead:
             self.disconnect(connection)
@@ -1606,20 +1605,16 @@ async def broadcast_signals() -> None:
             await pubsub.subscribe("trade_execution", "signals_aux")
             logger.info("[API] Subscribed to channels")
             async for message in pubsub.listen():
-                if message["type"] != "message":
+                if message.get("type") != "message":
                     continue
                 try:
-                    channel = message["channel"]
-                    if isinstance(channel, bytes):
-                        channel = channel.decode()
-                    raw_data = message["data"]
-                    if isinstance(raw_data, bytes):
-                        raw_data = raw_data.decode()
-                    payload = json.loads(raw_data)
-                    payload["signal_class"] = "EXECUTION" if channel == "trade_execution" else "ALERT"
-                    serialized = json.dumps(payload)
-                    logger.info("[API] REDIS MESSAGE RECEIVED: %s", serialized)
-                    await signal_manager.broadcast(serialized)
+                    data = message.get("data")
+                    if isinstance(data, bytes):
+                        data = data.decode()
+                    if not isinstance(data, str):
+                        data = json.dumps(data)
+                    logger.info("[API] REDIS MESSAGE RECEIVED: %s", data)
+                    await signal_manager.broadcast(data)
                 except Exception as e:
                     logger.error("[api_server] broadcast_signals message processing error: %s", e)
         except Exception as e:
@@ -1689,7 +1684,7 @@ async def ws_ticks(websocket: WebSocket):
 
 
 @app.websocket("/ws/signals")
-async def ws_signals(websocket: WebSocket):
+async def websocket_signals(websocket: WebSocket):
     """Register client; signals are pushed by broadcast_signals()."""
     await signal_manager.connect(websocket)
     try:
