@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from statistics import mean
 from typing import Optional
 
 from core.redis_client import get_redis
@@ -96,20 +97,26 @@ async def _load_snapshot(symbol: str) -> dict:
     return raw or {}
 
 
-async def _load_candles_5m(symbol: str, n: int = 15) -> list:
-    """
-    Load last *n* five-minute candles from Redis list candles:5m:{symbol}.
-    Each candle stored as JSON string: {ts, open, high, low, close, volume}.
-    """
+async def _load_candles(symbol: str, timeframe: str, n: int = 20) -> list:
+    """Load last *n* candles for timeframe from Redis list candles:{timeframe}:{symbol}."""
     redis = await get_redis()
-    raw_list = await redis.lrange(f"candles:5m:{symbol}", -n, -1)
+    raw_list = await redis.lrange(f"candles:{timeframe}:{symbol}", -n, -1)
     candles = []
     for raw in raw_list:
         try:
-            candles.append(json.loads(raw))
+            parsed = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             continue
+
+        if isinstance(parsed, list) and len(parsed) >= 6:
+            candles.append({"ts": parsed[0], "open": parsed[1], "high": parsed[2], "low": parsed[3], "close": parsed[4], "volume": parsed[5]})
+        elif isinstance(parsed, dict):
+            candles.append(parsed)
     return candles
+
+
+async def _load_candles_5m(symbol: str, n: int = 15) -> list:
+    return await _load_candles(symbol, "5m", n)
 
 
 async def _load_prev_snapshot(symbol: str) -> dict:
@@ -419,21 +426,45 @@ def _detect_supertrend_flip(snapshot: dict, prev_snapshot: dict) -> Optional[dic
     return None
 
 
-def _detect_volume_surge(snapshot: dict) -> Optional[dict]:
+async def _detect_volume_surge(symbol: str, snapshot: dict, timeframe: str = "1m") -> Optional[dict]:
     """
     Volume Surge — standalone auxiliary signal (no direction).
     Returned alongside directional signals; feeds bonus in scorer.
     """
-    rvol = _safe_float(snapshot.get("live_volume_ratio"),
-                       _safe_float(snapshot.get("rvol")))
+    ltp = _safe_float(snapshot.get("ltp"))
+    if ltp < 100:
+        return None
 
-    if rvol >= 3.0:
-        logger.debug("[signal] VOLUME_SURGE_STRONG rvol=%.2f", rvol)
-        return {"type": "VOLUME_SURGE_STRONG", "rvol": round(rvol, 2), "detected_at": _now_ist_str()}
-    if rvol >= 2.0:
-        logger.debug("[signal] VOLUME_SURGE_MODERATE rvol=%.2f", rvol)
-        return {"type": "VOLUME_SURGE_MODERATE", "rvol": round(rvol, 2), "detected_at": _now_ist_str()}
-    return None
+    candles = await _load_candles(symbol, timeframe, 21)
+    if len(candles) < 20:
+        return None
+
+    last_20_candles_volume = [_safe_float(c.get("volume")) for c in candles[-20:]]
+    avg_volume = mean(last_20_candles_volume)
+    current_volume = _safe_float(snapshot.get("last_volume"), _safe_float(candles[-1].get("volume")))
+    if avg_volume <= 0:
+        return None
+
+    rvol = current_volume / avg_volume
+    if rvol < 2.5:
+        return None
+
+    turnover = current_volume * ltp
+    if turnover < 25_000_000:
+        return None
+
+    if symbol == "NIFTY":
+        logger.info("RVOL=%.2f TURNOVER=%.2f", rvol, turnover)
+
+    redis = await get_redis()
+    key = f"vol_surge:{symbol}"
+    if await redis.exists(key):
+        return None
+    await redis.setex(key, 300, 1)
+
+    sig_type = "VOLUME_SURGE_STRONG" if rvol >= 3.0 else "VOLUME_SURGE_MODERATE"
+    logger.debug("[signal] %s rvol=%.2f turnover=%.2f", sig_type, rvol, turnover)
+    return {"type": sig_type, "rvol": round(rvol, 2), "turnover": round(turnover, 2), "detected_at": _now_ist_str()}
 
 
 # ---------------------------------------------------------------------------
@@ -484,18 +515,19 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
 
     prev_snapshot = normalize_snapshot(await _load_prev_snapshot(symbol))
     raw_candles_5m = await _load_candles_5m(symbol, n=15)
-    candles_5m = [
-        {
-            "timestamp": c[0],
-            "open": c[1],
-            "high": c[2],
-            "low": c[3],
-            "close": c[4],
-            "volume": c[5],
-        }
-        for c in raw_candles_5m
-        if isinstance(c, list) and len(c) >= 6
-    ]
+    candles_5m = []
+    for c in raw_candles_5m:
+        if isinstance(c, list) and len(c) >= 6:
+            candles_5m.append({
+                "timestamp": c[0],
+                "open": c[1],
+                "high": c[2],
+                "low": c[3],
+                "close": c[4],
+                "volume": c[5],
+            })
+        elif isinstance(c, dict):
+            candles_5m.append(c)
     if not candles_5m:
         return []
 
@@ -528,7 +560,7 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
 
     # ── Volume surge (auxiliary, direction-neutral) ─────────────────────
     try:
-        surge = _detect_volume_surge(snapshot)
+        surge = await _detect_volume_surge(symbol, snapshot, timeframe="1m")
         if surge:
             surge["symbol"] = symbol
             detected.append(surge)
