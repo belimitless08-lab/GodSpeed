@@ -1078,21 +1078,22 @@ async def get_closed_trades_endpoint(
 ):
     """Closed paper trades, most recent first. Optionally filter by exit date (YYYY-MM-DD)."""
     redis = await get_redis()
-    closed_ids = await redis.lrange("paper:closed_trades", 0, -1)
+    pipe = redis.pipeline()
+    pipe.lrange("trades:history", 0, max(limit - 1, 0))
+    result = await pipe.execute()
+    raw_trades = result[0] if result else []
     trades = []
-    for tid in closed_ids:
-        raw = await redis.get(f"paper:trade:{tid}")
-        if not raw:
-            continue
+    for raw in raw_trades:
         t = json.loads(raw)
+        if t.get("status") != "CLOSED":
+            continue
         exit_ts = t.get("exit_ts", "")
         if date_from and exit_ts and exit_ts[:10] < date_from:
             continue
         if date_to and exit_ts and exit_ts[:10] > date_to:
             continue
         trades.append(t)
-    trades.sort(key=lambda t: t.get("exit_ts", ""), reverse=True)
-    return [_parse_trade(t) for t in trades[:limit]]
+    return [_parse_trade(t) for t in trades]
 
 
 @app.post("/api/trades/{trade_id}/close")
