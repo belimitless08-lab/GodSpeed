@@ -224,8 +224,6 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
 
     # ── Signal scan ────────────────────────────────────────────────────
     try:
-        if symbol == "NIFTY":
-            logger.info(f"{symbol} snapshot type: {type(snapshot)}")
         # Pass the already-loaded snapshot to avoid a redundant Redis read
         raw_signals = await scan_all_signals(symbol, snapshot=snapshot)
     except Exception as exc:
