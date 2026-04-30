@@ -95,12 +95,24 @@ async def _gate1_choppiness(snap: dict) -> tuple[bool, str]:
 
 
 async def _gate2_vwap(snap: dict, direction: str) -> tuple[bool, str]:
-    """Gate 2 — VWAP veto: long signals must be above VWAP."""
+    """Gate 2 — VWAP veto: long signals must be above VWAP.
+    Bypassed in first 15 minutes — VWAP holds yesterday's value until
+    the cruncher resets it on the first live candle close."""
     if direction != "LONG":
+        return True, ""
+
+    from datetime import datetime, timezone, timedelta
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(_IST)
+    market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    if (now_ist - market_open).total_seconds() < 900:
         return True, ""
 
     ltp  = _safe_float(snap.get("ltp"))
     vwap = _safe_float(snap.get("vwap"), 1.0)
+
+    if vwap <= 0:
+        return True, ""
 
     if ltp < vwap:
         logger.debug("[gate2] BELOW_VWAP ltp=%.2f vwap=%.2f", ltp, vwap)
@@ -126,6 +138,7 @@ def _rsi_gate(
     rsi: float,
     choppiness_class: str,
     signal_direction: str,
+    first_15_min: bool = False,
 ) -> tuple[bool, str]:
     """
     Regime-aware RSI gate (pure, sync — called from async _gate4 wrapper).
@@ -158,9 +171,11 @@ def _rsi_gate(
             return False, "RSI_EXHAUSTED"
         if signal_direction == "SHORT" and rsi < 30:
             return False, "RSI_EXHAUSTED"
-        if signal_direction == "LONG" and rsi < 45:
+        rsi_floor = 35 if first_15_min else 40
+        rsi_ceil  = 65 if first_15_min else 60
+        if signal_direction == "LONG" and rsi < rsi_floor:
             return False, "RSI_NO_MOMENTUM"
-        if signal_direction == "SHORT" and rsi > 55:
+        if signal_direction == "SHORT" and rsi > rsi_ceil:
             return False, "RSI_NO_MOMENTUM"
 
     return True, ""
@@ -168,14 +183,20 @@ def _rsi_gate(
 
 async def _gate4_rsi_exhaustion(snap: dict, direction: str) -> tuple[bool, str]:
     """Gate 4 — RSI exhaustion veto: don't chase overbought/oversold."""
+    from datetime import datetime, timezone, timedelta
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(_IST)
+    market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    first_15_min = (now_ist - market_open).total_seconds() < 900
+
     rsi14            = _safe_float(snap.get("rsi14"), 50.0)
     choppiness_class = snap.get("choppiness_class", "NEUTRAL")
 
-    passed, label = _rsi_gate(rsi14, choppiness_class, direction)
+    passed, label = _rsi_gate(rsi14, choppiness_class, direction, first_15_min)
     if not passed:
         logger.debug(
-            "[gate4] %s rsi14=%.1f choppiness_class=%s direction=%s",
-            label, rsi14, choppiness_class, direction,
+            "[gate4] %s rsi14=%.1f choppiness_class=%s direction=%s first_15_min=%s",
+            label, rsi14, choppiness_class, direction, first_15_min,
         )
         return False, label
     return True, ""
