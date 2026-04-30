@@ -262,9 +262,9 @@ async def _flush_candle_to_redis(
     symbol: str,
     candle: dict[str, Any],
     updated_ind: dict[str, Any],
+    redis,
 ) -> None:
     """Append candle to Redis list, update snapshot hash, publish to candles:1m."""
-    redis = await get_redis()
     ts = candle["ts"]
     o, h, l, c, v = candle["open"], candle["high"], candle["low"], candle["close"], candle["volume"]
 
@@ -369,7 +369,7 @@ def _tf_minute_closed(minute_str: str, tf: str) -> bool:
     return False
 
 
-async def _maybe_close_tf_candles(symbol: str, new_minute: str) -> None:
+async def _maybe_close_tf_candles(symbol: str, new_minute: str, redis) -> None:
     """
     Called whenever a 1m candle closes (we have the new minute boundary).
     If the new_minute aligns to a 5m/15m/1hr boundary: flush in-memory TF
@@ -379,7 +379,6 @@ async def _maybe_close_tf_candles(symbol: str, new_minute: str) -> None:
     List writes enable chart reads via /api/candles.
     Pub/sub publishes preserve the trigger monitor and brain consumers.
     """
-    redis = await get_redis()
 
     for tf, ch in (("5m", _CH_5M), ("15m", _CH_15M), ("1hr", _CH_1HR)):
         sym_tf = tf_accumulators.get(symbol, {}).get(tf)
@@ -590,7 +589,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
         }
 
         # Persist to Redis (async I/O — back on event loop)
-        await _flush_candle_to_redis(symbol, closed, updated_ind)
+        await _flush_candle_to_redis(symbol, closed, updated_ind, redis)
 
         # Update in-memory indicator state
         indicators.setdefault(symbol, {}).update(updated_ind)
@@ -600,7 +599,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
 
         # Higher-TF aggregation
         _update_tf_accumulator(symbol, closed)
-        await _maybe_close_tf_candles(symbol, new_minute)
+        await _maybe_close_tf_candles(symbol, new_minute, redis)
 
         _candles_closed_since_last_log += 1
 
