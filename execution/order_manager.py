@@ -831,6 +831,18 @@ async def monitor_stop_losses() -> None:
                     trade.get("expiry_date"),
                 )
                 if ltp <= 0:
+                    if trade.get("instrument") in ("CE", "PE") and trade.get("atm_strike") and trade.get("option_token"):
+                        try:
+                            await redis.publish("options:subscribe", json.dumps({
+                                "symbol": trade["symbol"],
+                                "contracts": [{
+                                    "token": str(trade["option_token"]),
+                                    "strike": int(trade["atm_strike"]),
+                                    "type": trade["instrument"],
+                                }]
+                            }))
+                        except Exception:
+                            pass
                     continue
 
                 sl = _safe_float(trade.get("stop_loss"))
@@ -1466,6 +1478,18 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
         pipe.lpush(_TRADE_HISTORY_KEY, json.dumps(trade))
         pipe.ltrim(_TRADE_HISTORY_KEY, 0, 200)
         await pipe.execute()
+    if instrument in ("CE", "PE") and trade.get("option_token") and trade.get("atm_strike"):
+        try:
+            await redis.publish("options:subscribe", json.dumps({
+                "symbol": symbol,
+                "contracts": [{
+                    "token": str(trade["option_token"]),
+                    "strike": int(trade["atm_strike"]),
+                    "type": instrument,
+                }]
+            }))
+        except Exception as exc:
+            logger.warning("[order_manager] Re-subscribe at fill failed: %s", exc)
     await _update_paper_account(margin_used=margin, trade_opened=True)
 
     logger.info(
