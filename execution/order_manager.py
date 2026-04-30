@@ -833,16 +833,19 @@ async def monitor_stop_losses() -> None:
                 if ltp <= 0:
                     if trade.get("instrument") in ("CE", "PE") and trade.get("atm_strike") and trade.get("option_token"):
                         try:
-                            await redis.publish("options:subscribe", json.dumps({
-                                "symbol": trade["symbol"],
-                                "contracts": [{
-                                    "token": str(trade["option_token"]),
-                                    "strike": int(trade["atm_strike"]),
-                                    "type": trade["instrument"],
-                                }]
-                            }))
-                        except Exception:
-                            pass
+                            key = f"opt_resub:{trade.get('id')}"
+                            if not await redis.get(key):
+                                await redis.setex(key, 5, 1)
+                                await redis.publish("options:subscribe", json.dumps({
+                                    "symbol": trade["symbol"],
+                                    "contracts": [{
+                                        "token": str(trade["option_token"]),
+                                        "strike": int(trade["atm_strike"]),
+                                        "type": trade["instrument"],
+                                    }]
+                                }))
+                        except Exception as exc:
+                            logger.warning("[order_manager] resubscribe failed: %s", exc)
                     continue
 
                 sl = _safe_float(trade.get("stop_loss"))
