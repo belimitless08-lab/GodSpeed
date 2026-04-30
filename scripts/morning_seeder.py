@@ -709,12 +709,7 @@ async def _seed_equity_symbol(
         last_low   = float(np.min(lows[last_day_indices]))
         last_open  = float(opens[last_day_indices[0]])
 
-        # Previous trading day = Thursday (for prev_close field)
-        if len(sorted_days) >= 2:
-            prev_day_indices = day_map[sorted_days[-2]]
-            prev_close = float(closes[prev_day_indices[-1]])
-        else:
-            prev_close = last_close
+        prev_close = last_close
 
         pd_volumes = volumes[last_day_indices]
 
