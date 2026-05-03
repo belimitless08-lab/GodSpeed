@@ -627,48 +627,73 @@
 
 /* ── Signal Row ── */
 .sig-row {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
   border-bottom: 1px solid rgba(255,255,255,0.05);
   transition: background 0.15s;
 }
 .sig-row:hover { background: rgba(255,255,255,0.02); }
 .sig-row:last-child { border-bottom: none; }
 
-/* Tier 1 — Symbol + Price */
+/* Tier 1 */
 .sig-t1 { display:flex; justify-content:space-between; align-items:flex-start; }
-.sig-t1-left { display:flex; align-items:center; gap:6px; }
+.sig-t1-left { display:flex; align-items:center; gap:8px; }
 .sig-t1-right { display:flex; flex-direction:column; align-items:flex-end; }
-.sig-sym { font-size:15px; font-weight:800; color:#f1f5f9; cursor:pointer; letter-spacing:0.03em; transition:color 0.15s; }
-.sig-sym:hover { color:#38bdf8; }
-.sig-ltp { font-size:15px; font-weight:700; color:#f1f5f9; font-variant-numeric:tabular-nums; }
-.sig-chg { font-size:11px; font-weight:700; }
+.sig-sym {
+  font-size: 20px; font-weight: 800; color: #ffffff;
+  cursor: pointer; letter-spacing: 0.5px; transition: color 0.15s;
+}
+.sig-sym:hover { color: #38bdf8; }
+.sig-ltp { font-size: 20px; font-weight: 800; color: #ffffff; font-variant-numeric: tabular-nums; }
+.sig-chg { font-size: 12px; font-weight: 700; text-align: right; }
+.sig-chart-btn {
+  background: rgba(56,189,248,0.1);
+  border: 1px solid rgba(56,189,248,0.2);
+  border-radius: 4px;
+  padding: 4px 6px;
+  color: #38bdf8;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sig-chart-btn:hover { background: rgba(56,189,248,0.2); }
 
-/* Tier 2 — Badges */
+/* Tier 2 */
 .sig-t2 { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
 .sig-badge {
-  padding:2px 7px; border-radius:4px; font-size:9px; font-weight:800;
-  letter-spacing:0.06em; text-transform:uppercase; white-space:nowrap;
-  border:1px solid rgba(255,255,255,0.1); background:rgba(255,255,255,0.04); color:#94a3b8;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  background: transparent;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
-.sig-grade-god { background:rgba(245,158,11,0.12)!important; color:#f59e0b!important; border-color:rgba(245,158,11,0.3)!important; }
-.sig-grade-a   { background:rgba(34,197,94,0.12)!important;  color:#22c55e!important; border-color:rgba(34,197,94,0.3)!important; }
-.sig-grade-b   { background:rgba(56,189,248,0.1)!important;  color:#38bdf8!important; border-color:rgba(56,189,248,0.25)!important; }
-.sig-badge-sector { background:rgba(255,255,255,0.04); color:#64748b; border-color:rgba(255,255,255,0.08); }
-.sig-type-label { font-size:9px; color:#475569; text-transform:uppercase; letter-spacing:0.06em; }
+.sig-type-txt {
+  font-size: 10px;
+  color: #64748b;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
 
-/* Tier 3 — Technicals */
-.sig-t3 { display:flex; justify-content:space-between; align-items:center; }
-.sig-tech { display:flex; align-items:center; gap:12px; }
-.sig-tech-item { font-size:11px; color:#475569; }
+/* Tier 3 */
+.sig-t3 { display:flex; justify-content:space-between; align-items:center; font-size: 12px; }
+.sig-tech { display:flex; align-items:center; gap:8px; }
+.sig-tech-lbl { color: #64748b; font-weight: 600; }
+.sig-tech-val { color: #ffffff; font-weight: 800; }
 .sig-trad { display:flex; align-items:center; gap:5px; }
-.sig-trad-item { display:flex; align-items:center; gap:3px; font-size:10px; color:#475569; font-weight:600; }
-.sig-trad-sep { color:#1e2d45; font-size:10px; }
-.sig-dot { width:7px; height:7px; border-radius:50%; display:inline-block; flex-shrink:0; }
+.sig-trad-lbl { font-size: 11px; color: #64748b; font-weight: 600; }
+.sig-trad-sep { color: #1e2d45; font-size: 11px; }
+.sig-dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
 
-/* Signal card body */
-.signal-card-body { max-height:400px; overflow-y:auto; overflow-x:hidden; flex:1; }
-#signals-grid .card { min-height:400px; display:flex; flex-direction:column; }
+/* Card sizing */
+.signal-card-body { max-height: 500px; overflow-y: auto; overflow-x: hidden; flex: 1; }
+#signals-grid .card { min-height: 420px; display: flex; flex-direction: column; }
 .wl-hdr-cell { font-size:9px; font-weight:700; color:#475569; text-transform:uppercase; letter-spacing:0.08em; text-align:center; }
 .wl-sym { font-size:12px; font-weight:800; color:#f1f5f9; cursor:pointer; transition:color 0.15s; }
 .wl-sym:hover { color:#38bdf8; }
@@ -1647,10 +1672,10 @@ function renderSignalRow(sig) {
   const chopMap   = { TRENDING: '⟶', CHOPPY: '⟳', NEUTRAL: '→' };
   const tradColor = { GREEN: '#22c55e', AMBER: '#f59e0b', RED: '#ef4444', NONE: '#1e2d45' };
 
-  let gradeClass = '';
-  if (sig.ici_grade === 'GOD') gradeClass = 'sig-grade-god';
-  else if (sig.ici_grade === 'A') gradeClass = 'sig-grade-a';
-  else if (sig.ici_grade === 'B') gradeClass = 'sig-grade-b';
+  let gradeColor = '#94a3b8';
+  if (sig.ici_grade === 'GOD') gradeColor = '#f59e0b';
+  else if (sig.ici_grade === 'A') gradeColor = '#22c55e';
+  else if (sig.ici_grade === 'B') gradeColor = '#38bdf8';
 
   const displayLTP = sig.ltp
     ? `₹${parseFloat(sig.ltp).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`
@@ -1665,7 +1690,7 @@ function renderSignalRow(sig) {
     <div class="sig-t1">
       <div class="sig-t1-left">
         <span class="sig-sym" onclick="window.open('stock.html?symbol=${sig.symbol}','_blank')">${sig.symbol}</span>
-        <button class="chart-open-btn" onclick="openChart('${sig.symbol}',event)">↗</button>
+        <button class="sig-chart-btn" onclick="openChart('${sig.symbol}',event)">↗</button>
       </div>
       <div class="sig-t1-right">
         <span class="sig-ltp">${displayLTP}</span>
@@ -1673,21 +1698,23 @@ function renderSignalRow(sig) {
       </div>
     </div>
     <div class="sig-t2">
-      ${sig.ici_score != null ? `<span class="sig-badge ${gradeClass}">${sig.ici_grade === 'GOD' ? '★ GOD' : sig.ici_grade} ${Math.round(sig.ici_score)}</span>` : ''}
-      <span class="sig-badge" style="color:${dirColor};border-color:${dirColor}33;background:${dirColor}11;">${dirArrow} ${sig.direction}</span>
-      ${sig.sector && sig.sector !== 'UNKNOWN' ? `<span class="sig-badge sig-badge-sector">${sig.sector}</span>` : ''}
-      <span class="sig-type-label">${cleanType}</span>
+      ${sig.ici_score != null ? `<span class="sig-badge" style="color:${gradeColor};border-color:${gradeColor};">${sig.ici_grade === 'GOD' ? '★ GOD' : sig.ici_grade} ${Math.round(sig.ici_score)}</span>` : ''}
+      <span class="sig-badge" style="color:${dirColor};border-color:${dirColor};">${dirArrow} ${sig.direction}</span>
+      ${sig.sector && sig.sector !== 'UNKNOWN' && sig.sector !== 'OTHER' ? `<span class="sig-badge" style="color:#64748b;border-color:#334155;">${sig.sector}</span>` : ''}
+      <span class="sig-type-txt">${cleanType}</span>
     </div>
     <div class="sig-t3">
       <div class="sig-tech">
-        ${sig.rsi14 ? `<span class="sig-tech-item">RSI <strong style="color:#f1f5f9;">${parseFloat(sig.rsi14).toFixed(0)}</strong></span>` : ''}
-        ${sig.supertrend_dir ? `<span class="sig-tech-item">ST <strong style="color:${stColor};">${sig.supertrend_dir}</strong></span>` : ''}
-        <span class="sig-tech-item" style="color:#64748b;">${chopMap[sig.choppiness_class] || '→'}</span>
+        ${sig.rsi14 ? `<span class="sig-tech-lbl">RSI</span><span class="sig-tech-val">${parseFloat(sig.rsi14).toFixed(0)}</span>` : ''}
+        ${sig.supertrend_dir ? `<span class="sig-tech-lbl">ST</span><span class="sig-tech-val" style="color:${stColor};">${sig.supertrend_dir}</span>` : ''}
+        <span class="sig-tech-lbl">${chopMap[sig.choppiness_class] || '→'}</span>
       </div>
       <div class="sig-trad">
-        <span class="sig-trad-item"><span class="sig-dot" style="background:${tradColor[sig.ce_tradability]||'#1e2d45'};"></span>CE</span>
+        <span class="sig-dot" style="background:${tradColor[sig.ce_tradability]||'#1e2d45'};"></span>
+        <span class="sig-trad-lbl">CE</span>
         <span class="sig-trad-sep">|</span>
-        <span class="sig-trad-item"><span class="sig-dot" style="background:${tradColor[sig.pe_tradability]||'#1e2d45'};"></span>PE</span>
+        <span class="sig-dot" style="background:${tradColor[sig.pe_tradability]||'#1e2d45'};"></span>
+        <span class="sig-trad-lbl">PE</span>
       </div>
     </div>
   </div>`;
