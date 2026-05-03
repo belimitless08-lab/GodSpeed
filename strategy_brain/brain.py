@@ -424,6 +424,11 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
                 logger.warning("[brain] AI alignment failed for %s: %s", symbol, exc)
 
             # ── Publish execution payload ──────────────────────────────
+            # Enrich payload with key snapshot fields for frontend display
+            ltp        = float(snapshot.get("ltp") or 0)
+            prev_close = float(snapshot.get("prev_close") or 0)
+            change_pct = round((ltp - prev_close) / prev_close * 100, 2) if prev_close else 0.0
+
             payload = {
                 "symbol":       symbol,
                 "signal":       signal,
@@ -432,6 +437,15 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
                 "badge":        badge,
                 "ai_alignment": ai_alignment,
                 "published_at": _now_ist().isoformat(),
+                # Snapshot fields for frontend card display
+                "ltp":              ltp,
+                "change_pct":       change_pct,
+                "vwap":             float(snapshot.get("vwap") or 0),
+                "rsi14":            float(snapshot.get("rsi14") or 0),
+                "supertrend_dir":   snapshot.get("supertrend_dir", ""),
+                "choppiness_class": snapshot.get("choppiness_class", "NEUTRAL"),
+                "sector":           snapshot.get("sector", ""),
+                "atr14":            float(snapshot.get("atr14") or 0),
             }
 
             try:
