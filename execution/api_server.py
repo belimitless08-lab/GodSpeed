@@ -1397,16 +1397,36 @@ async def get_expiries(underlying: str):
 async def get_premarket_sentiment():
     """Pre-market AI sentiment and top 10 positive/negative stocks."""
     redis = await get_redis()
-    # Current writer stores at ai:premarket; keep legacy summary fallback.
+
+    # Try legacy key first
     raw = await redis.get("ai:premarket")
-    if not raw:
-        raw = await redis.get("ai:premarket:summary")
-    if not raw:
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+
+    # Fall back to ai:trade_list + ai:context (current writer keys)
+    trade_raw   = await redis.get("ai:trade_list")
+    context_raw = await redis.get("ai:context")
+
+    if not trade_raw:
         raise HTTPException(503, "Pre-market AI analysis not yet available")
+
     try:
-        return json.loads(raw)
+        trade_list = json.loads(trade_raw)
+        context    = json.loads(context_raw) if context_raw else {}
     except json.JSONDecodeError:
         raise HTTPException(500, "Corrupt pre-market AI data")
+
+    return {
+        "context":      context.get("global_macro", ""),
+        "market_bias":  context.get("market_bias", "neutral"),
+        "themes":       context.get("themes", []),
+        "top_positive": trade_list.get("top_bullish", []),
+        "top_negative": trade_list.get("top_bearish", []),
+        "generated_at": trade_list.get("generated_at", ""),
+    }
 
 
 @app.get("/api/ai/alignment/{symbol}", response_model=AIAlignment)
