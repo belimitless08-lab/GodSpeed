@@ -300,6 +300,25 @@ class SignalConnectionManager:
 signal_manager = SignalConnectionManager()
 
 
+async def refresh_world_indices():
+    """Refresh global indices from Groww every 5 minutes during market hours."""
+    import asyncio
+    from strategy_brain.ai_pipeline.global_indices_scraper import scrape_and_store as _scrape, REDIS_TTL
+    logger.info("[api_server] World indices refresh task started.")
+    while True:
+        try:
+            ok = await asyncio.to_thread(_scrape, REDIS_TTL)
+            if ok:
+                logger.info("[api_server] World indices refreshed OK.")
+            else:
+                logger.warning("[api_server] World indices refresh failed — keeping stale data.")
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("[api_server] World indices refresh error: %s", exc)
+        await asyncio.sleep(300)  # every 5 minutes
+
+
 # ===========================================================================
 # App lifespan — startup / shutdown
 # ===========================================================================
@@ -314,10 +333,11 @@ async def lifespan(app: FastAPI):
 
     # Launch background tasks
     tasks = [
-        asyncio.create_task(broadcast_ticks(),       name="broadcast_ticks"),
-        asyncio.create_task(broadcast_signals(),     name="broadcast_signals"),
-        asyncio.create_task(broadcast_account(),     name="broadcast_account"),
-        asyncio.create_task(broadcast_order_fills(), name="broadcast_order_fills"),
+        asyncio.create_task(broadcast_ticks(),         name="broadcast_ticks"),
+        asyncio.create_task(broadcast_signals(),       name="broadcast_signals"),
+        asyncio.create_task(broadcast_account(),       name="broadcast_account"),
+        asyncio.create_task(broadcast_order_fills(),   name="broadcast_order_fills"),
+        asyncio.create_task(refresh_world_indices(),   name="refresh_world_indices"),
     ]
     for task in tasks:
         background_tasks.add(task)
