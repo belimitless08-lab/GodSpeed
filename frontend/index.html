@@ -1696,9 +1696,13 @@ async function fetchSignals() {
         iciMap[sig.symbol] = sig.ici_score;
       }
     }
-    signalData = grouped;
-    window._symbolIciMap = iciMap;
-    renderSignalCards(grouped);
+    // Only overwrite realtime WebSocket signals if API returned something
+    if (Object.keys(grouped).length > 0) {
+      signalData = grouped;
+      window._symbolIciMap = iciMap;
+      renderSignalCards(grouped);
+    }
+    // If API returns empty (market closed / no signals yet), keep WebSocket signals visible
   }
   // API unavailable: keep last known signals visible
 }
