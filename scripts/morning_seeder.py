@@ -1265,6 +1265,33 @@ async def run_seeder(force: bool = False) -> None:
         logger.info("[seeder] AI scrape done: %s", scrape_stats)
         await run_ai_pipeline()
         logger.info("[seeder] AI pipeline complete")
+
+        # Enrich trade list with LTP + change_pct from snapshots
+        try:
+            trade_raw = await redis.get("ai:trade_list")
+            if trade_raw:
+                trade_list = json.loads(trade_raw)
+                for group in ("top_bullish", "top_bearish"):
+                    for item in trade_list.get(group, []):
+                        sym = item.get("symbol")
+                        if not sym:
+                            continue
+                        snap = await redis.hgetall(f"snapshot:{sym}")
+                        if not snap:
+                            continue
+                        ltp        = float(snap.get("ltp") or 0)
+                        prev_close = float(snap.get("prev_close") or 0)
+                        change_pct = round((ltp - prev_close) / prev_close * 100, 2) if prev_close else 0.0
+                        item["ltp"]        = ltp
+                        item["change_pct"] = change_pct
+                        item["rsi14"]      = float(snap.get("rsi14") or 0)
+                        item["supertrend_dir"]   = snap.get("supertrend_dir", "")
+                        item["choppiness_class"] = snap.get("choppiness_class", "NEUTRAL")
+                        item["sector"]           = snap.get("sector", "")
+                await redis.setex("ai:premarket", 86400, json.dumps(trade_list))
+                logger.info("[seeder] AI trade list enriched with snapshot data → ai:premarket")
+        except Exception as _enrich_exc:
+            logger.warning("[seeder] AI enrichment failed (non-fatal): %s", _enrich_exc)
     except Exception as _ai_exc:
         logger.error("[seeder] AI pipeline failed (non-fatal): %s", _ai_exc)
 
