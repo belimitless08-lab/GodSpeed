@@ -636,6 +636,17 @@
 }
 .sig-row:hover { background: rgba(255,255,255,0.03); }
 .sig-row:last-child { border-bottom: none; }
+.sig-line1 { display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; }
+.sig-line2 { display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-bottom:5px; }
+.sig-line3 { display:flex; justify-content:space-between; align-items:center; }
+.sig-price { text-align:right; }
+.sig-ltp   { font-size:13px; font-weight:700; color:#f1f5f9; font-variant-numeric:tabular-nums; }
+.sig-chg   { font-size:10px; font-weight:700; }
+.sig-tech  { display:flex; align-items:center; gap:10px; }
+.tech-item { font-size:10px; color:#475569; }
+.sig-badge { padding:2px 7px; border-radius:4px; font-size:9px; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; white-space:nowrap; border:1px solid; }
+.sig-badge-sector { background:rgba(255,255,255,0.04); color:#64748b; border-color:rgba(255,255,255,0.08); }
+.sig-badge-b { background:rgba(56,189,248,0.1); color:#38bdf8; border-color:rgba(56,189,248,0.2); }
 
 .sig-top {
   display: flex;
@@ -1619,18 +1630,57 @@ function iciBadge(score) {
 
 function renderAIStocks(listId, countId, stocks) {
   const el = document.getElementById(listId);
+  if (!el) return;
   document.getElementById(countId).textContent = stocks.length;
-  if (!stocks.length) { el.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div>No data</div>'; return; }
-  el.innerHTML = stocks.slice(0,10).map(s => `
-    <div class="ai-row">
-      <div class="sym-cell">
-        <span class="sym-text" onclick="window.open('stock.html?symbol=${s.symbol}','_blank')">${s.symbol}</span>
-        <button class="chart-open-btn" onclick="openChart('${s.symbol}', event)" title="Open chart">↗</button>
+  if (!stocks.length) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div>No data</div>';
+    return;
+  }
+  el.innerHTML = stocks.slice(0, 10).map(s => {
+    const live    = (window._snapshots || {})[s.symbol] || {};
+    const ltp     = live.ltp     ?? s.ltp     ?? null;
+    const chgPct  = live.change_pct != null ? live.change_pct
+                  : s.change_pct != null     ? s.change_pct
+                  : ltp && live.prev_close   ? ((ltp - live.prev_close) / live.prev_close * 100)
+                  : null;
+    const rsi     = live.rsi14          || s.rsi14          || null;
+    const st      = live.supertrend_dir || s.supertrend_dir || '';
+    const chop    = live.choppiness_class || s.choppiness_class || 'NEUTRAL';
+    const sector  = live.sector || s.sector || '';
+
+    const ltpStr  = ltp    ? `₹${parseFloat(ltp).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}` : '—';
+    const chgColor = (chgPct ?? 0) >= 0 ? '#22c55e' : '#ef4444';
+    const chgStr  = chgPct != null ? `${chgPct >= 0 ? '+' : ''}${parseFloat(chgPct).toFixed(2)}%` : '';
+    const stColor = st === 'BULL' ? '#22c55e' : st === 'BEAR' ? '#ef4444' : '#94a3b8';
+    const chopMap = {TRENDING: '⟶', CHOPPY: '⟳', NEUTRAL: '→'};
+    const iciStr  = s.ici || s.final_score || null;
+
+    return `<div class="sig-row">
+      <div class="sig-line1">
+        <div style="display:flex;align-items:center;">
+          <span class="sig-sym" onclick="window.open('stock.html?symbol=${s.symbol}','_blank')">${s.symbol}</span>
+          <button class="chart-open-btn" onclick="openChart('${s.symbol}', event)">↗</button>
+        </div>
+        <div class="sig-price">
+          <div class="sig-ltp">${ltpStr}</div>
+          <div class="sig-chg" style="color:${chgColor};text-align:right;">${chgStr}</div>
+        </div>
       </div>
-      ${sentimentPill(s.sentiment)}
-      ${alignBadge(s.alignment)}
-      ${iciBadge(s.ici)}
-    </div>`).join('');
+      <div class="sig-line2">
+        ${iciStr != null ? `<span class="sig-badge sig-badge-b">${Math.round(iciStr)}</span>` : ''}
+        ${sentimentPill(s.sentiment)}
+        ${alignBadge(s.alignment)}
+        ${sector && sector !== 'UNKNOWN' ? `<span class="sig-badge sig-badge-sector">${sector}</span>` : ''}
+      </div>
+      <div class="sig-line3">
+        <div class="sig-tech">
+          ${rsi ? `<span class="tech-item">RSI <strong style="color:#f1f5f9;">${parseFloat(rsi).toFixed(0)}</strong></span>` : ''}
+          ${st  ? `<span class="tech-item">ST <strong style="color:${stColor};">${st}</strong></span>` : ''}
+          <span class="tech-item" style="color:#64748b;">${chopMap[chop] || '→'}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 /* ══════════════════════════════════════════
@@ -3565,6 +3615,10 @@ async function fetchWatchlistSnapshots() {
     );
     for (const { sym, snap } of results) {
         if (snap) state.snapshots[sym] = snap;
+        if (snap) {
+            window._snapshots = window._snapshots || {};
+            window._snapshots[sym] = snap;
+        }
     }
     renderWatchlist();
 }
