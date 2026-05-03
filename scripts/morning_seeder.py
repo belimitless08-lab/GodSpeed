@@ -42,6 +42,7 @@ from core.universe_builder import (
 )
 from execution.options_rest import publish_angel_jwt
 from strategy_brain.ai_pipeline.global_indices_scraper import scrape_and_store as _scrape_global_indices, REDIS_TTL_SEED as _GLOBAL_TTL
+from strategy_brain.ai_pipeline.ai_config import get_sector as _get_sector
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -94,6 +95,7 @@ def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
         "choppiness_class": str(snapshot.get("choppiness_class", "NEUTRAL")),
         "lot_size": str(snapshot.get("lot_size", 1)),
         "token": str(snapshot.get("token", "")),
+        "sector": str(snapshot.get("sector", "OTHER")),
         "seeded_at": str(snapshot.get("seeded_at", "")),
         # Commonly consumed by breadth / risk / price fallbacks
         "prev_open": str(prev_day.get("open", 0.0)),
@@ -772,6 +774,7 @@ async def _seed_equity_symbol(
             },
             "lot_size":  lot_size,
             "token":     token,
+            "sector":    _get_sector(symbol),
             "seeded_at": datetime.now(timezone.utc).isoformat(),
             "ltp": round(ltp, 2),
             "prev_close": round(prev_close, 2),
