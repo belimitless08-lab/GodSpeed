@@ -444,12 +444,26 @@
 
   /* ── SIGNAL CARD SCROLLABLE BODY ── */
   .signal-card-body {
-    max-height: 380px;
+    max-height: 340px;
     overflow-y: auto;
-    scrollbar-width: thin;
+    overflow-x: hidden;
+    padding: 4px 0;
+    flex: 1;
   }
   .signal-card-body::-webkit-scrollbar { width: 3px; }
   .signal-card-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  #signals-grid .card {
+    min-height: 400px;
+    display: flex;
+    flex-direction: column;
+  }
+  .signal-row {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .signal-row:last-child {
+    border-bottom: none;
+  }
   .signal-more { padding: 4px 10px 6px; font-size: 9px; color: var(--muted); font-style: italic; }
   .empty-state { padding: 24px; text-align: center; color: var(--muted); font-size: 11px; }
   .empty-state .empty-icon { font-size: 28px; margin-bottom: 8px; opacity: 0.4; }
@@ -1533,22 +1547,53 @@ function chopIcon(cls) {
 }
 
 function renderSignalRow(sig) {
-  const ici = iciBadge(sig.ici_score);
   if (sig.ici_score < 50 && sig.ici_score != null) return '';
+
+  const ici = iciBadge(sig.ici_score);
   const dir = sig.direction === 'LONG'
     ? `<span class="dir-long">↑ LONG</span>`
     : `<span class="dir-short">↓ SHORT</span>`;
-  const trad = `<div class="trad-wrap"><div>${tradDot(sig.ce_tradability)} CE</div><div>${tradDot(sig.pe_tradability)} PE</div></div>`;
+
+  const ltp = sig.ltp ? `₹${sig.ltp.toLocaleString('en-IN')}` : '—';
+  const chg = sig.change_pct != null
+    ? `<span style="color:${sig.change_pct >= 0 ? 'var(--green)' : 'var(--red)'}; font-size:10px;">
+        ${sig.change_pct >= 0 ? '+' : ''}${sig.change_pct.toFixed(2)}%
+       </span>`
+    : '';
+
+  const rsi  = sig.rsi14  ? `RSI ${sig.rsi14.toFixed(0)}` : '';
+  const st   = sig.supertrend_dir
+    ? `<span style="color:${sig.supertrend_dir==='BULL'?'var(--green)':'var(--red)'}; font-size:9px;">
+        ST:${sig.supertrend_dir}
+       </span>`
+    : '';
+  const sector = sig.sector && sig.sector !== 'UNKNOWN'
+    ? `<span style="font-size:9px; color:var(--muted);">${sig.sector}</span>`
+    : '';
+  const trad = `<div class="trad-wrap">
+    <div>${tradDot(sig.ce_tradability)} CE</div>
+    <div>${tradDot(sig.pe_tradability)} PE</div>
+  </div>`;
+
   return `<div class="signal-row">
-    <div class="sym-cell">
-      <span class="sym-text" onclick="window.open('stock.html?symbol=${sig.symbol}','_blank')">${sig.symbol}</span>
-      <button class="chart-open-btn" onclick="openChart('${sig.symbol}', event)" title="Open chart">↗</button>
+    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+      <div class="sym-cell">
+        <span class="sym-text" onclick="window.open('stock.html?symbol=${sig.symbol}','_blank')">${sig.symbol}</span>
+        <button class="chart-open-btn" onclick="openChart('${sig.symbol}', event)" title="Open chart">↗</button>
+      </div>
+      ${ici || ''}
+      ${dir}
+      ${sector}
     </div>
-    ${ici || '<span></span>'}
-    <span style="font-size:10px; color:var(--muted);">${sig.signal_type||''}</span>
-    ${dir}
-    ${trad}
-    ${chopIcon(sig.choppiness_class)}
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
+      <span style="font-size:11px; font-weight:600; color:var(--text);">${ltp}</span>
+      ${chg}
+      <span style="font-size:10px; color:var(--muted);">${rsi}</span>
+      ${st}
+      ${chopIcon(sig.choppiness_class)}
+      ${trad}
+    </div>
+    <div style="font-size:9px; color:var(--muted); margin-top:2px;">${sig.signal_type||''}</div>
   </div>`;
 }
 
@@ -1607,6 +1652,13 @@ function normalizeRealtimeSignal(payload) {
     pe_tradability:   opts.pe_tradability || badge.pe_tradability || payload.pe_tradability || 'NONE',
     entry_price:      sig.trigger  || payload.entry_price  || 0,
     published_at:     payload.published_at || '',
+    ltp:              payload.ltp        ?? null,
+    change_pct:       payload.change_pct ?? null,
+    vwap:             payload.vwap       ?? null,
+    rsi14:            payload.rsi14      ?? null,
+    supertrend_dir:   payload.supertrend_dir   || '',
+    sector:           payload.sector           || '',
+    atr14:            payload.atr14            ?? null,
     _groupedType:     groupedType,
   };
 }
@@ -3514,6 +3566,7 @@ Object.entries(pollers).forEach(([key, p]) => {
 // Initial account fetch always
 fetchAccount();
 document.addEventListener('DOMContentLoaded', () => {
+  renderSignalCards({});
   initHistoryDateInputs();
 });
 fetchIndices();
