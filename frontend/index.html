@@ -624,6 +624,119 @@
   #order-modal { display: none; position: fixed; inset: 0;
     background: rgba(0,0,0,0.7); z-index: 150;
     align-items: center; justify-content: center; }
+
+/* ── Signal Row ── */
+.sig-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  transition: background 0.15s;
+}
+.sig-row:hover { background: rgba(255,255,255,0.03); }
+.sig-row:last-child { border-bottom: none; }
+
+.sig-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sig-left { display: flex; align-items: center; gap: 6px; }
+.sig-right { display: flex; align-items: center; gap: 6px; }
+
+.sig-sym {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e2e8f0;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+}
+.sig-sym:hover { color: #38bdf8; }
+
+.sig-grade {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+}
+.sig-dir {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.sig-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sig-sector {
+  font-size: 9px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: rgba(255,255,255,0.04);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.sig-type {
+  font-size: 9px;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sig-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sig-ltp {
+  font-size: 12px;
+  font-weight: 700;
+  color: #f1f5f9;
+  font-variant-numeric: tabular-nums;
+}
+.sig-pill {
+  font-size: 10px;
+  color: #64748b;
+  background: rgba(255,255,255,0.04);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.sig-trad {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sig-trad-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.sig-trad-label {
+  font-size: 9px;
+  color: #475569;
+  margin-right: 4px;
+}
+
+/* ── Signal Card Body ── */
+.signal-card-body {
+  max-height: 340px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+}
+#signals-grid .card {
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
 </style>
 </head>
 <body>
@@ -1547,53 +1660,51 @@ function chopIcon(cls) {
 }
 
 function renderSignalRow(sig) {
-  if (sig.ici_score < 50 && sig.ici_score != null) return '';
+  if (sig.ici_score != null && sig.ici_score < 50) return '';
 
-  const ici = iciBadge(sig.ici_score);
-  const dir = sig.direction === 'LONG'
-    ? `<span class="dir-long">↑ LONG</span>`
-    : `<span class="dir-short">↓ SHORT</span>`;
+  const gradeColor = {
+    'GOD': '#f59e0b', 'A': '#22c55e', 'B': '#3b82f6', 'C': '#94a3b8'
+  }[sig.ici_grade] || '#94a3b8';
 
-  const ltp = sig.ltp ? `₹${sig.ltp.toLocaleString('en-IN')}` : '—';
-  const chg = sig.change_pct != null
-    ? `<span style="color:${sig.change_pct >= 0 ? 'var(--green)' : 'var(--red)'}; font-size:10px;">
-        ${sig.change_pct >= 0 ? '+' : ''}${sig.change_pct.toFixed(2)}%
-       </span>`
-    : '';
+  const dirColor  = sig.direction === 'LONG' ? '#22c55e' : '#ef4444';
+  const dirArrow  = sig.direction === 'LONG' ? '▲' : '▼';
+  const chgColor  = (sig.change_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444';
+  const chgSign   = (sig.change_pct ?? 0) >= 0 ? '+' : '';
+  const stColor   = sig.supertrend_dir === 'BULL' ? '#22c55e' : sig.supertrend_dir === 'BEAR' ? '#ef4444' : '#94a3b8';
 
-  const rsi  = sig.rsi14  ? `RSI ${sig.rsi14.toFixed(0)}` : '';
-  const st   = sig.supertrend_dir
-    ? `<span style="color:${sig.supertrend_dir==='BULL'?'var(--green)':'var(--red)'}; font-size:9px;">
-        ST:${sig.supertrend_dir}
-       </span>`
-    : '';
-  const sector = sig.sector && sig.sector !== 'UNKNOWN'
-    ? `<span style="font-size:9px; color:var(--muted);">${sig.sector}</span>`
-    : '';
-  const trad = `<div class="trad-wrap">
-    <div>${tradDot(sig.ce_tradability)} CE</div>
-    <div>${tradDot(sig.pe_tradability)} PE</div>
-  </div>`;
+  const chopMap   = { TRENDING: '⟶', CHOPPY: '⟳', NEUTRAL: '→' };
+  const tradColor = { GREEN: '#22c55e', AMBER: '#f59e0b', RED: '#ef4444', NONE: '#334155' };
 
-  return `<div class="signal-row">
-    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-      <div class="sym-cell">
-        <span class="sym-text" onclick="window.open('stock.html?symbol=${sig.symbol}','_blank')">${sig.symbol}</span>
-        <button class="chart-open-btn" onclick="openChart('${sig.symbol}', event)" title="Open chart">↗</button>
+  return `
+  <div class="sig-row">
+    <div class="sig-top">
+      <div class="sig-left">
+        <span class="sig-sym" onclick="window.open('stock.html?symbol=${sig.symbol}','_blank')">${sig.symbol}</span>
+        <button class="chart-open-btn" onclick="openChart('${sig.symbol}', event)">↗</button>
       </div>
-      ${ici || ''}
-      ${dir}
-      ${sector}
+      <div class="sig-right">
+        ${sig.ici_score != null ? `<span class="sig-grade" style="background:${gradeColor}22;color:${gradeColor};border:1px solid ${gradeColor}44;">${sig.ici_grade} ${sig.ici_score}</span>` : ''}
+        <span class="sig-dir" style="color:${dirColor};">${dirArrow} ${sig.direction}</span>
+      </div>
     </div>
-    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
-      <span style="font-size:11px; font-weight:600; color:var(--text);">${ltp}</span>
-      ${chg}
-      <span style="font-size:10px; color:var(--muted);">${rsi}</span>
-      ${st}
-      ${chopIcon(sig.choppiness_class)}
-      ${trad}
+
+    <div class="sig-meta">
+      ${sig.sector && sig.sector !== 'UNKNOWN' ? `<span class="sig-sector">${sig.sector}</span>` : ''}
+      <span class="sig-type">${sig.signal_type || ''}</span>
     </div>
-    <div style="font-size:9px; color:var(--muted); margin-top:2px;">${sig.signal_type||''}</div>
+
+    <div class="sig-stats">
+      ${sig.ltp ? `<span class="sig-ltp">₹${sig.ltp.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>` : ''}
+      ${sig.change_pct != null ? `<span style="color:${chgColor};font-size:10px;font-weight:600;">${chgSign}${sig.change_pct.toFixed(2)}%</span>` : ''}
+      ${sig.rsi14 ? `<span class="sig-pill">RSI ${sig.rsi14.toFixed(0)}</span>` : ''}
+      ${sig.supertrend_dir ? `<span class="sig-pill" style="color:${stColor};">ST:${sig.supertrend_dir}</span>` : ''}
+      <span class="sig-pill" style="color:#94a3b8;">${chopMap[sig.choppiness_class] || '→'}</span>
+    </div>
+
+    <div class="sig-trad">
+      <span class="sig-trad-dot" style="background:${tradColor[sig.ce_tradability]||'#334155'};"></span><span class="sig-trad-label">CE</span>
+      <span class="sig-trad-dot" style="background:${tradColor[sig.pe_tradability]||'#334155'};"></span><span class="sig-trad-label">PE</span>
+    </div>
   </div>`;
 }
 
