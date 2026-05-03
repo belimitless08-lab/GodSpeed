@@ -627,129 +627,56 @@
 
 /* ── Signal Row ── */
 .sig-row {
-  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px;
   border-bottom: 1px solid rgba(255,255,255,0.05);
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
   transition: background 0.15s;
 }
-.sig-row:hover { background: rgba(255,255,255,0.03); }
+.sig-row:hover { background: rgba(255,255,255,0.02); }
 .sig-row:last-child { border-bottom: none; }
-.sig-line1 { display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; }
-.sig-line2 { display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-bottom:5px; }
-.sig-line3 { display:flex; justify-content:space-between; align-items:center; }
-.sig-price { text-align:right; }
-.sig-ltp   { font-size:13px; font-weight:700; color:#f1f5f9; font-variant-numeric:tabular-nums; }
-.sig-chg   { font-size:10px; font-weight:700; }
-.sig-tech  { display:flex; align-items:center; gap:10px; }
-.tech-item { font-size:10px; color:#475569; }
-.sig-badge { padding:2px 7px; border-radius:4px; font-size:9px; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; white-space:nowrap; border:1px solid; }
+
+/* Tier 1 — Symbol + Price */
+.sig-t1 { display:flex; justify-content:space-between; align-items:flex-start; }
+.sig-t1-left { display:flex; align-items:center; gap:6px; }
+.sig-t1-right { display:flex; flex-direction:column; align-items:flex-end; }
+.sig-sym { font-size:15px; font-weight:800; color:#f1f5f9; cursor:pointer; letter-spacing:0.03em; transition:color 0.15s; }
+.sig-sym:hover { color:#38bdf8; }
+.sig-ltp { font-size:15px; font-weight:700; color:#f1f5f9; font-variant-numeric:tabular-nums; }
+.sig-chg { font-size:11px; font-weight:700; }
+
+/* Tier 2 — Badges */
+.sig-t2 { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.sig-badge {
+  padding:2px 7px; border-radius:4px; font-size:9px; font-weight:800;
+  letter-spacing:0.06em; text-transform:uppercase; white-space:nowrap;
+  border:1px solid rgba(255,255,255,0.1); background:rgba(255,255,255,0.04); color:#94a3b8;
+}
+.sig-grade-god { background:rgba(245,158,11,0.12)!important; color:#f59e0b!important; border-color:rgba(245,158,11,0.3)!important; }
+.sig-grade-a   { background:rgba(34,197,94,0.12)!important;  color:#22c55e!important; border-color:rgba(34,197,94,0.3)!important; }
+.sig-grade-b   { background:rgba(56,189,248,0.1)!important;  color:#38bdf8!important; border-color:rgba(56,189,248,0.25)!important; }
 .sig-badge-sector { background:rgba(255,255,255,0.04); color:#64748b; border-color:rgba(255,255,255,0.08); }
-.sig-badge-b { background:rgba(56,189,248,0.1); color:#38bdf8; border-color:rgba(56,189,248,0.2); }
+.sig-type-label { font-size:9px; color:#475569; text-transform:uppercase; letter-spacing:0.06em; }
 
-.sig-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.sig-left { display: flex; align-items: center; gap: 6px; }
-.sig-right { display: flex; align-items: center; gap: 6px; }
+/* Tier 3 — Technicals */
+.sig-t3 { display:flex; justify-content:space-between; align-items:center; }
+.sig-tech { display:flex; align-items:center; gap:12px; }
+.sig-tech-item { font-size:11px; color:#475569; }
+.sig-trad { display:flex; align-items:center; gap:5px; }
+.sig-trad-item { display:flex; align-items:center; gap:3px; font-size:10px; color:#475569; font-weight:600; }
+.sig-trad-sep { color:#1e2d45; font-size:10px; }
+.sig-dot { width:7px; height:7px; border-radius:50%; display:inline-block; flex-shrink:0; }
 
-.sig-sym {
-  font-size: 13px;
-  font-weight: 700;
-  color: #e2e8f0;
-  cursor: pointer;
-  letter-spacing: 0.03em;
-}
-.sig-sym:hover { color: #38bdf8; }
-
-.sig-grade {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
-  letter-spacing: 0.05em;
-}
-.sig-dir {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.sig-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.sig-sector {
-  font-size: 9px;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  background: rgba(255,255,255,0.04);
-  padding: 1px 5px;
-  border-radius: 3px;
-}
-.sig-type {
-  font-size: 9px;
-  color: #475569;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.sig-stats {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.sig-ltp {
-  font-size: 12px;
-  font-weight: 700;
-  color: #f1f5f9;
-  font-variant-numeric: tabular-nums;
-}
-.sig-pill {
-  font-size: 10px;
-  color: #64748b;
-  background: rgba(255,255,255,0.04);
-  padding: 1px 5px;
-  border-radius: 3px;
-}
-
-.sig-trad {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.sig-trad-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  display: inline-block;
-}
-.sig-trad-label {
-  font-size: 9px;
-  color: #475569;
-  margin-right: 4px;
-}
-
-/* ── Signal Card Body ── */
-.signal-card-body {
-  max-height: 340px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  flex: 1;
-}
-#signals-grid .card {
-  min-height: 400px;
-  display: flex;
-  flex-direction: column;
-}
+/* Signal card body */
+.signal-card-body { max-height:400px; overflow-y:auto; overflow-x:hidden; flex:1; }
+#signals-grid .card { min-height:400px; display:flex; flex-direction:column; }
+.wl-hdr-cell { font-size:9px; font-weight:700; color:#475569; text-transform:uppercase; letter-spacing:0.08em; text-align:center; }
+.wl-sym { font-size:12px; font-weight:800; color:#f1f5f9; cursor:pointer; transition:color 0.15s; }
+.wl-sym:hover { color:#38bdf8; }
+.wl-row:hover { background:rgba(255,255,255,0.02); }
+.wl-row:last-child { border-bottom:none!important; }
+.wl-remove-btn { background:transparent; border:none; color:#334155; font-size:12px; cursor:pointer; transition:color 0.15s; padding:2px 4px; border-radius:3px; }
+.wl-remove-btn:hover { color:#ef4444; background:rgba(239,68,68,0.1); }
 </style>
-</head>
 <body>
 
 <!-- ══════════════════════════════════════════
@@ -1712,48 +1639,56 @@ function chopIcon(cls) {
 function renderSignalRow(sig) {
   if (sig.ici_score != null && sig.ici_score < 50) return '';
 
-  const gradeColor = {
-    'GOD': '#f59e0b', 'A': '#22c55e', 'B': '#3b82f6', 'C': '#94a3b8'
-  }[sig.ici_grade] || '#94a3b8';
-
   const dirColor  = sig.direction === 'LONG' ? '#22c55e' : '#ef4444';
   const dirArrow  = sig.direction === 'LONG' ? '▲' : '▼';
   const chgColor  = (sig.change_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444';
   const chgSign   = (sig.change_pct ?? 0) >= 0 ? '+' : '';
   const stColor   = sig.supertrend_dir === 'BULL' ? '#22c55e' : sig.supertrend_dir === 'BEAR' ? '#ef4444' : '#94a3b8';
-
   const chopMap   = { TRENDING: '⟶', CHOPPY: '⟳', NEUTRAL: '→' };
-  const tradColor = { GREEN: '#22c55e', AMBER: '#f59e0b', RED: '#ef4444', NONE: '#334155' };
+  const tradColor = { GREEN: '#22c55e', AMBER: '#f59e0b', RED: '#ef4444', NONE: '#1e2d45' };
+
+  let gradeClass = '';
+  if (sig.ici_grade === 'GOD') gradeClass = 'sig-grade-god';
+  else if (sig.ici_grade === 'A') gradeClass = 'sig-grade-a';
+  else if (sig.ici_grade === 'B') gradeClass = 'sig-grade-b';
+
+  const displayLTP = sig.ltp
+    ? `₹${parseFloat(sig.ltp).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`
+    : '—';
+  const displayChg = sig.change_pct != null
+    ? `${chgSign}${parseFloat(sig.change_pct).toFixed(2)}%`
+    : '';
+  const cleanType = (sig.signal_type || '').replace(/_/g, ' ');
 
   return `
   <div class="sig-row">
-    <div class="sig-top">
-      <div class="sig-left">
+    <div class="sig-t1">
+      <div class="sig-t1-left">
         <span class="sig-sym" onclick="window.open('stock.html?symbol=${sig.symbol}','_blank')">${sig.symbol}</span>
-        <button class="chart-open-btn" onclick="openChart('${sig.symbol}', event)">↗</button>
+        <button class="chart-open-btn" onclick="openChart('${sig.symbol}',event)">↗</button>
       </div>
-      <div class="sig-right">
-        ${sig.ici_score != null ? `<span class="sig-grade" style="background:${gradeColor}22;color:${gradeColor};border:1px solid ${gradeColor}44;">${sig.ici_grade} ${sig.ici_score}</span>` : ''}
-        <span class="sig-dir" style="color:${dirColor};">${dirArrow} ${sig.direction}</span>
+      <div class="sig-t1-right">
+        <span class="sig-ltp">${displayLTP}</span>
+        <span class="sig-chg" style="color:${chgColor};">${displayChg}</span>
       </div>
     </div>
-
-    <div class="sig-meta">
-      ${sig.sector && sig.sector !== 'UNKNOWN' ? `<span class="sig-sector">${sig.sector}</span>` : ''}
-      <span class="sig-type">${sig.signal_type || ''}</span>
+    <div class="sig-t2">
+      ${sig.ici_score != null ? `<span class="sig-badge ${gradeClass}">${sig.ici_grade === 'GOD' ? '★ GOD' : sig.ici_grade} ${Math.round(sig.ici_score)}</span>` : ''}
+      <span class="sig-badge" style="color:${dirColor};border-color:${dirColor}33;background:${dirColor}11;">${dirArrow} ${sig.direction}</span>
+      ${sig.sector && sig.sector !== 'UNKNOWN' ? `<span class="sig-badge sig-badge-sector">${sig.sector}</span>` : ''}
+      <span class="sig-type-label">${cleanType}</span>
     </div>
-
-    <div class="sig-stats">
-      ${sig.ltp ? `<span class="sig-ltp">₹${sig.ltp.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>` : ''}
-      ${sig.change_pct != null ? `<span style="color:${chgColor};font-size:10px;font-weight:600;">${chgSign}${sig.change_pct.toFixed(2)}%</span>` : ''}
-      ${sig.rsi14 ? `<span class="sig-pill">RSI ${sig.rsi14.toFixed(0)}</span>` : ''}
-      ${sig.supertrend_dir ? `<span class="sig-pill" style="color:${stColor};">ST:${sig.supertrend_dir}</span>` : ''}
-      <span class="sig-pill" style="color:#94a3b8;">${chopMap[sig.choppiness_class] || '→'}</span>
-    </div>
-
-    <div class="sig-trad">
-      <span class="sig-trad-dot" style="background:${tradColor[sig.ce_tradability]||'#334155'};"></span><span class="sig-trad-label">CE</span>
-      <span class="sig-trad-dot" style="background:${tradColor[sig.pe_tradability]||'#334155'};"></span><span class="sig-trad-label">PE</span>
+    <div class="sig-t3">
+      <div class="sig-tech">
+        ${sig.rsi14 ? `<span class="sig-tech-item">RSI <strong style="color:#f1f5f9;">${parseFloat(sig.rsi14).toFixed(0)}</strong></span>` : ''}
+        ${sig.supertrend_dir ? `<span class="sig-tech-item">ST <strong style="color:${stColor};">${sig.supertrend_dir}</strong></span>` : ''}
+        <span class="sig-tech-item" style="color:#64748b;">${chopMap[sig.choppiness_class] || '→'}</span>
+      </div>
+      <div class="sig-trad">
+        <span class="sig-trad-item"><span class="sig-dot" style="background:${tradColor[sig.ce_tradability]||'#1e2d45'};"></span>CE</span>
+        <span class="sig-trad-sep">|</span>
+        <span class="sig-trad-item"><span class="sig-dot" style="background:${tradColor[sig.pe_tradability]||'#1e2d45'};"></span>PE</span>
+      </div>
     </div>
   </div>`;
 }
@@ -3513,97 +3448,66 @@ function renderWatchlist() {
         el.innerHTML = '<div style="padding:16px;font-size:11px;color:var(--muted);text-align:center;">Add symbols to watch them here</div>';
         return;
     }
-    // cols: symbol | ltp+chg | ici | chop | ce | pe | trend | link | remove
-    const COLS = '130px 88px 46px 48px 50px 50px 64px 20px';
-    const HDR = `<div style="display:grid;grid-template-columns:${COLS};
-        gap:0;padding:4px 10px;background:rgba(15,23,42,0.95);
-        border-bottom:2px solid rgba(51,65,85,0.7);position:sticky;top:0;z-index:2;">
-        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">SYMBOL</span>
-        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">LTP / CHG%</span>
-        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">ICI</span>
-        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">CHOP</span>
-        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">CE</span>
-        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">PE</span>
-        <span style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.07em;">TREND</span>
-        <span></span></div>`;
+    const watchlistSymbols = watchlist;
+    const snapshots = state.snapshots || {};
 
-    const rows = watchlist.map(sym => {
-        const snap = state.snapshots?.[sym] || {};
-        const tick = state.ticks?.[sym]   || {};
-        const ltp  = tick.ltp || snap.last_close || 0;
-        const chgPct = (snap.prev_close && ltp)
-            ? ((ltp - snap.prev_close) / snap.prev_close * 100) : null;
-        const chgColor = chgPct === null ? 'var(--muted)' : chgPct >= 0 ? 'var(--green)' : 'var(--red)';
-        const chgStr   = chgPct === null ? '\u2014'
-            : (chgPct >= 0 ? '+' : '') + chgPct.toFixed(2) + '%';
+    const GRID_COLS = '140px 100px 60px 60px 60px 60px 80px 40px';
 
-        // ICI — read from latest signal data (not in snapshot hash)
-        const iciScore = window._symbolIciMap?.[sym] != null ? Math.round(window._symbolIciMap[sym]) : null;
-        const iciGrade = iciScore == null ? '' : iciScore >= 90 ? 'GOD' : iciScore >= 75 ? 'A' : iciScore >= 60 ? 'B' : 'C';
-        const iciColor = iciGrade === 'GOD' ? '#f59e0b' : iciGrade === 'A' ? 'var(--green)'
-            : iciGrade === 'B' ? 'var(--accent)' : 'var(--muted)';
-        const iciHtml = iciScore != null
-            ? `<span style="font-size:10px;font-weight:700;color:${iciColor};background:rgba(0,0,0,0.3);padding:2px 4px;border-radius:3px;">${iciGrade === 'GOD' ? '\u2605' : iciGrade}\u00a0${iciScore}</span>`
-            : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
+    const header = `
+<div style="overflow-x:auto; width:100%;">
+<div style="min-width:750px;">
+<div class="wl-header" style="display:grid;grid-template-columns:${GRID_COLS};gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid rgba(255,255,255,0.07);">
+  <span class="wl-hdr-cell" style="text-align:left;">SYMBOL</span>
+  <span class="wl-hdr-cell" style="text-align:left;">LTP / CHG</span>
+  <span class="wl-hdr-cell">ICI</span>
+  <span class="wl-hdr-cell">CHOP</span>
+  <span class="wl-hdr-cell">CE</span>
+  <span class="wl-hdr-cell">PE</span>
+  <span class="wl-hdr-cell">TREND</span>
+  <span class="wl-hdr-cell"></span>
+</div>`;
 
-        // Chop — read choppiness_class written by candle builder: "TRENDING"|"NEUTRAL"|"CHOPPY"
-        const chopClass = snap.choppiness_class || null;
-        const chopColor = chopClass === 'TRENDING' ? 'var(--green)' : chopClass === 'CHOPPY' ? 'var(--red)' : 'var(--gold)';
-        const chopLabel = chopClass === 'TRENDING' ? 'TRD' : chopClass === 'CHOPPY' ? 'CHOP' : null;
-        const chopHtml = chopLabel
-            ? `<span style="font-size:9px;font-weight:700;color:${chopColor};border:1px solid ${chopColor};padding:1px 4px;border-radius:3px;">${chopLabel}</span>`
-            : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
+    const rows = watchlistSymbols.map(sym => {
+      const d = snapshots[sym] || {};
+      const ltp = d.ltp ? `₹${parseFloat(d.ltp).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—';
+      const prevClose = parseFloat(d.prev_close || 0);
+      const ltpNum    = parseFloat(d.ltp || 0);
+      const chgPct    = prevClose ? ((ltpNum - prevClose) / prevClose * 100) : 0;
+      const chgColor  = chgPct >= 0 ? '#22c55e' : '#ef4444';
+      const chgStr    = prevClose ? `${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%` : '—';
+      const ici       = window._symbolIciMap?.[sym];
+      const iciStr    = ici != null ? Math.round(ici) : '—';
+      const chop      = d.choppiness_class || '—';
+      const chopColor = chop === 'TRENDING' ? '#22c55e' : chop === 'CHOPPY' ? '#ef4444' : '#64748b';
+      const chopIcon  = chop === 'TRENDING' ? '⟶' : chop === 'CHOPPY' ? '⟳' : '→';
+      const ce        = (window._symbolIciMap?.[sym + '_CE'] || d.ce_tradability || '');
+      const pe        = (window._symbolIciMap?.[sym + '_PE'] || d.pe_tradability || '');
+      const tradColor = { GREEN:'#22c55e', AMBER:'#f59e0b', RED:'#ef4444', NONE:'#334155' };
+      const st        = d.supertrend_dir || '';
+      const stColor   = st === 'BULL' ? '#22c55e' : st === 'BEAR' ? '#ef4444' : '#475569';
+      const stLabel   = st ? `${st === 'BULL' ? '▲' : '▼'} ${st}` : '—';
 
-        // CE/PE tradability — from options engine data (live) or signal data
-        const opts    = state.optionsData?.[sym] || {};
-        const sigData = (signalData?.opening_drive || []).concat(
-            signalData?.orb_breakout || [],
-            signalData?.hourly_breakout || [],
-            signalData?.supertrend_flip || [],
-            signalData?.volume_surge || []
-        ).find(s => s.symbol === sym);
-        const ceBadge = opts.ce?.badge || sigData?.ce_tradability || null;
-        const peBadge = opts.pe?.badge || sigData?.pe_tradability || null;
-        const tC = b => b==='GREEN'?'var(--green)':b==='AMBER'?'var(--gold)':b==='RED'?'var(--red)':'var(--muted)';
-        const tH = b => b
-            ? `<span style="font-size:9px;font-weight:700;color:${tC(b)};border:1px solid ${tC(b)};padding:1px 4px;border-radius:3px;">${b}</span>`
-            : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
-
-        // Supertrend — supertrend_dir written by candle builder: "BULL"|"BEAR"
-        const st = snap.supertrend_dir || null;
-        const stColor = st === 'BULL' ? 'var(--green)' : st === 'BEAR' ? 'var(--red)' : 'var(--muted)';
-        const stBg    = st === 'BULL' ? 'rgba(34,197,94,0.12)' : st === 'BEAR' ? 'rgba(239,68,68,0.12)' : 'transparent';
-        const stHtml  = st
-            ? `<span style="font-size:9px;font-weight:800;color:${stColor};background:${stBg};padding:2px 5px;border-radius:3px;">${st==='BULL'?'\u25b2 BULL':'\u25bc BEAR'}</span>`
-            : `<span style="color:var(--muted);font-size:10px;">\u2014</span>`;
-
-        return `<div style="display:grid;grid-template-columns:${COLS};
-            gap:0;align-items:center;padding:5px 10px;
-            border-bottom:1px solid rgba(51,65,85,0.2);transition:background .1s;"
-            onmouseenter="this.style.background='rgba(56,189,248,0.05)'"
-            onmouseleave="this.style.background=''">
-            <div style="min-width:0;display:flex;align-items:center;gap:6px;">
-                <span onclick="window.open('stock.html?symbol=${sym}','_blank')"
-                    style="font-weight:700;font-size:12px;color:var(--accent);cursor:pointer;
-                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:86px;">${sym}</span>
-                <button class="chart-open-btn" title="Open chart"
-                    onclick="event.stopPropagation();openChart('${sym}',event)">&#8599;</button>
-            </div>
-            <div style="display:flex;flex-direction:column;gap:1px;">
-                <span style="font-weight:700;font-size:12px;white-space:nowrap;">${ltp ? fmt(ltp) : '\u2014'}</span>
-                <span style="font-size:10px;font-weight:600;color:${chgColor};">${chgStr}</span>
-            </div>
-            <div>${iciHtml}</div>
-            <div>${chopHtml}</div>
-            <div>${tH(ceBadge)}</div>
-            <div>${tH(peBadge)}</div>
-            <div>${stHtml}</div>
-            <button onclick="event.stopPropagation();removeFromWatchlist('${sym}')"
-                style="background:none;border:none;color:#475569;cursor:pointer;font-size:14px;padding:0;line-height:1;transition:color .1s;"
-                onmouseenter="this.style.color='var(--red)'" onmouseleave="this.style.color='#475569'">\u00d7</button>
-        </div>`;
+      return `<div class="wl-row" style="display:grid;grid-template-columns:${GRID_COLS};gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.04);">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span class="wl-sym" onclick="window.open('stock.html?symbol=${sym}','_blank')">${sym}</span>
+      <button class="chart-open-btn" onclick="openChart('${sym}',event)">↗</button>
+    </div>
+    <div style="display:flex;flex-direction:column;">
+      <span style="font-size:12px;font-weight:700;color:#f1f5f9;font-variant-numeric:tabular-nums;">${ltp}</span>
+      <span style="font-size:10px;font-weight:700;color:${chgColor};">${chgStr}</span>
+    </div>
+    <div style="text-align:center;font-size:11px;font-weight:700;color:#38bdf8;">${iciStr}</div>
+    <div style="text-align:center;font-size:13px;color:${chopColor};">${chopIcon}</div>
+    <div style="text-align:center;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${tradColor[ce]||'#334155'};"></span></div>
+    <div style="text-align:center;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${tradColor[pe]||'#334155'};"></span></div>
+    <div style="text-align:center;font-size:10px;font-weight:700;color:${stColor};">${stLabel}</div>
+    <div style="text-align:center;">
+      <button class="wl-remove-btn" onclick="removeFromWatchlist('${sym}')">✕</button>
+    </div>
+  </div>`;
     }).join('');
-    el.innerHTML = HDR + rows;
+
+    el.innerHTML = header + rows + '</div></div>';
 }
 
 setInterval(() => { if (watchlist.length) renderWatchlist() }, 10000)
