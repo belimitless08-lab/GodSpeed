@@ -199,10 +199,14 @@ async def run_context_engine(redis_client) -> dict:
         "global_macro": "No macro data available.",
     }
 
-    headlines = get_market_headlines(redis_client)
+    import os, redis as _redis_sync
+    _sync_redis = _redis_sync.from_url(os.environ["REDIS_URL"])
+
+    headlines = get_market_headlines(_sync_redis)
     if not headlines:
         logger.warning("[ai_engine] Context: no market headlines — using neutral default")
-        _cache_context(redis_client, _neutral)
+        await _cache_context(redis_client, _neutral)
+        _sync_redis.close()
         return _neutral
 
     hl_text = "\n".join(
@@ -214,7 +218,8 @@ async def run_context_engine(redis_client) -> dict:
 
     if "error" in result:
         logger.error("[ai_engine] Context Engine failed: %s", result["error"])
-        _cache_context(redis_client, _neutral)
+        await _cache_context(redis_client, _neutral)
+        _sync_redis.close()
         return _neutral
 
     # Ensure required keys exist
@@ -222,7 +227,7 @@ async def run_context_engine(redis_client) -> dict:
         result.setdefault(key, default)
 
     result["analyzed_at"] = datetime.now(IST).isoformat()
-    _cache_context(redis_client, result)
+    await _cache_context(redis_client, result)
 
     logger.info(
         "[ai_engine] Context: bias=%s volatility=%s themes=%s",
@@ -230,12 +235,13 @@ async def run_context_engine(redis_client) -> dict:
         result.get("volatility_expectation"),
         result.get("themes"),
     )
+    _sync_redis.close()
     return result
 
 
-def _cache_context(redis_client, context: dict) -> None:
+async def _cache_context(redis_client, context: dict) -> None:
     try:
-        redis_client.setex(
+        await redis_client.setex(
             REDIS_KEYS["context"],
             REDIS_TTL["engine"],
             json.dumps(context),
@@ -269,7 +275,10 @@ async def run_sentiment_engine(redis_client, context: dict) -> dict[str, dict]:
     global_macro    = context.get("global_macro", "No data")
     sector_bias_map = context.get("sector_bias", {})
 
-    stocks_with_news = get_stocks_with_news(redis_client)
+    import os, redis as _redis_sync
+    _sync_redis = _redis_sync.from_url(os.environ["REDIS_URL"])
+
+    stocks_with_news = get_stocks_with_news(_sync_redis)
     stocks_no_news   = [s for s in UNIVERSE if s not in stocks_with_news]
 
     # Auto-score no-news stocks (no LLM call)
@@ -286,7 +295,7 @@ async def run_sentiment_engine(redis_client, context: dict) -> dict[str, dict]:
 
     for idx, symbol in enumerate(stocks_with_news):
         try:
-            headlines = get_stock_news(redis_client, symbol)
+            headlines = get_stock_news(_sync_redis, symbol)
             if not headlines:
                 results[symbol] = dict(_no_news_default)
                 continue
@@ -341,6 +350,7 @@ async def run_sentiment_engine(redis_client, context: dict) -> dict[str, dict]:
             results[symbol] = dict(_no_news_default)
 
     logger.info("[ai_engine] Sentiment: %d/%d done", total, total)
+    _sync_redis.close()
     return results
 
 
@@ -712,7 +722,10 @@ async def run_ai_pipeline() -> dict:
 
     # ── Stage 2: Sentiment Engine ─────────────────────────────────────────
     t0 = time.time()
-    stocks_with_news = get_stocks_with_news(redis)
+    import os, redis as _redis_sync
+    _sync_r = _redis_sync.from_url(os.environ["REDIS_URL"])
+    stocks_with_news = get_stocks_with_news(_sync_r)
+    _sync_r.close()
     logger.info(
         "[ai_engine] Stage 2: Sentiment Engine (%d stocks with news)...",
         len(stocks_with_news)
@@ -777,7 +790,7 @@ async def run_ai_pipeline() -> dict:
 
     # ── Write final trade list to Redis ───────────────────────────────────
     try:
-        redis.setex(
+        await redis.setex(
             REDIS_KEYS["trade_list"],
             REDIS_TTL["engine"],
             json.dumps(trade_list),
@@ -807,7 +820,7 @@ async def run_ai_pipeline() -> dict:
     })
 
     try:
-        redis.setex(
+        await redis.setex(
             REDIS_KEYS["pipeline_status"],
             REDIS_TTL["pipeline"],
             json.dumps(_pipeline_status),
