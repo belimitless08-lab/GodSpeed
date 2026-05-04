@@ -1499,6 +1499,8 @@ async def get_health():
     open_trades = await redis.smembers("paper:trades:open")
     pending = await redis.smembers("pending:orders")
     ai_data = await redis.get("ai:premarket")
+    if not ai_data:
+        ai_data = await redis.get("ai:trade_list")
     ai = json.loads(ai_data) if ai_data else {}
     universe_meta = await redis.get("universe:meta")
     meta = json.loads(universe_meta) if universe_meta else {}
@@ -1526,7 +1528,7 @@ async def get_health():
         "ai": {
             "premarket_run":    bool(ai),
             "last_sentiment_at": ai.get("generated_at", "—"),
-            "groq_model":       "llama-3.3-70b-versatile",
+            "model":            "openrouter/llama-3.3-70b + gpt-4o-mini",
         },
         "orders": {
             "open_trades":          len(open_trades),
