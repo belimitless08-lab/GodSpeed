@@ -398,7 +398,7 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
             action,
         )
 
-        if action in ("EXECUTE_MARKET", "EXECUTE_LIMIT"):
+        if action in ("EXECUTE_MARKET", "EXECUTE_LIMIT", "WATCHLIST"):
             # ── Options evaluation ─────────────────────────────────────
             try:
                 options = await evaluate_options_for_signal(symbol, signal.get("direction", "LONG"))
