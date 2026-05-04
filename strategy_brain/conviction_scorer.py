@@ -316,8 +316,23 @@ def _score_choppiness(snap: dict, weight: float) -> float:
     return 0.0   # CHOPPY
 
 
-def _resolve_grade_action(total_score: float) -> tuple[str, str]:
-    for threshold, grade, action in _GRADE_TABLE:
+def _resolve_grade_action(total_score: float, is_opening: bool = False) -> tuple[str, str]:
+    if is_opening:
+        # First 15 min: options data sparse, RVOL unreliable — lower bar
+        table = [
+            (85, "GOD",    "EXECUTE_MARKET"),
+            (60, "A",      "EXECUTE_LIMIT"),
+            (40, "B",      "WATCHLIST"),
+            (0,  "IGNORE", "IGNORE"),
+        ]
+    else:
+        table = [
+            (90, "GOD",    "EXECUTE_MARKET"),
+            (75, "A",      "EXECUTE_LIMIT"),
+            (50, "B",      "WATCHLIST"),
+            (0,  "IGNORE", "IGNORE"),
+        ]
+    for threshold, grade, action in table:
         if total_score >= threshold:
             return grade, action
     return "IGNORE", "IGNORE"
@@ -419,6 +434,7 @@ def compute_ici_score(
         data.get("nifty_change", 0.0),
         data.get("sector_avg_change", 0.0),
         options_score,
+        market_time,
     )
 
 
@@ -461,6 +477,7 @@ def _calculate_ici_score_core(
     nifty_change: float,
     sector_avg_change: float,
     options_score: float,
+    market_time: str = "10:30",
 ) -> dict:
     """
     Compute the Intraday Conviction Index score for a signal.
@@ -502,7 +519,12 @@ def _calculate_ici_score_core(
     total_score = min(base_score + bonus, 100.0)
     total_score = max(total_score, 0.0)
 
-    grade, action = _resolve_grade_action(total_score)
+    try:
+        hour, minute = map(int, market_time.split(":"))
+    except (ValueError, AttributeError):
+        hour, minute = 10, 30
+    is_opening = (hour == 9) or (hour == 10 and minute == 0)
+    grade, action = _resolve_grade_action(total_score, is_opening)
 
     now        = datetime.now(_IST)
     expires_at = now + timedelta(minutes=_SCORE_EXPIRY_MINUTES)
@@ -562,6 +584,7 @@ def sync_calculate_ici_score(
         nifty_change,
         sector_avg_change,
         options_score,
+        market_time,
     )
 
 
