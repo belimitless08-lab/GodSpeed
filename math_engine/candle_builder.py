@@ -468,8 +468,8 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
         is_index = symbol in _INDEX_SYMBOLS
         snap = await redis.hgetall(f"snapshot:{symbol}")
 
-        # Fetch last 14 closed candles for choppiness window
-        raw_candles = await redis.lrange(f"candles:1m:{symbol}", -_CHOP_PERIOD, -1)
+        # Fetch last 20 closed candles — choppiness uses 14, RVOL baseline uses up to 20
+        raw_candles = await redis.lrange(f"candles:1m:{symbol}", -20, -1)
         candles_14  = [json.loads(c) for c in raw_candles] if raw_candles else []
 
         # Current indicator state for this symbol
@@ -557,16 +557,17 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
         if is_index:
             rvol = 0.0
         else:
-            avg_vol_5d = float(snap.get("avg_volume_5d") or 0)
-            current_vol = closed["volume"]  # current 1m candle volume
-
-            if avg_vol_5d > 0:
-                expected_per_min = avg_vol_5d / 375
-                rvol = current_vol / max(expected_per_min, 1)
+            current_vol = closed["volume"]
+            # Use rolling mean of last 20 actual 1m candle volumes as baseline.
+            # This is time-of-day aware: opening candles are compared to opening
+            # candles from the same rolling window, not against a naive per-minute
+            # average that makes every opening candle look like a 20x surge.
+            if len(candles_14) >= 5:
+                recent_vols = [float(c[5]) for c in candles_14 if len(c) > 5 and float(c[5]) > 0]
+                avg_recent_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 0.0
+                rvol = round(current_vol / max(avg_recent_vol, 1), 3) if avg_recent_vol > 0 else 0.0
             else:
                 rvol = 0.0
-
-            rvol = round(rvol, 3)
 
         # Assemble updated indicator dict
         updated_ind: dict[str, Any] = {
