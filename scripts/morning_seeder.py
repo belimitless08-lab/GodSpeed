@@ -407,7 +407,8 @@ def compute_rsi14_wilder(closes: np.ndarray, period: int = 14) -> tuple[float, f
 
 
 def compute_supertrend(
-    highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 10, multiplier: float = 3.0
+    highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
+    period: int = 14, multiplier: float = 3.0          # ← period 10→14
 ) -> tuple[str, float]:
     n = len(closes)
     atr_st = np.zeros(n)
@@ -424,14 +425,21 @@ def compute_supertrend(
     lower_band = hl2 - multiplier * atr_st
 
     direction = 1
-    for i in range(1, n):
-        if closes[i] > upper_band[i - 1]:
-            direction = 1
-        elif closes[i] < lower_band[i - 1]:
-            direction = -1
+    band = lower_band[0]
 
-    band = float(lower_band[-1] if direction == 1 else upper_band[-1])
-    return ("BULL" if direction == 1 else "BEAR"), band
+    for i in range(1, n):
+        if direction == 1:                      # was BULL
+            band = max(lower_band[i], band)     # ← ratchet: never drops
+            if closes[i] < band:
+                direction = -1
+                band = upper_band[i]
+        else:                                   # was BEAR
+            band = min(upper_band[i], band)     # ← ratchet: never rises
+            if closes[i] > band:
+                direction = 1
+                band = lower_band[i]
+
+    return ("BULL" if direction == 1 else "BEAR"), round(band, 4)
 
 
 def compute_pivots_classic(prev_high: float, prev_low: float, prev_close: float) -> dict:
