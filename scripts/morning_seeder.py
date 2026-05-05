@@ -1315,3 +1315,26 @@ if __name__ == "__main__":
     os.environ["SEEDER_STANDALONE"] = "1"
     _force = os.environ.get("SEEDER_FORCE", "0") == "1"
     asyncio.run(run_seeder(force=_force))
+
+# TEMPORARY BACKTEST - SAFE VERSION (remove after test)
+if True:
+    try:
+        print("\n🚀 Starting Professional Signal Engine Backtest...")
+        import asyncio
+        from core.redis_client import get_redis
+        from strategy_brain.professional_signal_engine import get_professional_engine
+
+        async def run_backtest_test():
+            redis_client = await get_redis()
+            engine = await get_professional_engine(redis_client)
+            report = await engine.run_backtest()
+            print("\n✅ BACKTEST REPORT:")
+            import json
+            print(json.dumps(report, indent=2))
+            print("\n🎉 Backtest finished!")
+            await redis_client.close()
+
+        asyncio.run(run_backtest_test())
+    except Exception as e:
+        print(f"❌ Backtest error: {e}")
+# END TEMPORARY BACKTEST
