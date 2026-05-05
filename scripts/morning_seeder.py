@@ -830,6 +830,13 @@ async def _seed_equity_symbol(
             f"snapshot:{symbol}",
             mapping=_snapshot_to_hash_mapping(snapshot),
         )
+        # Seed yesterday's final supertrend direction so SUPERTREND_FLIP
+        # logic works correctly from the very first candle at 9:15.
+        await redis.set(
+            f"snapshot_prev:{symbol}",
+            json.dumps({"supertrend_dir": st_direction}),
+            ex=86400,
+        )
 
         return True
 
@@ -1177,6 +1184,13 @@ async def run_seeder(force: bool = False) -> None:
                     }
                 )
                 await redis.hset(f"snapshot:{symbol}", mapping=mapping)
+                # Seed yesterday's final supertrend direction so SUPERTREND_FLIP
+                # logic works correctly from the very first candle at 9:15.
+                await redis.set(
+                    f"snapshot_prev:{symbol}",
+                    json.dumps({"supertrend_dir": st_direction}),
+                    ex=86400,
+                )
                 logger.info(f"[seeder] Index {symbol}: 1m candles + snapshot seeded")
             except Exception as exc:
                 logger.error(f"[seeder] Failed to seed snapshot for index {symbol} — {exc}")
