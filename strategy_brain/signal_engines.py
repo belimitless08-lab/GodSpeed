@@ -243,8 +243,8 @@ async def _detect_opening_drive(
         if slot_rvol < min_vol_mult:
             return None
 
-    pdh = _safe_float(snapshot.get("pdh"))
-    pdl = _safe_float(snapshot.get("pdl"))
+    pdh = _safe_float(snapshot.get("prev_high"))
+    pdl = _safe_float(snapshot.get("prev_low"))
     r1  = _safe_float(snapshot.get("r1") or snapshot.get("pivot_r1"))
     s1  = _safe_float(snapshot.get("s1") or snapshot.get("pivot_s1"))
     atr14 = _safe_float(snapshot.get("atr14"), 1.0)
@@ -342,8 +342,8 @@ async def _detect_range_breakout(
         if not (0.3 <= range_pct <= 2.5):
             return None
     else:
-        range_high = _safe_float(snapshot.get("half_day_high"))
-        range_low  = _safe_float(snapshot.get("half_day_low"))
+        range_high = _safe_float(snapshot.get("postlunch_high"))
+        range_low  = _safe_float(snapshot.get("postlunch_low"))
         if range_high == 0 or range_low == 0:
             return None
 
@@ -374,7 +374,7 @@ async def _detect_range_breakout(
     }
 
 
-def _detect_hourly_breakout(
+async def _detect_hourly_breakout(
     symbol: str,
     snapshot: dict,
     candles_5m: list,
@@ -427,6 +427,12 @@ def _detect_hourly_breakout(
     if direction is None:
         return None
 
+    redis = await get_redis()
+    fire_key = f"hourly_breakout_fired:{symbol}:{direction}"
+    if await redis.exists(fire_key):
+        return None
+    await redis.set(fire_key, 1, ex=5400)  # 90 min cooldown per direction
+
     vwap  = _safe_float(snapshot.get("vwap"))
     atr14 = _safe_float(snapshot.get("atr14"), 1.0)
     sl    = (max(vwap, l_c) - atr14 * 0.2) if direction == "LONG" else (min(vwap, h_c) + atr14 * 0.2)
@@ -445,7 +451,7 @@ def _detect_hourly_breakout(
     }
 
 
-def _detect_choppiness_breakout(
+async def _detect_choppiness_breakout(
     symbol: str,
     snapshot: dict,
     candles_5m: list,
@@ -522,6 +528,12 @@ def _detect_choppiness_breakout(
         direction = "SHORT"
     if direction is None:
         return None
+
+    redis = await get_redis()
+    chop_key = f"choppiness_fired:{symbol}"
+    if await redis.exists(chop_key):
+        return None
+    await redis.set(chop_key, 1, ex=3600)  # 60 min cooldown
 
     atr14 = _safe_float(snapshot.get("atr14"), 1.0)
     sl    = (comp_low - atr14 * 0.2) if direction == "LONG" else (comp_high + atr14 * 0.2)
@@ -648,14 +660,14 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
         except Exception as exc:
             logger.warning("[signal_engines] async detector failed for %s: %s", symbol, exc)
 
-    # Sync detectors
-    for detector, args in [
-        (_detect_hourly_breakout,    (symbol, snapshot, candles_5m)),
-        (_detect_choppiness_breakout,(symbol, snapshot, candles_5m)),
-        (_detect_supertrend_flip,    (symbol, snapshot, prev_snapshot)),
+    # Mixed detectors
+    for coro_or_fn, args, is_async in [
+        (_detect_hourly_breakout,    (symbol, snapshot, candles_5m), True),
+        (_detect_choppiness_breakout,(symbol, snapshot, candles_5m), True),
+        (_detect_supertrend_flip,    (symbol, snapshot, prev_snapshot), False),
     ]:
         try:
-            sig = detector(*args)
+            sig = await coro_or_fn(*args) if is_async else coro_or_fn(*args)
             if sig:
                 sig["symbol"] = symbol
                 detected.append(sig)
