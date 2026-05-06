@@ -562,6 +562,19 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             else:
                 vwap_slope = 0.0
 
+        # --- gap_pct: calculated once at 9:15 from today's open vs prev_close ---
+        if is_first_candle and not is_index:
+            try:
+                prev_close_val = float(snap.get(b"prev_close") or snap.get("prev_close") or 0)
+                if prev_close_val > 0:
+                    gap_pct = round((closed["open"] - prev_close_val) / prev_close_val * 100, 4)
+                else:
+                    gap_pct = 0.0
+                await redis.hset(f"snapshot:{symbol}", "gap_pct", str(gap_pct))
+                logger.debug("[candle_builder] %s gap_pct=%.2f%%", symbol, gap_pct)
+            except Exception:
+                pass
+
         if is_index:
             rvol     = 0.0
             cum_rvol = 0.0
@@ -703,6 +716,42 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             "rolling_1h_low":       str(rolling_1h_low),
             "prev_rolling_1h_high": str(state[symbol]["prev_rolling_1h_high"]),
         })
+
+        # -----------------------------------------------------------------------
+        # Addition 4 — Post-lunch range tracker (1:00 PM – 1:30 PM, locks at 1:30)
+        # Used by RANGE_BREAKOUT Phase 2 signal.
+        # -----------------------------------------------------------------------
+        if not is_index:
+            ist_now = datetime.now(_IST)
+            pl_locked = state[symbol].get("postlunch_locked", False)
+
+            # Reset at start of each day
+            if closed["minute"] == "09:15":
+                state[symbol]["postlunch_high"]  = 0.0
+                state[symbol]["postlunch_low"]   = 999999.0
+                state[symbol]["postlunch_locked"] = False
+                pl_locked = False
+
+            if not pl_locked:
+                if ist_now.hour == 13 and ist_now.minute < 30:
+                    state[symbol]["postlunch_high"] = max(
+                        float(state[symbol].get("postlunch_high", 0.0)),
+                        closed["high"]
+                    )
+                    state[symbol]["postlunch_low"] = min(
+                        float(state[symbol].get("postlunch_low", 999999.0)),
+                        closed["low"]
+                    )
+                elif ist_now.hour == 13 and ist_now.minute >= 30:
+                    state[symbol]["postlunch_locked"] = True
+
+            # Write to snapshot
+            pl_high = state[symbol].get("postlunch_high", 0.0)
+            pl_low  = state[symbol].get("postlunch_low", 0.0)
+            await redis.hset(f"snapshot:{symbol}", mapping={
+                "postlunch_high": str(round(pl_high, 2) if pl_high != 999999.0 else 0.0),
+                "postlunch_low":  str(round(pl_low, 2)  if pl_low  != 999999.0 else 0.0),
+            })
 
         # -----------------------------------------------------------------------
         # Addition 3 — Consecutive choppy candles + choppy range high/low
@@ -1065,6 +1114,9 @@ async def _seed_indicators() -> None:
             "last_low":        _f("last_low"),
             "cum_volume":      0.0,
             "cum_rvol":        0.0,
+            "postlunch_high":   0.0,
+            "postlunch_low":    999999.0,
+            "postlunch_locked": False,
         }
 
         # Also initialise TF accumulator slots
