@@ -319,44 +319,6 @@ async def refresh_world_indices():
         await asyncio.sleep(300)  # every 5 minutes
 
 
-@app.get("/api/volume-leaders")
-async def get_volume_leaders():
-    """Top 10 stocks by cumulative RVOL right now. Powers Volume Surge panel."""
-    try:
-        redis = await get_redis()
-        symbols_raw = await redis.smembers("universe:symbols")
-        symbols = [s.decode() if isinstance(s, bytes) else s for s in symbols_raw]
-        results = []
-        for sym in symbols:
-            try:
-                cum_rvol = await redis.hget(f"snapshot:{sym}", "cum_rvol")
-                ltp      = await redis.hget(f"snapshot:{sym}", "ltp")
-                vwap     = await redis.hget(f"snapshot:{sym}", "vwap")
-                chg      = await redis.hget(f"snapshot:{sym}", "change_pct")
-                if not cum_rvol:
-                    continue
-                cr    = float(cum_rvol)
-                ltp_f = float(ltp or 0)
-                vwap_f= float(vwap or 0)
-                chg_f = float(chg or 0)
-                if cr < 0.1 or ltp_f == 0:
-                    continue
-                results.append({
-                    "symbol":    sym,
-                    "cum_rvol":  round(cr, 2),
-                    "ltp":       round(ltp_f, 2),
-                    "change_pct": round(chg_f, 2),
-                    "direction": "BULL" if ltp_f >= vwap_f else "BEAR",
-                })
-            except Exception:
-                continue
-        results.sort(key=lambda x: x["cum_rvol"], reverse=True)
-        return {"status": "ok", "leaders": results[:10], "total_scanned": len(symbols)}
-    except Exception as e:
-        logger.error("[api] volume-leaders error: %s", e)
-        return {"status": "error", "message": str(e), "leaders": []}
-
-
 # ===========================================================================
 # App lifespan — startup / shutdown
 # ===========================================================================
@@ -409,6 +371,44 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/api/volume-leaders")
+async def get_volume_leaders():
+    """Top 10 stocks by cumulative RVOL right now. Powers Volume Surge panel."""
+    try:
+        redis = await get_redis()
+        symbols_raw = await redis.smembers("universe:symbols")
+        symbols = [s.decode() if isinstance(s, bytes) else s for s in symbols_raw]
+        results = []
+        for sym in symbols:
+            try:
+                cum_rvol = await redis.hget(f"snapshot:{sym}", "cum_rvol")
+                ltp      = await redis.hget(f"snapshot:{sym}", "ltp")
+                vwap     = await redis.hget(f"snapshot:{sym}", "vwap")
+                chg      = await redis.hget(f"snapshot:{sym}", "change_pct")
+                if not cum_rvol:
+                    continue
+                cr    = float(cum_rvol)
+                ltp_f = float(ltp or 0)
+                vwap_f= float(vwap or 0)
+                chg_f = float(chg or 0)
+                if cr < 0.1 or ltp_f == 0:
+                    continue
+                results.append({
+                    "symbol":    sym,
+                    "cum_rvol":  round(cr, 2),
+                    "ltp":       round(ltp_f, 2),
+                    "change_pct": round(chg_f, 2),
+                    "direction": "BULL" if ltp_f >= vwap_f else "BEAR",
+                })
+            except Exception:
+                continue
+        results.sort(key=lambda x: x["cum_rvol"], reverse=True)
+        return {"status": "ok", "leaders": results[:10], "total_scanned": len(symbols)}
+    except Exception as e:
+        logger.error("[api] volume-leaders error: %s", e)
+        return {"status": "error", "message": str(e), "leaders": []}
 
 
 # ===========================================================================
