@@ -1,602 +1,216 @@
 """
 strategy_brain/conviction_scorer.py
 =====================================
-ICI (Intraday Conviction Index) scorer — Node 3b.
+ICI Conviction Scorer v2.
+Replaces fetch_scoring_inputs + compute_ici_score with single score_signal().
 
-Runs after all macro gates pass.  Reads pre-calculated indicator
-snapshots from Redis and returns a scored, graded, time-bounded
-conviction payload.
+Max pillar score : 100
+Max bonus        : 10
+Max total        : 110
 
-Snapshot field contract (written by candle builder, all guaranteed):
-    vwap              float  — current VWAP
-    vwap_slope        float  — % slope over last 5 candles
-    rsi14             float  — current RSI-14
-    choppiness_class  str    — "TRENDING" | "NEUTRAL" | "CHOPPY"
-
-Usage
------
-    from strategy_brain.conviction_scorer import calculate_ici_score
-
-    result = await calculate_ici_score(
-        symbol="RELIANCE",
-        signal_direction="LONG",
-        signal_type="ORB_BREAKOUT",
-        active_signals=["ORB_BREAKOUT", "VOLUME_SURGE_STRONG"],
-        vix=16.5,
-        market_time="09:45",
-    )
+Thresholds: EXECUTE >= 62 | WATCHLIST >= 48 | IGNORE < 48
 """
-
 from __future__ import annotations
-
-import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone, date
 from typing import Optional
-
 from core.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-_IST = timezone(timedelta(hours=5, minutes=30))
+EXECUTE_THRESHOLD   = 62
+WATCHLIST_THRESHOLD = 48
 
-_SCORE_EXPIRY_MINUTES = 10
-
-# Signal bonus table
-_SIGNAL_BONUSES: dict[str, int] = {
-    "OPENING_DRIVE":                    15,
-    "ORB_BREAKOUT":                     15,
-    "HOURLY_BREAKOUT":                  10,
-    "CHOPPINESS_BREAKOUT_CONFIRMED":    15,
-    "CHOPPINESS_BREAKOUT_UNCONFIRMED":   8,
-    "SUPERTREND_FLIP":                   8,
-    "VOLUME_SURGE_STRONG":              10,
-    "VOLUME_SURGE_MODERATE":             5,
+SIGNAL_BONUS = {
+    "OPENING_DRIVE_TIER1":        10,
+    "OPENING_DRIVE_TIER2":         5,
+    "CHOPPINESS_BREAKOUT":         8,
+    "RANGE_BREAKOUT_ORB":          5,
+    "RANGE_BREAKOUT_POSTLUNCH":    5,
+    "HOURLY_BREAKOUT":             4,
+    "SUPERTREND_FLIP":             5,
 }
 
-# Grade / action thresholds
-_GRADE_TABLE = [
-    (90, "GOD",    "EXECUTE_MARKET"),
-    (75, "A",      "EXECUTE_LIMIT"),
-    (50, "B",      "WATCHLIST"),
-    (0,  "IGNORE", "IGNORE"),
-]
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _safe_float(value: Optional[str], default: float = 0.0) -> float:
+def _sf(v, d: float = 0.0) -> float:
     try:
-        return float(value)  # type: ignore[arg-type]
+        return float(v)
     except (TypeError, ValueError):
-        return default
+        return d
 
 
-def _safe_divide(num: float, den: float, default: float = 0.0) -> float:
-    if den == 0:
-        return default
-    return num / den
+def _decode(v) -> str:
+    if isinstance(v, bytes):
+        return v.decode()
+    return str(v or "")
 
 
-# ---------------------------------------------------------------------------
-# Regime-aware weight calculator
-# ---------------------------------------------------------------------------
+def _calc_er(closes: list, period: int = 12) -> float:
+    if len(closes) < period + 1:
+        return 0.4
+    net  = abs(closes[-1] - closes[-(period + 1)])
+    tot  = sum(abs(closes[i] - closes[i - 1]) for i in range(-period, 0))
+    return round(net / tot, 4) if tot > 0 else 0.0
 
-def _get_weights(vix: float, market_time: str) -> dict[str, float]:
+
+def _grade(score: float) -> str:
+    if score >= EXECUTE_THRESHOLD:   return "EXECUTE"
+    if score >= WATCHLIST_THRESHOLD: return "WATCHLIST"
+    return "IGNORE"
+
+
+async def score_signal(signal: dict, snapshot: dict) -> dict:
     """
-    Return pillar weights that adapt to VIX regime and session time.
-
-    Pillars: rvol | rs | options | vwap | chop
+    Score a detected signal. Enriches signal dict with:
+        ici_score, ici_grade, pillar_breakdown,
+        ltp, change_pct, sector, atr14, rsi14
     """
+    redis     = await get_redis()
+    symbol    = signal.get("symbol", "")
+    direction = signal.get("direction", "LONG")
+    sig_type  = signal.get("type", "")
+
+    # --- Always enrich with display fields ---
+    ltp        = _sf(snapshot.get("ltp"))
+    prev_close = _sf(snapshot.get("prev_close"))
+    change_pct = round((ltp - prev_close) / max(prev_close, 1) * 100, 2) if prev_close > 0 else 0.0
+    signal["ltp"]        = round(ltp, 2)
+    signal["change_pct"] = change_pct
+    signal["sector"]     = _decode(snapshot.get("sector", "UNKNOWN"))
+    signal["atr14"]      = round(_sf(snapshot.get("atr14")), 2)
+    signal["rsi14"]      = round(_sf(snapshot.get("rsi14"), 50.0), 1)
+
+    # ── Pillar 1: Cumulative RVOL (25 pts) ──────────────────────────────
+    cr = _sf(snapshot.get("cum_rvol"))
+    if   cr >= 1.8: p1 = 25
+    elif cr >= 1.5: p1 = 18
+    elif cr >= 1.3: p1 = 10
+    else:            p1 = 0
+
+    # ── Pillar 2: Relative Strength vs NIFTY (25 pts) ───────────────────
     try:
-        hour, minute = map(int, market_time.split(":"))
-    except (ValueError, AttributeError):
-        hour, minute = 10, 30  # safe default — mid-session
+        nifty = await redis.hgetall("snapshot:NIFTY")
+        n_ltp  = _sf(nifty.get(b"ltp")        or nifty.get("ltp"))
+        n_prev = _sf(nifty.get(b"prev_close")  or nifty.get("prev_close"))
+        n_chg  = (n_ltp - n_prev) / max(n_prev, 1) * 100 if n_prev > 0 else 0.0
+    except Exception:
+        n_chg = 0.0
 
-    is_opening = hour == 9 or (hour == 10 and minute == 0)  # 9:15–10:00
+    rs = (change_pct - n_chg) if direction == "LONG" else (n_chg - change_pct)
+    if   rs > 1.0: p2 = 25
+    elif rs > 0.5: p2 = 18
+    elif rs > 0.0: p2 = 10
+    else:           p2 = 0
 
-    if is_opening and vix > 18:
-        return {"rvol": 35, "rs": 25, "options": 25, "vwap":  5, "chop": 10}
-    elif vix > 20:
-        return {"rvol": 25, "rs": 20, "options": 35, "vwap": 10, "chop": 10}
-    else:
-        return {"rvol": 30, "rs": 25, "options": 20, "vwap": 15, "chop": 10}
+    # ── Pillar 3: Options OI Flow (20 pts) ──────────────────────────────
+    p3 = 12  # neutral default
+    try:
+        strike_step = _sf(snapshot.get("strike_step"), 50.0)
+        atm         = round(ltp / strike_step) * strike_step
+        opt_type    = "CE" if direction == "LONG" else "PE"
+        tick_raw    = await redis.hgetall(f"options:tick:{symbol}:{int(atm)}{opt_type}")
+        prev_raw    = await redis.get(f"options:prev:{symbol}")
 
+        if tick_raw and prev_raw:
+            prev      = json.loads(prev_raw)
+            curr_oi   = _sf(tick_raw.get(b"oi")  or tick_raw.get("oi"))
+            prev_oi   = _sf(prev.get("oi"))
+            curr_ltp  = _sf(tick_raw.get(b"ltp") or tick_raw.get("ltp"))
+            prev_ltp  = _sf(prev.get("ltp"))
 
-# ---------------------------------------------------------------------------
-# Pillar scorers
-# ---------------------------------------------------------------------------
+            if curr_oi > 0 and prev_oi > 0:
+                oi_up    = curr_oi   > prev_oi   * 1.02
+                price_up = curr_ltp  > prev_ltp  * 1.01
+                if   oi_up and price_up:      p3 = 20
+                elif not oi_up and price_up:  p3 = 15
+                elif oi_up and not price_up:  p3 = 0
+                else:                          p3 = 12
+    except Exception:
+        p3 = 12
 
-def _score_rvol(snap: dict, weight: float, direction: str) -> float:
-    """Pillar 1 — Time-weighted relative volume."""
-    rvol = _safe_float(snap.get("live_volume_ratio"), _safe_float(snap.get("rvol")))
-
-    if rvol >= 3.0:
-        return weight * 1.0
-    elif rvol >= 2.0:
-        return weight * 0.67
-    elif rvol >= 1.5:
-        return weight * 0.33
-    return 0.0
-
-
-def _score_relative_strength(
-    snap: dict,
-    weight: float,
-    direction: str,
-    nifty_change: float,
-    sector_avg_change: float,
-) -> float:
-    """Pillar 2 — Double relative strength vs Nifty + sector."""
-    prev_close = _safe_float(snap.get("prev_close"), 1.0)
-    ltp        = _safe_float(snap.get("ltp"), _safe_float(snap.get("last_close")))
-
-    if prev_close <= 0:
-        return 0.0
-
-    stock_change = _safe_divide(ltp - prev_close, prev_close) * 100
-
-    # For SHORT signals, invert the comparison
-    if direction == "SHORT":
-        stock_change = -stock_change
-        nifty_change = -nifty_change
-        sector_avg_change = -sector_avg_change
-
-    rs_vs_nifty  = stock_change - nifty_change
-    rs_vs_sector = stock_change - sector_avg_change
-
-    if rs_vs_nifty > 1.0 and rs_vs_sector > 0:
-        return weight * 1.0
-    elif rs_vs_nifty > 0.5:
-        return weight * 0.6
-    elif rs_vs_nifty > 0:
-        return weight * 0.2
-    return 0.0
-
-
-def _score_options_flow_raw(
-    prev: dict,
-    live_ce: dict,
-    live_pe: dict,
-    weight: float,
-    direction: str,
-) -> float:
-    """Pillar 3 — Options OI flow imbalance (raw component)."""
-    prev_ce_oi = _safe_float(prev.get("ce_oi_prev"))
-    prev_pe_oi = _safe_float(prev.get("pe_oi_prev"))
-
-    live_ce_oi = _safe_float(live_ce.get("oi"))
-    live_pe_oi = _safe_float(live_pe.get("oi"))
-
-    ce_oi_change = live_ce_oi - prev_ce_oi
-    pe_oi_change = live_pe_oi - prev_pe_oi
-
-    # For LONG: PE writing (pe_oi_change > 0) + CE unwinding (ce_oi_change < 0) = bullish
-    # For SHORT: CE writing (ce_oi_change > 0) + PE unwinding (pe_oi_change < 0) = bearish
+    # ── Pillar 4: VWAP Position + Slope (20 pts) ────────────────────────
+    vwap  = _sf(snapshot.get("vwap"))
+    slope = _sf(snapshot.get("vwap_slope"))
     if direction == "LONG":
-        oi_flow = _safe_divide(
-            pe_oi_change - ce_oi_change,
-            max(abs(pe_oi_change + ce_oi_change), 1)
-        )
-    else:  # SHORT
-        oi_flow = _safe_divide(
-            ce_oi_change - pe_oi_change,
-            max(abs(pe_oi_change + ce_oi_change), 1)
-        )
-
-    if oi_flow >= 0.2:
-        return weight * 1.0
-    elif oi_flow >= 0.05:
-        return weight * 0.5
-    elif oi_flow < -0.2:
-        return weight * -1.0   # opposing flow penalty
-    return 0.0
-
-
-def _score_options_flow(
-    prev: dict,
-    live_ce: dict,
-    live_pe: dict,
-    ai_sentiment: Optional[dict],
-    weight: float,
-    direction: str,
-) -> float:
-    """
-    Pillar 3 — Blended options OI flow + AI sentiment.
-
-    Combines:
-      • 60% weight  → raw OI flow imbalance  (_score_options_flow_raw)
-      • 40% weight  → AI sentiment from Redis key ``ai:sentiment:{symbol}``
-
-    If the AI sentiment key is absent (no-news day / pipeline not run),
-    ``ai_contribution`` is 0 and the raw options score passes through
-    unchanged (i.e. the blend simply returns ``options_flow_score * 0.6``
-    for the options portion — total weight is preserved because the caller
-    already sized ``weight`` to cover the full pillar).
-
-    AI sentiment JSON contract
-    --------------------------
-    Key  : ``ai:sentiment:{symbol}``
-    Value: ``{"score": <float -5 … +5>, ...}``   (extra keys ignored)
-    """
-    options_flow_score = _score_options_flow_raw(prev, live_ce, live_pe, weight, direction)
-
-    ai_contribution = 0.0
-    if ai_sentiment:
-        try:
-            ai_score_raw = float(ai_sentiment.get("score", 0))  # -5 to +5
-
-            if direction == "LONG":
-                if ai_score_raw >= 2.0:
-                    ai_contribution = weight * 0.4    # strong bullish AI → +40% of weight
-                elif ai_score_raw >= 0.5:
-                    ai_contribution = weight * 0.2
-                elif ai_score_raw <= -2.0:
-                    ai_contribution = weight * -0.3   # AI contradicts → penalty
-                else:
-                    ai_contribution = 0.0
-            else:  # SHORT
-                if ai_score_raw <= -2.0:
-                    ai_contribution = weight * 0.4
-                elif ai_score_raw <= -0.5:
-                    ai_contribution = weight * 0.2
-                elif ai_score_raw >= 2.0:
-                    ai_contribution = weight * -0.3
-                else:
-                    ai_contribution = 0.0
-
-        except (json.JSONDecodeError, TypeError, ValueError):
-            ai_contribution = 0.0
-
-    # ── Blend: 60% options flow + 40% AI sentiment ──────────────────────
-    options_contribution = options_flow_score * 0.6
-    return options_contribution + ai_contribution
-
-
-def _score_vwap_trend(snap: dict, weight: float, direction: str) -> float:
-    """
-    Pillar 4 — VWAP position and slope.
-
-    Keys consumed (guaranteed by candle builder):
-        vwap        float  — snap["vwap"]
-        vwap_slope  float  — snap["vwap_slope"]
-    """
-    ltp        = _safe_float(snap.get("ltp"))
-    vwap       = _safe_float(snap.get("vwap"), 1.0)       # guaranteed
-    vwap_slope = _safe_float(snap.get("vwap_slope"))       # guaranteed
-
-    if direction == "LONG":
-        above    = ltp > vwap
-        slope_ok = vwap_slope > 0.15
+        if   ltp > vwap and slope > 0: p4 = 20
+        elif ltp > vwap:                p4 = 12
+        else:                            p4 = 0
     else:
-        above    = ltp < vwap
-        slope_ok = vwap_slope < -0.15
+        if   ltp < vwap and slope < 0: p4 = 20
+        elif ltp < vwap:                p4 = 12
+        else:                            p4 = 0
 
-    if above and slope_ok:
-        return weight * 1.0
-    elif above:
-        return weight * 0.33
-    return 0.0
+    # ── Pillar 5: Market Regime (ER) + NIFTY Alignment (10 pts) ─────────
+    try:
+        raw_5m = await redis.lrange(f"candles:5m:{symbol}", -14, -1)
+        closes = []
+        for r in raw_5m:
+            try:
+                c = json.loads(r)
+                closes.append(float(c[4] if isinstance(c, list) else c.get("close", 0)))
+            except Exception:
+                pass
+        er_val = _calc_er(closes, period=12) if len(closes) >= 13 else 0.4
+    except Exception:
+        er_val = 0.4
 
-
-def _score_choppiness(snap: dict, weight: float) -> float:
-    """
-    Pillar 5 — Choppiness cleanliness.
-
-    Reads snapshot["choppiness_class"] (guaranteed by candle builder)
-    directly instead of re-deriving from raw chop values.
-    Falls back to inline computation only if the key is absent
-    (e.g. during local testing against old snapshots).
-    """
-    chop_class = snap.get("choppiness_class", "")          # guaranteed
-
-    if not chop_class:
-        # Fallback: re-derive from raw values (backward compat only)
-        chop14   = _safe_float(snap.get("choppiness14"),     50.0)
-        chop_avg = _safe_float(snap.get("choppiness_5d_avg"), 50.0)
-        chop_std = _safe_float(snap.get("choppiness_5d_std"),  5.0)
-        upper = chop_avg + 0.5 * chop_std
-        lower = chop_avg - 0.5 * chop_std
-        if chop14 < lower:
-            chop_class = "TRENDING"
-        elif chop14 > upper:
-            chop_class = "CHOPPY"
-        else:
-            chop_class = "NEUTRAL"
-
-    if chop_class == "TRENDING":
-        return weight * 1.0
-    elif chop_class == "NEUTRAL":
-        return weight * 0.5
-    return 0.0   # CHOPPY
-
-
-def _resolve_grade_action(total_score: float, is_opening: bool = False) -> tuple[str, str]:
-    if is_opening:
-        # First 15 min: options data sparse, RVOL unreliable — lower bar
-        table = [
-            (85, "GOD",    "EXECUTE_MARKET"),
-            (60, "A",      "EXECUTE_LIMIT"),
-            (40, "B",      "WATCHLIST"),
-            (0,  "IGNORE", "IGNORE"),
-        ]
+    if sig_type == "CHOPPINESS_BREAKOUT":
+        p5_regime = 7 if er_val < 0.25 else (5 if er_val < 0.50 else 2)
     else:
-        table = [
-            (90, "GOD",    "EXECUTE_MARKET"),
-            (75, "A",      "EXECUTE_LIMIT"),
-            (50, "B",      "WATCHLIST"),
-            (0,  "IGNORE", "IGNORE"),
-        ]
-    for threshold, grade, action in table:
-        if total_score >= threshold:
-            return grade, action
-    return "IGNORE", "IGNORE"
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-async def fetch_scoring_inputs(
-    symbol: str,
-    signal_direction: str,
-    vix: float,
-    market_time: str,
-) -> dict:
-    """Async Redis/network reads required by compute_ici_score."""
-    redis = await get_redis()
-
-    snap_raw = await redis.hgetall(f"snapshot:{symbol}")
-    snap = snap_raw or {}
-    nifty_snap_raw = await redis.hgetall("snapshot:NIFTY")
-    nifty_snap = nifty_snap_raw or {}
-    nifty_prev  = _safe_float(nifty_snap.get("prev_close"), 1.0)
-    nifty_ltp   = _safe_float(nifty_snap.get("ltp"), nifty_prev)
-    nifty_change = _safe_divide(nifty_ltp - nifty_prev, nifty_prev) * 100
-
-    sector = snap.get("sector", "UNKNOWN")
-    sector_avg_raw = await redis.get(f"market:breadth:sector:{sector}")
-    sector_avg_change = float(sector_avg_raw) if sector_avg_raw else 0.0
-
-    prev: dict = {}
-    live_ce: dict = {}
-    live_pe: dict = {}
-    ai_sentiment: Optional[dict] = None
-
-    prev_raw = await redis.get(f"options:prev:{symbol}")
-    if prev_raw:
-        try:
-            prev = json.loads(prev_raw)
-            atm = prev.get("atm_strike") or prev.get("atm")
-            if atm:
-                live_ce = await redis.hgetall(f"options:tick:{symbol}:{atm}CE") or {}
-                live_pe = await redis.hgetall(f"options:tick:{symbol}:{atm}PE") or {}
-        except json.JSONDecodeError:
-            prev = {}
-
-    ai_raw_bytes = await redis.get(f"ai:sentiment:{symbol}")
-    if ai_raw_bytes:
-        try:
-            ai_sentiment = json.loads(ai_raw_bytes)
-        except json.JSONDecodeError:
-            ai_sentiment = None
-
-    return {
-        "snap": snap,
-        "nifty_change": nifty_change,
-        "sector_avg_change": sector_avg_change,
-        "options_prev": prev,
-        "options_live_ce": live_ce,
-        "options_live_pe": live_pe,
-        "ai_sentiment": ai_sentiment,
-        "weights": _get_weights(vix, market_time),
-    }
-
-
-def compute_ici_score(
-    data: dict,
-    symbol: str,
-    signal_direction: str,
-    signal_type: str,
-    active_signals: list[str],
-    vix: float,
-    market_time: str,
-) -> dict:
-    """Pure synchronous score computation. No await, no Redis I/O."""
-    snap = data.get("snap", {})
-    if not snap:
-        logger.warning("[scorer] No snapshot for %s — score=0", symbol)
-        _now = datetime.now(_IST)
-        return _zero_result(symbol, signal_type, _now)
-
-    weights = data.get("weights") or _get_weights(vix, market_time)
-    options_score = _score_options_flow(
-        data.get("options_prev", {}),
-        data.get("options_live_ce", {}),
-        data.get("options_live_pe", {}),
-        data.get("ai_sentiment"),
-        weights["options"],
-        signal_direction,
-    )
-
-    return _calculate_ici_score_core(
-        symbol,
-        signal_direction,
-        signal_type,
-        active_signals,
-        weights,
-        snap,
-        data.get("nifty_change", 0.0),
-        data.get("sector_avg_change", 0.0),
-        options_score,
-        market_time,
-    )
-
-
-async def calculate_ici_score(
-    symbol: str,
-    signal_direction: str,
-    signal_type: str,
-    active_signals: list[str],
-    vix: float,
-    market_time: str,
-) -> dict:
-    """
-    Backward-compatible async wrapper around fetch + pure compute.
-    """
-    data = await fetch_scoring_inputs(
-        symbol=symbol,
-        signal_direction=signal_direction,
-        vix=vix,
-        market_time=market_time,
-    )
-    return await asyncio.to_thread(
-        compute_ici_score,
-        data,
-        symbol,
-        signal_direction,
-        signal_type,
-        active_signals,
-        vix,
-        market_time,
-    )
-
-
-def _calculate_ici_score_core(
-    symbol: str,
-    signal_direction: str,
-    signal_type: str,
-    active_signals: list[str],
-    weights: dict[str, float],
-    snap: dict,
-    nifty_change: float,
-    sector_avg_change: float,
-    options_score: float,
-    market_time: str = "10:30",
-) -> dict:
-    """
-    Compute the Intraday Conviction Index score for a signal.
-
-    Parameters
-    ----------
-    symbol           : NSE underlying symbol
-    signal_direction : "LONG" | "SHORT"
-    signal_type      : Primary signal type (e.g. "ORB_BREAKOUT")
-    active_signals   : All detected signals for this symbol (for bonus calc)
-    vix              : Current India VIX value
-    market_time      : IST time string "HH:MM"
-
-    Returns
-    -------
-    {
-        "score":      float (0–100),
-        "grade":      str   (GOD | A | B | IGNORE),
-        "breakdown":  dict  (per-pillar raw scores),
-        "action":     str   (EXECUTE_MARKET | EXECUTE_LIMIT | WATCHLIST | IGNORE),
-        "scored_at":  str   (ISO-8601),
-        "expires_at": str   (ISO-8601, scored_at + 10 min),
-        "symbol":     str,
-        "signal_type": str,
-    }
-    """
-    # ── Score each pillar ────────────────────────────────────────────────
-    p1 = _score_rvol(snap, weights["rvol"], signal_direction)
-    p2 = _score_relative_strength(snap, weights["rs"], signal_direction,
-                                   nifty_change, sector_avg_change)
-    p3 = options_score
-    p4 = _score_vwap_trend(snap, weights["vwap"], signal_direction)
-    p5 = _score_choppiness(snap, weights["chop"])
-
-    base_score = p1 + p2 + p3 + p4 + p5
-
-    # ── Signal bonuses ──────────────────────────────────────────────────
-    bonus = sum(_SIGNAL_BONUSES.get(sig, 0) for sig in active_signals)
-    total_score = min(base_score + bonus, 100.0)
-    total_score = max(total_score, 0.0)
+        p5_regime = 7 if er_val > 0.50 else (5 if er_val > 0.25 else 0)
 
     try:
-        hour, minute = map(int, market_time.split(":"))
-    except (ValueError, AttributeError):
-        hour, minute = 10, 30
-    is_opening = (hour == 9) or (hour == 10 and minute == 0)
-    grade, action = _resolve_grade_action(total_score, is_opening)
+        nifty_st = _decode(nifty.get(b"supertrend_dir") or nifty.get("supertrend_dir"))
+        aligned  = (direction == "LONG"  and "BULL" in nifty_st) or \
+                   (direction == "SHORT" and "BEAR" in nifty_st)
+        p5_align = 3 if aligned else 0
+    except Exception:
+        p5_align = 0
 
-    now        = datetime.now(_IST)
-    expires_at = now + timedelta(minutes=_SCORE_EXPIRY_MINUTES)
+    p5 = min(p5_regime + p5_align, 10)
 
-    result = {
-        "symbol":       symbol,
-        "signal_type":  signal_type,
-        "score":        round(total_score, 2),
-        "grade":        grade,
-        "action":       action,
-        "breakdown": {
-            "rvol":    round(p1, 2),
-            "rs":      round(p2, 2),
-            "options": round(p3, 2),
-            "vwap":    round(p4, 2),
-            "chop":    round(p5, 2),
-            "bonus":   bonus,
-        },
-        "weights":      weights,
-        "scored_at":    now.isoformat(),
-        "expires_at":   expires_at.isoformat(),
+    # ── Signal bonus ─────────────────────────────────────────────────────
+    bkey = sig_type
+    if sig_type == "OPENING_DRIVE":
+        bkey = f"OPENING_DRIVE_{signal.get('tier', 'TIER2')}"
+    elif sig_type == "RANGE_BREAKOUT":
+        bkey = f"RANGE_BREAKOUT_{signal.get('phase', 'ORB')}"
+    bonus = SIGNAL_BONUS.get(bkey, 3)
+
+    total = p1 + p2 + p3 + p4 + p5 + bonus
+    grade = _grade(total)
+
+    signal["ici_score"] = total
+    signal["ici_grade"] = grade
+    signal["pillar_breakdown"] = {
+        "rvol": p1, "rs_nifty": p2, "options": p3,
+        "vwap": p4, "regime": p5, "bonus": bonus,
     }
 
     logger.info(
-        "[scorer] %s %s | score=%.1f grade=%s action=%s | "
-        "rvol=%.1f rs=%.1f opts=%.1f vwap=%.1f chop=%.1f bonus=%d",
-        symbol, signal_direction, total_score, grade, action,
-        p1, p2, p3, p4, p5, bonus,
+        "[scorer] %s %s %s score=%d grade=%s "
+        "p1=%d p2=%d p3=%d p4=%d p5=%d bonus=%d er=%.3f",
+        symbol, sig_type, direction, total, grade,
+        p1, p2, p3, p4, p5, bonus, er_val,
     )
-
-    return result
-
-
-def sync_calculate_ici_score(
-    symbol: str,
-    signal_direction: str,
-    signal_type: str,
-    active_signals: list[str],
-    vix: float,
-    market_time: str,
-    snap: dict,
-    nifty_change: float,
-    sector_avg_change: float,
-    options_score: float,
-) -> dict:
-    """
-    Backward-compatible sync entrypoint retained for existing internal callers.
-    """
-    weights = _get_weights(vix, market_time)
-    return _calculate_ici_score_core(
-        symbol,
-        signal_direction,
-        signal_type,
-        active_signals,
-        weights,
-        snap,
-        nifty_change,
-        sector_avg_change,
-        options_score,
-        market_time,
-    )
+    return signal
 
 
-def _zero_result(symbol: str, signal_type: str, now: datetime) -> dict:
-    return {
-        "symbol":      symbol,
-        "signal_type": signal_type,
-        "score":       0.0,
-        "grade":       "IGNORE",
-        "action":      "IGNORE",
-        "breakdown":   {"rvol": 0, "rs": 0, "options": 0, "vwap": 0, "chop": 0, "bonus": 0},
-        "weights":     {},
-        "scored_at":   now.isoformat(),
-        "expires_at":  (now + timedelta(minutes=_SCORE_EXPIRY_MINUTES)).isoformat(),
-    }
+# ---------------------------------------------------------------------------
+# Backward-compatibility shims (brain.py currently calls these)
+# Remove after brain.py is updated.
+# ---------------------------------------------------------------------------
+
+async def fetch_scoring_inputs(symbol, signal_direction, vix=None, market_time=None):
+    """Shim — returns snapshot dict for compute_ici_score compatibility."""
+    from core.redis_client import get_redis as _gr
+    r = await _gr()
+    snap = await r.hgetall(f"snapshot:{symbol}")
+    return {"snapshot": snap or {}, "symbol": symbol,
+            "direction": signal_direction}
+
+
+def compute_ici_score(score_data, symbol, direction, sig_type,
+                      active_types=None, vix=None, market_time=None):
+    """Shim — returns minimal score_result dict."""
+    return {"score": 0, "grade": "IGNORE", "action": "IGNORE"}
