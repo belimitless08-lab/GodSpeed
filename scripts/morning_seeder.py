@@ -408,7 +408,7 @@ def compute_rsi14_wilder(closes: np.ndarray, period: int = 14) -> tuple[float, f
 
 def compute_supertrend(
     highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
-    period: int = 14, multiplier: float = 3.0          # ← period 10→14
+    period: int = 14, multiplier: float = 3.0
 ) -> tuple[str, float]:
     n = len(closes)
     atr_st = np.zeros(n)
@@ -425,21 +425,87 @@ def compute_supertrend(
     lower_band = hl2 - multiplier * atr_st
 
     direction = 1
-    band = lower_band[0]
+    band = float(lower_band[0])
 
     for i in range(1, n):
-        if direction == 1:                      # was BULL
-            band = max(lower_band[i], band)     # ← ratchet: never drops
+        if direction == 1:
+            band = max(float(lower_band[i]), band)
             if closes[i] < band:
                 direction = -1
-                band = upper_band[i]
-        else:                                   # was BEAR
-            band = min(upper_band[i], band)     # ← ratchet: never rises
+                band = float(upper_band[i])
+        else:
+            band = min(float(upper_band[i]), band)
             if closes[i] > band:
                 direction = 1
-                band = lower_band[i]
+                band = float(lower_band[i])
 
     return ("BULL" if direction == 1 else "BEAR"), round(band, 4)
+
+
+def _compute_vol_profiles(
+    candles: list[list],
+    timestamps: list[str],
+    day_map: dict[str, list[int]],
+    sorted_days: list[str],
+) -> tuple[dict, dict]:
+    """
+    Compute per-5m-slot and cumulative volume profiles from 5 days of 1m candles.
+    
+    Returns:
+        vol_5m:  {"0915": avg_vol, "0920": avg_vol, ...}  5m slot averages
+        vol_cum: {"0915": avg_cum, "0920": avg_cum, ...}  cumulative averages
+    """
+    # Define all valid 5m slots 9:15 to 15:25
+    slot_keys = []
+    h, m = 9, 15
+    while (h, m) <= (15, 25):
+        slot_keys.append(f"{h:02d}{m:02d}")
+        m += 5
+        if m >= 60:
+            m = 0
+            h += 1
+
+    # For each trading day compute per-slot volume and cumulative volume
+    days_to_use = sorted_days[-5:]  # last 5 trading days
+    slot_volumes_by_day: dict[str, list[float]] = {k: [] for k in slot_keys}
+    cum_volumes_by_day:  dict[str, list[float]] = {k: [] for k in slot_keys}
+
+    for day in days_to_use:
+        indices = day_map.get(day, [])
+        if not indices:
+            continue
+
+        # Build slot -> volume map for this day from 1m candles
+        day_slot_vol: dict[str, float] = {k: 0.0 for k in slot_keys}
+        for idx in indices:
+            ts = timestamps[idx]
+            try:
+                dt = datetime.fromisoformat(ts)
+                # Round down to nearest 5m slot
+                slot_m = (dt.minute // 5) * 5
+                slot_key = f"{dt.hour:02d}{slot_m:02d}"
+                if slot_key in day_slot_vol:
+                    day_slot_vol[slot_key] += float(candles[idx][5])
+            except Exception:
+                continue
+
+        # Build cumulative for this day
+        running_cum = 0.0
+        for slot in slot_keys:
+            running_cum += day_slot_vol[slot]
+            slot_volumes_by_day[slot].append(day_slot_vol[slot])
+            cum_volumes_by_day[slot].append(running_cum)
+
+    # Average across days
+    vol_5m = {}
+    vol_cum = {}
+    for slot in slot_keys:
+        sv = slot_volumes_by_day[slot]
+        cv = cum_volumes_by_day[slot]
+        vol_5m[slot]  = round(float(np.mean(sv)) if sv else 0.0, 2)
+        vol_cum[slot] = round(float(np.mean(cv)) if cv else 0.0, 2)
+
+    return vol_5m, vol_cum
 
 
 def compute_pivots_classic(prev_high: float, prev_low: float, prev_close: float) -> dict:
@@ -830,12 +896,36 @@ async def _seed_equity_symbol(
             f"snapshot:{symbol}",
             mapping=_snapshot_to_hash_mapping(snapshot),
         )
-        # Seed yesterday's final supertrend direction so SUPERTREND_FLIP
-        # logic works correctly from the very first candle at 9:15.
+        # --- NEW: Write snapshot_prev for SUPERTREND_FLIP to work at 9:15 AM ---
         await redis.set(
             f"snapshot_prev:{symbol}",
-            json.dumps({"supertrend_dir": st_direction}),
+            json.dumps({
+                "supertrend_dir":  st_direction,
+                "supertrend_band": round(st_band, 4),
+            }),
             ex=86400,
+        )
+
+        # --- NEW: Compute and write volume profiles ---
+        raw_candles_list = [[c[0], c[1], c[2], c[3], c[4], c[5]] for c in candles]
+        vol_5m, vol_cum = _compute_vol_profiles(
+            candles=raw_candles_list,
+            timestamps=timestamps,
+            day_map=day_map,
+            sorted_days=sorted_days,
+        )
+        await redis.set(
+            f"vol_profile:5m:{symbol}",
+            json.dumps(vol_5m),
+            ex=86400,
+        )
+        await redis.set(
+            f"vol_profile:cum:{symbol}",
+            json.dumps(vol_cum),
+            ex=86400,
+        )
+        logger.debug(
+            "Phase A: %s — vol profiles written (%d slots).", symbol, len(vol_5m)
         )
 
         return True
