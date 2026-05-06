@@ -281,15 +281,7 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
             continue
 
         if not passed:
-            # Special case: WAIT_RETEST — park signal, don't drop it
-            if "WAIT_RETEST" in failed_gates:
-                try:
-                    await add_to_retest(symbol, signal, snapshot)
-                    logger.info("[brain] %s %s → parked in retest watchlist", symbol, signal["type"])
-                except Exception as exc:
-                    logger.warning("[brain] add_to_retest failed: %s", exc)
-            else:
-                logger.info("[brain] %s %s → BLOCKED gates=%s", symbol, signal["type"], failed_gates)
+            logger.info("[brain] %s %s → BLOCKED gates=%s", symbol, signal["type"], failed_gates)
             continue
 
         # Gates passed — queue for ICI scoring on next 5m candle.
