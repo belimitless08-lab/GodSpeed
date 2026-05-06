@@ -127,6 +127,8 @@ tf_accumulators: dict[str, dict[str, dict[str, Any]]] = {}
 #     "last_close":       float,
 #     "last_high":        float,
 #     "last_low":         float,
+#     "cum_volume":        float,  # cumulative volume today from 9:15
+#     "cum_rvol":          float,  # cumulative RVOL vs 5-day profile
 # }
 indicators: dict[str, dict[str, Any]] = {}
 
@@ -302,6 +304,8 @@ async def _flush_candle_to_redis(
         "updated_at":      now_iso,
         "rvol":            str(updated_ind.get("rvol", 0.0)),
         "live_volume_ratio": str(updated_ind.get("rvol", 0.0)),
+        "cum_rvol":   str(updated_ind.get("cum_rvol", 0.0)),
+        "cum_volume": str(updated_ind.get("cum_volume", 0.0)),
         # ltp = close of the last completed 1m candle — consumed by macro gates,
         # conviction scorer, and signal engines.  Must be kept current or Gate 2
         # (BELOW_VWAP) will compare stale prev_close against today's VWAP and
@@ -312,12 +316,16 @@ async def _flush_candle_to_redis(
         snapshot_mapping["is_index"] = "1"
 
     # Save previous supertrend direction for flip detection
-    prev_st = await redis.hget(f"snapshot:{symbol}", "supertrend_dir")
-    if prev_st:
+    prev_dir  = await redis.hget(f"snapshot:{symbol}", "supertrend_dir")
+    prev_band = await redis.hget(f"snapshot:{symbol}", "supertrend_band")
+    if prev_dir:
         await redis.set(
             f"snapshot_prev:{symbol}",
-            json.dumps({"supertrend_dir": prev_st}),
-            ex=86400
+            json.dumps({
+                "supertrend_dir":  prev_dir.decode() if isinstance(prev_dir, bytes) else prev_dir,
+                "supertrend_band": float(prev_band.decode() if isinstance(prev_band, bytes) else prev_band or 0),
+            }),
+            ex=86400,
         )
 
     async with redis.pipeline(transaction=False) as pipe:
@@ -555,19 +563,40 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 vwap_slope = 0.0
 
         if is_index:
-            rvol = 0.0
+            rvol     = 0.0
+            cum_rvol = 0.0
         else:
             current_vol = closed["volume"]
-            # Use rolling mean of last 20 actual 1m candle volumes as baseline.
-            # This is time-of-day aware: opening candles are compared to opening
-            # candles from the same rolling window, not against a naive per-minute
-            # average that makes every opening candle look like a 20x surge.
-            if len(candles_14) >= 5:
-                recent_vols = [float(c[5]) for c in candles_14 if len(c) > 5 and float(c[5]) > 0]
-                avg_recent_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 0.0
-                rvol = round(current_vol / max(avg_recent_vol, 1), 3) if avg_recent_vol > 0 else 0.0
-            else:
+            ist_minute  = closed.get("minute", "")  # "HH:MM" string
+            # --- Per-candle RVOL via vol_profile:5m lookup ---
+            try:
+                slot_key = ist_minute.replace(":", "")  # "0915", "0920" etc
+                vp_raw   = await redis.get(f"vol_profile:5m:{symbol}")
+                if vp_raw:
+                    vp = json.loads(vp_raw)
+                    avg_slot_vol = float(vp.get(slot_key, 0) or 0)
+                    rvol = round(current_vol / max(avg_slot_vol, 1), 3) if avg_slot_vol > 0 else 0.0
+                else:
+                    rvol = 0.0
+            except Exception:
                 rvol = 0.0
+            # --- Cumulative RVOL ---
+            try:
+                is_first = (closed.get("minute", "") == "09:15")
+                if is_first:
+                    indicators.setdefault(symbol, {})["cum_volume"] = 0.0
+                prev_cum_vol = ind.get("cum_volume", 0.0)
+                new_cum_vol  = prev_cum_vol + current_vol
+                vp_cum_raw = await redis.get(f"vol_profile:cum:{symbol}")
+                if vp_cum_raw:
+                    vp_cum       = json.loads(vp_cum_raw)
+                    avg_cum_vol  = float(vp_cum.get(slot_key, 0) or 0)
+                    cum_rvol     = round(new_cum_vol / max(avg_cum_vol, 1), 3) if avg_cum_vol > 0 else 0.0
+                else:
+                    cum_rvol = 0.0
+            except Exception:
+                new_cum_vol = ind.get("cum_volume", 0.0) + current_vol
+                cum_rvol    = 0.0
 
         # Assemble updated indicator dict
         updated_ind: dict[str, Any] = {
@@ -587,6 +616,8 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             "vwap_history":    vwap_history,      # in-memory only
             "vwap_slope":      vwap_slope,
             "rvol":            rvol,
+            "cum_volume": new_cum_vol if not is_index else 0.0,
+            "cum_rvol":   cum_rvol,
         }
 
         # Persist to Redis (async I/O — back on event loop)
@@ -1032,6 +1063,8 @@ async def _seed_indicators() -> None:
             "last_close":      _f("last_close"),
             "last_high":       _f("last_high"),
             "last_low":        _f("last_low"),
+            "cum_volume":      0.0,
+            "cum_rvol":        0.0,
         }
 
         # Also initialise TF accumulator slots
