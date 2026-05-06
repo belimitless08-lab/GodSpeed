@@ -701,6 +701,41 @@
 .wl-row:last-child { border-bottom:none!important; }
 .wl-remove-btn { background:transparent; border:none; color:#334155; font-size:12px; cursor:pointer; transition:color 0.15s; padding:2px 4px; border-radius:3px; }
 .wl-remove-btn:hover { color:#ef4444; background:rgba(239,68,68,0.1); }
+  /* ── VOLUME LEADERS PANEL ── */
+  #volume-leaders-panel.panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 0 12px 16px;
+  }
+  .panel-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+    font-family: 'Syne', sans-serif;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--accent);
+  }
+  #volume-leaders-list { padding: 4px 0; }
+  .leader-row {
+    display: grid;
+    grid-template-columns: 28px 1fr 52px 72px 64px;
+    gap: 6px; align-items: center;
+    padding: 6px 14px;
+    border-bottom: 1px solid rgba(51,65,85,0.35);
+    font-size: 12px;
+  }
+  .leader-row:last-child { border-bottom: none; }
+  .leader-row.bull { border-left: 2px solid var(--green); }
+  .leader-row.bear { border-left: 2px solid var(--red); }
+  .leader-row .rank { color: var(--muted); font-size: 10px; font-weight: 700; }
+  .leader-row .sym  { font-weight: 700; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .leader-row .rvol { font-size: 11px; font-weight: 700; color: var(--gold); text-align: right; }
+  .leader-row .ltp  { font-size: 11px; font-weight: 600; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+  .leader-row .chg  { font-size: 11px; font-weight: 700; text-align: right; }
+  .leader-row .chg.pos { color: var(--green); }
+  .leader-row .chg.neg { color: var(--red); }
 </style>
 <body>
 
@@ -875,6 +910,13 @@
   <div class="section-label">Live Signals</div>
   <div id="signals-grid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
     <!-- Cards rendered by JS -->
+  </div>
+
+  <!-- Volume Leaders panel -->
+  <div class="section-label">Volume Leaders</div>
+  <div id="volume-leaders-panel" class="panel">
+    <div class="panel-header">🔥 Volume Leaders</div>
+    <div id="volume-leaders-list"></div>
   </div>
 </div>
 
@@ -1661,6 +1703,29 @@ function chopIcon(cls) {
   return                         `<span class="chop-icon chop-neutral"   title="Neutral">→</span>`;
 }
 
+const SIGNAL_TYPE_LABELS = {
+  "OPENING_DRIVE":       "🚀 Opening Drive",
+  "RANGE_BREAKOUT":      "📊 Range Breakout",
+  "HOURLY_BREAKOUT":     "⏰ Hourly Break",
+  "CHOPPINESS_BREAKOUT": "💥 Compression Break",
+  "SUPERTREND_FLIP":     "🔄 Trend Flip",
+};
+
+function getSignalLabel(sig) {
+  const rawType = (sig.signal_type || '').toUpperCase();
+  let label = SIGNAL_TYPE_LABELS[rawType] || rawType.replace(/_/g, ' ');
+
+  if (rawType === 'RANGE_BREAKOUT') {
+    if (sig.phase === 'ORB')       label = '📊 ORB Breakout';
+    if (sig.phase === 'POSTLUNCH') label = '📊 Post-Lunch Break';
+  }
+  if (rawType === 'OPENING_DRIVE') {
+    if (sig.tier === 'TIER1') label = '🚀 Opening Drive T1';
+    if (sig.tier === 'TIER2') label = '🚀 Opening Drive T2';
+  }
+  return label;
+}
+
 function renderSignalRow(sig) {
   if (sig.ici_score != null && sig.ici_score < 50) return '';
 
@@ -1683,7 +1748,7 @@ function renderSignalRow(sig) {
   const displayChg = sig.change_pct != null
     ? `${chgSign}${parseFloat(sig.change_pct).toFixed(2)}%`
     : '';
-  const cleanType = (sig.signal_type || '').replace(/_/g, ' ');
+  const cleanType = getSignalLabel(sig);
 
   return `
   <div class="sig-row">
@@ -3642,6 +3707,35 @@ function initHistoryDateInputs() {
   if (toVis) toVis.value = today;
   updateBarDateRange();
 }
+
+/* ══════════════════════════════════════════
+   VOLUME LEADERS
+══════════════════════════════════════════ */
+async function fetchVolumeLeaders() {
+    try {
+        const res  = await fetch('/api/volume-leaders');
+        const data = await res.json();
+        if (data.status !== 'ok') return;
+        const el = document.getElementById('volume-leaders-list');
+        if (!el) return;
+        el.innerHTML = data.leaders.map((s, i) => `
+            <div class="leader-row ${s.direction === 'BULL' ? 'bull' : 'bear'}">
+                <span class="rank">#${i+1}</span>
+                <span class="sym">${s.symbol}</span>
+                <span class="rvol">${s.cum_rvol}x</span>
+                <span class="ltp">${s.ltp}</span>
+                <span class="chg ${s.change_pct >= 0 ? 'pos' : 'neg'}">
+                    ${s.change_pct >= 0 ? '+' : ''}${s.change_pct}%
+                </span>
+            </div>
+        `).join('');
+    } catch(e) {
+        console.warn('Volume leaders fetch failed:', e);
+    }
+}
+// Call on load and every 5 minutes
+fetchVolumeLeaders();
+setInterval(fetchVolumeLeaders, 5 * 60 * 1000);
 
 /* ══════════════════════════════════════════
    POLLING MANAGER
