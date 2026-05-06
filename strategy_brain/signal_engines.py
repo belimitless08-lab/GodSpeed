@@ -135,336 +135,456 @@ def _now_ist_str() -> str:
     return _now_ist().isoformat()
 
 
+
 # ---------------------------------------------------------------------------
-# Individual signal detectors
+# Calculation helpers (new)
 # ---------------------------------------------------------------------------
 
-def _detect_opening_drive(symbol: str, snapshot: dict, candles_5m: list[dict]) -> Optional[dict]:
+def _body_health(o: float, h: float, l: float, c: float) -> float:
+    candle_range = h - l
+    if candle_range < 0.001:
+        return 0.0
+    return abs(c - o) / candle_range
+
+
+def _calc_efficiency_ratio(closes: list, period: int = 12) -> float:
+    if len(closes) < period + 1:
+        return 0.5
+    net_move = abs(closes[-1] - closes[-(period + 1)])
+    total_move = sum(abs(closes[i] - closes[i - 1]) for i in range(-period, 0))
+    if total_move == 0:
+        return 0.0
+    return round(net_move / total_move, 4)
+
+
+def _calc_rsi_14(closes: list) -> float:
+    if len(closes) < 15:
+        return 50.0
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        gains.append(max(diff, 0))
+        losses.append(max(-diff, 0))
+    avg_gain = sum(gains[-14:]) / 14
+    avg_loss = sum(losses[-14:]) / 14
+    if avg_loss == 0:
+        return 100.0
+    return round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
+
+
+def _gap_direction(snapshot: dict) -> str:
+    gap = _safe_float(snapshot.get("gap_pct"))
+    if gap > 0.5:
+        return "UP"
+    if gap < -0.5:
+        return "DOWN"
+    return "FLAT"
+
+
+def _cum_rvol(snapshot: dict) -> float:
+    return _safe_float(snapshot.get("cum_rvol"), 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Individual signal detectors (v2)
+# ---------------------------------------------------------------------------
+
+async def _detect_opening_drive(
+    symbol: str,
+    snapshot: dict,
+    candles_5m: list,
+    vol_5m: dict,
+) -> Optional[dict]:
     """
-    Opening Drive — fires 9:15–10:00 AM only.
-    Requires: close > R1, body ratio > 60%, RVOL > 2x, gap < 3%.
+    OPENING_DRIVE v2.3 — 9:15 to 9:55 AM, two tiers.
+    PRIMARY trigger: close above PDH (LONG) or below PDL (SHORT).
+    R1/S1 cleared = bonus flag, not a hard requirement.
     """
     now = _now_ist()
-    # Opening Drive window: 9:15 – 10:00 IST (inclusive of the 10:00 candle)
-    in_opening_window = (now.hour == 9) or (now.hour == _OPENING_DRIVE_END_H and now.minute <= _OPENING_DRIVE_END_M)
-    if not in_opening_window:
-        if symbol == DEBUG_SYMBOL:
-            logger.debug(f"{symbol}: opening drive skipped - outside opening window")
+    if not (now.hour == 9 and 15 <= now.minute <= 55):
         return None
-
-    if not candles_5m:
-        if symbol == DEBUG_SYMBOL:
-            logger.debug(f"{symbol}: opening drive skipped - no 5m candles")
-        return None
-
-    if not candles_5m or not isinstance(candles_5m[-1], dict):
-        return None
-
-    current_5m = candles_5m[-1]
-    o = _safe_float(current_5m.get("open"))
-    c = _safe_float(current_5m.get("close"))
-    h = _safe_float(current_5m.get("high"))
-    lo = _safe_float(current_5m.get("low"))
-
-    body = abs(c - o)
-    candle_range = h - lo
-    body_ratio = body / max(candle_range, 0.01)
-
-    pivot_r1 = _safe_float(snapshot.get("r1")) or _safe_float(snapshot.get("pivot_r1"))
-    rvol_open = _safe_float(snapshot.get("rvol_open"), _safe_float(snapshot.get("rvol")))
-    gap_pct = abs(_safe_float(snapshot.get("gap_pct")))
-    atr14 = _safe_float(snapshot.get("atr14"), 1.0)
-
-    above_r1 = c > pivot_r1
-    good_body = body_ratio > 0.6
-    volume_ok = rvol_open > 2.0
-    gap_ok = gap_pct < 3.0
-
-    if symbol == DEBUG_SYMBOL:
-        if not above_r1:
-            logger.debug(f"{symbol}: opening drive rejected - close not above R1")
-        if not good_body:
-            logger.debug(f"{symbol}: opening drive rejected - body ratio too low")
-        if not volume_ok:
-            logger.debug(f"{symbol}: opening drive rejected - rvol_open too low")
-        if not gap_ok:
-            logger.debug(f"{symbol}: opening drive rejected - gap too high")
-
-    if above_r1 and good_body and volume_ok and gap_ok:
-        entry = pivot_r1
-        stop = pivot_r1 - atr14 * 0.5
-        logger.info("[signal] OPENING_DRIVE detected for snapshot body_ratio=%.2f rvol=%.2f",
-                    body_ratio, rvol_open)
-        return {
-            "type": "OPENING_DRIVE",
-            "direction": "LONG",
-            "entry_price": round(entry, 2),
-            "stop_loss": round(stop, 2),
-            "detected_at": _now_ist_str(),
-        }
-    return None
-
-
-def _detect_orb_breakout(symbol: str, snapshot: dict, candles_5m: list[dict]) -> Optional[dict]:
-    """
-    ORB Breakout — Opening Range Breakout (set at 9:30 AM).
-    Waits ≥ 2 candles after ORB establishment; non-extended breakout.
-    """
-    if not candles_5m:
-        if symbol == DEBUG_SYMBOL:
-            logger.debug(f"{symbol}: ORB rejected - no 5m candles")
-        return None
-
-    if not candles_5m or not isinstance(candles_5m[-1], dict):
-        return None
-
-    current_5m = candles_5m[-1]
-    c = _safe_float(current_5m.get("close"))
-
-    orb_high = _safe_float(snapshot.get("orb_high"))
-    orb_low = _safe_float(snapshot.get("orb_low"))
-    orb_range_pct = _safe_float(snapshot.get("orb_range_pct"))
-    candles_since_orb = int(_safe_float(snapshot.get("candles_since_orb"), 0))
-    rvol = _safe_float(snapshot.get("rvol"))
-
-    if orb_high == 0:
-        if symbol == DEBUG_SYMBOL:
-            logger.debug(f"{symbol}: ORB rejected - orb_high missing")
-        return None  # ORB not yet established
-
-    orb_extended = orb_range_pct > 1.5
-    consolidation = candles_since_orb >= 2
-    breakout = c > orb_high
-    not_overextended = c < orb_high * 1.01
-    volume_ok = rvol > 2.0
-
-    if symbol == DEBUG_SYMBOL:
-        if orb_extended:
-            logger.debug(f"{symbol}: ORB rejected - orb range too extended")
-        if not consolidation:
-            logger.debug(f"{symbol}: ORB rejected - insufficient candles since ORB")
-        if not breakout:
-            logger.debug(f"{symbol}: breakout condition failed")
-        if not not_overextended:
-            logger.debug(f"{symbol}: ORB rejected - breakout already overextended")
-        if not volume_ok:
-            logger.debug(f"{symbol}: ORB rejected - volume condition failed")
-
-    if not orb_extended and consolidation and breakout and not_overextended and volume_ok:
-        logger.info("[signal] ORB_BREAKOUT detected orb_high=%.2f rvol=%.2f", orb_high, rvol)
-        return {
-            "type": "ORB_BREAKOUT",
-            "direction": "LONG",
-            "entry_price": round(orb_high, 2),
-            "stop_loss": round(orb_low, 2),
-            "detected_at": _now_ist_str(),
-        }
-    return None
-
-
-def _detect_hourly_breakout(symbol: str, snapshot: dict, candles_5m: list[dict]) -> Optional[dict]:
-    """
-    Hourly Breakout — rolling 1-hour (12 x 5m candles) high break.
-    Requires RSI 55–68, positive VWAP slope, RVOL > 1.5x.
-
-    Keys consumed (all guaranteed by candle builder):
-        rsi14       float  — snapshot["rsi14"]
-        vwap        float  — snapshot["vwap"]
-        vwap_slope  float  — snapshot["vwap_slope"]
-    """
-    if not candles_5m:
-        if symbol == DEBUG_SYMBOL:
-            logger.debug(f"{symbol}: hourly breakout rejected - no 5m candles")
-        return None
-
-    if not candles_5m or not isinstance(candles_5m[-1], dict):
-        return None
-
-    current_5m = candles_5m[-1]
-    c = _safe_float(current_5m.get("close"))
-    lo = _safe_float(current_5m.get("low"))
-
-    rolling_1h_high = _safe_float(snapshot.get("rolling_1h_high"))
-    prev_rolling_1h_high = _safe_float(snapshot.get("prev_rolling_1h_high"), rolling_1h_high)
-    rsi14 = _safe_float(snapshot.get("rsi14"), 50.0)
-    vwap_slope = _safe_float(snapshot.get("vwap_slope"))
-    rvol = _safe_float(snapshot.get("rvol"))
-    vwap = _safe_float(snapshot.get("vwap"))
-
-    if rolling_1h_high == 0:
-        if symbol == DEBUG_SYMBOL:
-            logger.debug(f"{symbol}: hourly breakout rejected - rolling_1h_high missing")
-        return None
-
-    breakout = c > rolling_1h_high
-    not_lower_high = rolling_1h_high >= prev_rolling_1h_high
-    rsi_ok = 55 <= rsi14 <= 68
-    vwap_slope_ok = vwap_slope > 0
-    volume_ok = rvol > 1.5
-
-    if symbol == DEBUG_SYMBOL:
-        if not breakout:
-            logger.debug(f"{symbol}: hourly breakout rejected - breakout condition failed")
-        if not not_lower_high:
-            logger.debug(f"{symbol}: hourly breakout rejected - lower high structure")
-        if not rsi_ok:
-            logger.debug(f"{symbol}: hourly breakout rejected - RSI out of range")
-        if not vwap_slope_ok:
-            logger.debug(f"{symbol}: hourly breakout rejected - vwap slope not positive")
-        if not volume_ok:
-            logger.debug(f"{symbol}: hourly breakout rejected - volume condition failed")
-
-    if breakout and not_lower_high and rsi_ok and vwap_slope_ok and volume_ok:
-        stop = max(vwap, lo)
-        logger.info("[signal] HOURLY_BREAKOUT detected high=%.2f rsi=%.1f rvol=%.2f",
-                    rolling_1h_high, rsi14, rvol)
-        return {
-            "type": "HOURLY_BREAKOUT",
-            "direction": "LONG",
-            "entry_price": round(rolling_1h_high, 2),
-            "stop_loss": round(stop, 2),
-            "detected_at": _now_ist_str(),
-        }
-    return None
-
-
-def _detect_choppiness_breakout(symbol: str, snapshot: dict, candles_5m: list[dict]) -> Optional[dict]:
-    """
-    Choppiness Breakout — price escapes a consolidation range.
-    8–25 consecutive choppy candles, then price breaks range high.
-
-    Uses snapshot["choppiness_class"] (guaranteed by candle builder) to
-    confirm the breakout instead of re-computing from raw chop values.
-    """
-    if not candles_5m:
-        if symbol == DEBUG_SYMBOL:
-            logger.debug(f"{symbol}: choppiness breakout rejected - no 5m candles")
-        return None
-
-    if not candles_5m or not isinstance(candles_5m[-1], dict):
-        return None
-
-    current_5m = candles_5m[-1]
-    c = _safe_float(current_5m.get("close"))
-    lo = _safe_float(current_5m.get("low"))
-
-    choppy_count = int(_safe_float(snapshot.get("consecutive_choppy_candles"), 0))
-    choppy_range_high = _safe_float(snapshot.get("choppy_range_high"))
-    rvol = _safe_float(snapshot.get("rvol"))
-    chop14 = _safe_float(snapshot.get("choppiness14"), 50.0)
-    chop_avg = _safe_float(snapshot.get("choppiness_5d_avg"), 50.0)
-
-    if choppy_range_high == 0:
-        if symbol == DEBUG_SYMBOL:
-            logger.debug(f"{symbol}: choppiness breakout rejected - choppy_range_high missing")
-        return None
-
-    enough_compression = 8 <= choppy_count <= 25
-    price_breaks_range = c > choppy_range_high
-    volume_ok = rvol > 1.5
-
-    if symbol == DEBUG_SYMBOL:
-        if not enough_compression:
-            logger.debug(f"{symbol}: choppiness breakout rejected - compression window invalid")
-        if not price_breaks_range:
-            logger.debug(f"{symbol}: breakout condition failed")
-        if not volume_ok:
-            logger.debug(f"{symbol}: choppiness breakout rejected - volume condition failed")
-
-    if enough_compression and price_breaks_range and volume_ok:
-        # Use choppiness_class from candle builder when available;
-        # fall back to inline comparison for backward compatibility.
-        chop_class = snapshot.get("choppiness_class", "")
-        if chop_class:
-            confirmed = chop_class == "TRENDING"
-        else:
-            confirmed = chop14 < chop_avg
-
-        comp_strength = round(choppy_count / 25, 3)
-
-        sig_type = ("CHOPPINESS_BREAKOUT_CONFIRMED"
-                    if confirmed else "CHOPPINESS_BREAKOUT_UNCONFIRMED")
-
-        logger.info("[signal] %s detected choppy_count=%d rvol=%.2f confirmed=%s",
-                    sig_type, choppy_count, rvol, confirmed)
-        return {
-            "type": sig_type,
-            "direction": "LONG",
-            "entry_price": round(choppy_range_high, 2),
-            "stop_loss": round(lo, 2),
-            "compression_strength": comp_strength,
-            "detected_at": _now_ist_str(),
-        }
-    return None
-
-
-def _detect_supertrend_flip(snapshot: dict, prev_snapshot: dict) -> Optional[dict]:
-    """
-    Supertrend Flip — direction change on latest candle close.
-    """
-    curr_dir = snapshot.get("supertrend_dir", "")
-    prev_dir = prev_snapshot.get("supertrend_dir", "")
-
-    if not curr_dir or not prev_dir:
-        return None
-
-    flipped = curr_dir != prev_dir
-    if flipped:
-        direction = "LONG" if curr_dir == "BULL" else "SHORT"
-        ltp = _safe_float(snapshot.get("ltp"))
-        band = _safe_float(snapshot.get("supertrend_band"))
-
-        logger.info("[signal] SUPERTREND_FLIP detected direction=%s ltp=%.2f band=%.2f",
-                    direction, ltp, band)
-        return {
-            "type": "SUPERTREND_FLIP",
-            "direction": direction,
-            "entry_price": round(ltp, 2),
-            "stop_loss": round(band, 2),
-            "detected_at": _now_ist_str(),
-        }
-    return None
-
-
-async def _detect_volume_surge(symbol: str, snapshot: dict, timeframe: str = "1m") -> Optional[dict]:
-    """
-    Volume Surge — standalone auxiliary signal (no direction).
-    Returned alongside directional signals; feeds bonus in scorer.
-    """
-    ltp = _safe_float(snapshot.get("ltp"))
-    if ltp < 100:
-        return None
-
-    candles = await _load_candles(symbol, timeframe, 21)
-    if len(candles) < 20:
-        return None
-
-    last_20_candles_volume = [_safe_float(c.get("volume")) for c in candles[-20:]]
-    avg_volume = mean(last_20_candles_volume)
-    current_volume = _safe_float(snapshot.get("last_volume"), _safe_float(candles[-1].get("volume")))
-    if avg_volume <= 0:
-        return None
-
-    rvol = current_volume / avg_volume
-    if rvol < 2.5:
-        return None
-
-    turnover = current_volume * ltp
-    if turnover < 25_000_000:
-        return None
-
-    if symbol == "NIFTY":
-        logger.info("RVOL=%.2f TURNOVER=%.2f", rvol, turnover)
 
     redis = await get_redis()
-    key = f"vol_surge:{symbol}"
-    if await redis.exists(key):
+    if await redis.exists(f"opening_drive_fired:{symbol}"):
         return None
-    await redis.setex(key, 300, 1)
 
-    sig_type = "VOLUME_SURGE_STRONG" if rvol >= 3.0 else "VOLUME_SURGE_MODERATE"
-    logger.debug("[signal] %s rvol=%.2f turnover=%.2f", sig_type, rvol, turnover)
-    return {"type": sig_type, "rvol": round(rvol, 2), "turnover": round(turnover, 2), "detected_at": _now_ist_str()}
+    if not candles_5m:
+        return None
+
+    candle = candles_5m[-1]
+    o   = _safe_float(candle.get("open"))
+    h_c = _safe_float(candle.get("high"))
+    l_c = _safe_float(candle.get("low"))
+    c   = _safe_float(candle.get("close"))
+    vol = _safe_float(candle.get("volume"))
+    if c == 0 or o == 0:
+        return None
+
+    is_tier1 = now.minute < 30
+    min_body = 0.80 if is_tier1 else 0.72
+
+    bh = _body_health(o, h_c, l_c, c)
+    if bh < min_body:
+        return None
+
+    gap_pct = _safe_float(snapshot.get("gap_pct"))
+    if abs(gap_pct) > 2.2:
+        return None
+
+    gap_dir = _gap_direction(snapshot)
+
+    slot_key = f"{now.hour:02d}{(now.minute // 5) * 5:02d}"
+    avg_slot_vol = float(vol_5m.get(slot_key, 0) or 0)
+    lot_size = int(_safe_float(snapshot.get("lot_size"), 0))
+    min_vol_mult = (2.3 if lot_size <= 500 else 2.0) if is_tier1 else 1.9
+    slot_rvol = 0.0
+    if avg_slot_vol > 0:
+        slot_rvol = vol / avg_slot_vol
+        if slot_rvol < min_vol_mult:
+            return None
+
+    pdh = _safe_float(snapshot.get("pdh"))
+    pdl = _safe_float(snapshot.get("pdl"))
+    r1  = _safe_float(snapshot.get("r1") or snapshot.get("pivot_r1"))
+    s1  = _safe_float(snapshot.get("s1") or snapshot.get("pivot_s1"))
+    atr14 = _safe_float(snapshot.get("atr14"), 1.0)
+
+    direction = None
+    if gap_dir in ("UP", "FLAT") and pdh > 0 and c > pdh:
+        direction = "LONG"
+    if gap_dir in ("DOWN", "FLAT") and pdl > 0 and c < pdl and direction is None:
+        direction = "SHORT"
+    if direction is None:
+        return None
+
+    # Stricter body/volume for large gap candles
+    if gap_pct > 1.6 and direction == "LONG":
+        if bh < 0.82 or (avg_slot_vol > 0 and slot_rvol < 2.6):
+            return None
+    if gap_pct < -1.6 and direction == "SHORT":
+        if bh < 0.82 or (avg_slot_vol > 0 and slot_rvol < 2.6):
+            return None
+
+    r1_cleared = (r1 > 0 and c > r1) if direction == "LONG" else (s1 > 0 and c < s1)
+
+    await redis.set(f"opening_drive_fired:{symbol}", 1, ex=86400)
+
+    sl    = (pdh - atr14 * 0.5) if direction == "LONG" else (pdl + atr14 * 0.5)
+    tier  = "TIER1" if is_tier1 else "TIER2"
+
+    logger.info("[signal] OPENING_DRIVE %s %s bh=%.2f slot_rvol=%.2f r1_cleared=%s",
+                tier, direction, bh, slot_rvol, r1_cleared)
+    return {
+        "type":        "OPENING_DRIVE",
+        "direction":   direction,
+        "tier":        tier,
+        "entry_price": round(pdh if direction == "LONG" else pdl, 2),
+        "stop_loss":   round(sl, 2),
+        "r1_cleared":  r1_cleared,
+        "body_health": round(bh, 3),
+        "detected_at": _now_ist_str(),
+    }
+
+
+async def _detect_range_breakout(
+    symbol: str,
+    snapshot: dict,
+    candles_5m: list,
+) -> Optional[dict]:
+    """
+    RANGE_BREAKOUT — two phases:
+      Phase 1 ORB:       9:30–11:30 AM  (orb_high / orb_low)
+      Phase 2 POSTLUNCH: 1:30–3:00 PM   (half_day_high / half_day_low)
+      Dead zone:         11:30–1:30      nothing fires
+    """
+    now = _now_ist()
+    h, m = now.hour, now.minute
+
+    phase = None
+    if (h == 9 and m >= 30) or h == 10 or (h == 11 and m < 30):
+        phase = "ORB"
+    elif (h == 13 and m >= 30) or h == 14 or (h == 15 and m == 0):
+        phase = "POSTLUNCH"
+    if phase is None:
+        return None
+
+    redis = await get_redis()
+    if await redis.exists(f"range_breakout_fired:{symbol}"):
+        return None
+
+    if not candles_5m:
+        return None
+
+    candle = candles_5m[-1]
+    o   = _safe_float(candle.get("open"))
+    h_c = _safe_float(candle.get("high"))
+    l_c = _safe_float(candle.get("low"))
+    c   = _safe_float(candle.get("close"))
+    if c == 0:
+        return None
+
+    bh = _body_health(o, h_c, l_c, c)
+    if bh < 0.70:
+        return None
+
+    cr = _cum_rvol(snapshot)
+    if cr > 0 and cr < 1.3:
+        return None
+
+    gap_dir = _gap_direction(snapshot)
+
+    if phase == "ORB":
+        range_high = _safe_float(snapshot.get("orb_high"))
+        range_low  = _safe_float(snapshot.get("orb_low"))
+        if range_high == 0 or range_low == 0:
+            return None
+        range_pct = (range_high - range_low) / max(range_low, 1) * 100
+        if not (0.3 <= range_pct <= 2.5):
+            return None
+    else:
+        range_high = _safe_float(snapshot.get("half_day_high"))
+        range_low  = _safe_float(snapshot.get("half_day_low"))
+        if range_high == 0 or range_low == 0:
+            return None
+
+    direction = None
+    if c > range_high and c > o and gap_dir != "DOWN":
+        direction = "LONG"
+    elif c < range_low and c < o and gap_dir != "UP":
+        direction = "SHORT"
+    if direction is None:
+        return None
+
+    await redis.set(f"range_breakout_fired:{symbol}", 1, ex=86400)
+
+    atr14 = _safe_float(snapshot.get("atr14"), 1.0)
+    sl    = (range_low - atr14 * 0.3) if direction == "LONG" else (range_high + atr14 * 0.3)
+
+    logger.info("[signal] RANGE_BREAKOUT %s %s range=%.2f–%.2f cum_rvol=%.2f bh=%.2f",
+                phase, direction, range_low, range_high, cr, bh)
+    return {
+        "type":        "RANGE_BREAKOUT",
+        "direction":   direction,
+        "phase":       phase,
+        "entry_price": round(range_high if direction == "LONG" else range_low, 2),
+        "stop_loss":   round(sl, 2),
+        "body_health": round(bh, 3),
+        "cum_rvol":    round(cr, 3),
+        "detected_at": _now_ist_str(),
+    }
+
+
+def _detect_hourly_breakout(
+    symbol: str,
+    snapshot: dict,
+    candles_5m: list,
+) -> Optional[dict]:
+    """
+    HOURLY_BREAKOUT — valid 10:15 AM to 3:00 PM.
+    LONG: close > 1h rolling high + RSI-14 on 5m rising over last 30 min.
+    SHORT: close < 1h rolling low + RSI-14 falling.
+    """
+    now = _now_ist()
+    h, m = now.hour, now.minute
+    after_start = (h == 10 and m >= 15) or (11 <= h <= 14) or (h == 15 and m == 0)
+    if not after_start:
+        return None
+
+    if not candles_5m or len(candles_5m) < 7:
+        return None
+
+    candle = candles_5m[-1]
+    o   = _safe_float(candle.get("open"))
+    h_c = _safe_float(candle.get("high"))
+    l_c = _safe_float(candle.get("low"))
+    c   = _safe_float(candle.get("close"))
+
+    bh = _body_health(o, h_c, l_c, c)
+    if bh < 0.70:
+        return None
+
+    cr = _cum_rvol(snapshot)
+    if cr > 0 and cr < 1.3:
+        return None
+
+    rolling_1h_high = _safe_float(snapshot.get("rolling_1h_high"))
+    rolling_1h_low  = _safe_float(snapshot.get("rolling_1h_low", 0))
+    if rolling_1h_high == 0:
+        return None
+
+    closes_5m = [_safe_float(x.get("close")) for x in candles_5m if _safe_float(x.get("close")) > 0]
+    if len(closes_5m) < 15:
+        return None
+
+    rsi_now     = _calc_rsi_14(closes_5m)
+    rsi_30m_ago = _calc_rsi_14(closes_5m[:-6]) if len(closes_5m) >= 20 else rsi_now
+
+    direction = None
+    if c > rolling_1h_high and rsi_now > rsi_30m_ago:
+        direction = "LONG"
+    elif rolling_1h_low > 0 and c < rolling_1h_low and rsi_now < rsi_30m_ago:
+        direction = "SHORT"
+    if direction is None:
+        return None
+
+    vwap  = _safe_float(snapshot.get("vwap"))
+    atr14 = _safe_float(snapshot.get("atr14"), 1.0)
+    sl    = (max(vwap, l_c) - atr14 * 0.2) if direction == "LONG" else (min(vwap, h_c) + atr14 * 0.2)
+
+    logger.info("[signal] HOURLY_BREAKOUT %s high=%.2f rsi_now=%.1f rsi_30m=%.1f cum_rvol=%.2f",
+                direction, rolling_1h_high, rsi_now, rsi_30m_ago, cr)
+    return {
+        "type":        "HOURLY_BREAKOUT",
+        "direction":   direction,
+        "entry_price": round(rolling_1h_high if direction == "LONG" else rolling_1h_low, 2),
+        "stop_loss":   round(sl, 2),
+        "body_health": round(bh, 3),
+        "cum_rvol":    round(cr, 3),
+        "rsi_now":     round(rsi_now, 1),
+        "detected_at": _now_ist_str(),
+    }
+
+
+def _detect_choppiness_breakout(
+    symbol: str,
+    snapshot: dict,
+    candles_5m: list,
+) -> Optional[dict]:
+    """
+    CHOPPINESS_BREAKOUT v2 — Range Contraction + Efficiency Ratio.
+    No classic Choppiness Index used.
+    Compression: ER < 0.35 + range contracting for 2–10 candles.
+    Breakout: ER > 0.45 on breakout candle + body ≥ 70% + cum_rvol ≥ 1.3x.
+    """
+    if not candles_5m or len(candles_5m) < 6:
+        return None
+
+    candle = candles_5m[-1]
+    o   = _safe_float(candle.get("open"))
+    h_c = _safe_float(candle.get("high"))
+    l_c = _safe_float(candle.get("low"))
+    c   = _safe_float(candle.get("close"))
+
+    bh = _body_health(o, h_c, l_c, c)
+    if bh < 0.70:
+        return None
+
+    cr = _cum_rvol(snapshot)
+    if cr > 0 and cr < 1.3:
+        return None
+
+    closes = [_safe_float(x.get("close")) for x in candles_5m]
+    highs  = [_safe_float(x.get("high"))  for x in candles_5m]
+    lows   = [_safe_float(x.get("low"))   for x in candles_5m]
+    ranges = [h - l for h, l in zip(highs, lows)]
+
+    er_now = _calc_efficiency_ratio(closes, period=12)
+    if er_now <= 0.45:
+        return None
+
+    prior = candles_5m[:-1]
+    if len(prior) < 2:
+        return None
+
+    compression_count = 0
+    for i in range(len(prior) - 1, -1, -1):
+        prior_closes = [_safe_float(x.get("close")) for x in candles_5m[:i + 1]]
+        if len(prior_closes) < 5:
+            break
+        er_prior = _calc_efficiency_ratio(prior_closes, period=min(12, len(prior_closes) - 1))
+        if er_prior < 0.35:
+            compression_count += 1
+        else:
+            break
+
+    if not (2 <= compression_count <= 10):
+        return None
+
+    comp_start = len(prior) - compression_count
+    comp_indices = list(range(comp_start, len(prior)))
+    before_indices = list(range(max(0, comp_start - 3), comp_start))
+
+    if not before_indices:
+        return None
+
+    avg_comp   = sum(ranges[i] for i in comp_indices)  / len(comp_indices)
+    avg_before = sum(ranges[i] for i in before_indices) / len(before_indices)
+    if avg_comp >= avg_before * 0.95:
+        return None
+
+    comp_high = max(highs[i] for i in comp_indices)
+    comp_low  = min(lows[i]  for i in comp_indices)
+
+    direction = None
+    if c > comp_high:
+        direction = "LONG"
+    elif c < comp_low:
+        direction = "SHORT"
+    if direction is None:
+        return None
+
+    atr14 = _safe_float(snapshot.get("atr14"), 1.0)
+    sl    = (comp_low - atr14 * 0.2) if direction == "LONG" else (comp_high + atr14 * 0.2)
+
+    logger.info("[signal] CHOPPINESS_BREAKOUT %s er=%.3f compressed=%d cum_rvol=%.2f",
+                direction, er_now, compression_count, cr)
+    return {
+        "type":             "CHOPPINESS_BREAKOUT",
+        "direction":        direction,
+        "entry_price":      round(comp_high if direction == "LONG" else comp_low, 2),
+        "stop_loss":        round(sl, 2),
+        "compression_bars": compression_count,
+        "er_breakout":      round(er_now, 3),
+        "body_health":      round(bh, 3),
+        "cum_rvol":         round(cr, 3),
+        "detected_at":      _now_ist_str(),
+    }
+
+
+def _detect_supertrend_flip(
+    symbol: str,
+    snapshot: dict,
+    prev_snapshot: dict,
+) -> Optional[dict]:
+    """
+    SUPERTREND_FLIP — direction change detected on 5m candle close.
+    ATR must be meaningful. RSI must not be extreme.
+    LTP must be on correct side of supertrend band.
+    """
+    curr_dir = normalize_value(snapshot.get("supertrend_dir", ""))
+    prev_dir = normalize_value(prev_snapshot.get("supertrend_dir", ""))
+
+    if not curr_dir or not prev_dir or curr_dir == prev_dir:
+        return None
+
+    direction = "LONG" if curr_dir == "BULL" else "SHORT"
+
+    ltp   = _safe_float(snapshot.get("ltp"))
+    band  = _safe_float(snapshot.get("supertrend_band"))
+    rsi14 = _safe_float(snapshot.get("rsi14"), 50.0)
+    atr14 = _safe_float(snapshot.get("atr14"), 1.0)
+
+    if ltp > 0 and (atr14 / ltp * 100) < 0.3:
+        return None
+    if direction == "LONG"  and rsi14 > 75:
+        return None
+    if direction == "SHORT" and rsi14 < 25:
+        return None
+    if direction == "LONG"  and band > 0 and ltp < band:
+        return None
+    if direction == "SHORT" and band > 0 and ltp > band:
+        return None
+
+    logger.info("[signal] SUPERTREND_FLIP %s ltp=%.2f band=%.2f rsi=%.1f",
+                direction, ltp, band, rsi14)
+    return {
+        "type":        "SUPERTREND_FLIP",
+        "direction":   direction,
+        "entry_price": round(ltp, 2),
+        "stop_loss":   round(band, 2),
+        "rsi14":       round(rsi14, 1),
+        "detected_at": _now_ist_str(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -474,105 +594,77 @@ async def _detect_volume_surge(symbol: str, snapshot: dict, timeframe: str = "1m
 async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[dict]:
     """
     Scan all signal detectors for *symbol* and return detected signals.
-
-    Parameters
-    ----------
-    symbol   : NSE underlying symbol
-    snapshot : Pre-loaded snapshot dict (optional).  Pass it in when the
-               caller already fetched the snapshot to avoid a redundant
-               Redis round-trip.
-
-    Returns
-    -------
-    list[dict] — each element is a signal dict with keys:
-        type, direction (if directional), entry_price, stop_loss, detected_at
-        Additional keys vary by signal type.
+    Volume Surge is no longer a signal — it is a dashboard panel only.
     """
     if snapshot is None:
         snapshot = await _load_snapshot(symbol)
-
     if not snapshot:
-        logger.warning("[signal_engines] No snapshot for %s — skipping scan", symbol)
         return []
 
     snapshot = normalize_snapshot(snapshot)
 
-    if symbol == DEBUG_SYMBOL:
-        logger.info({
-            "symbol": symbol,
-            "ltp": snapshot.get("ltp"),
-            "ema9": snapshot.get("ema9"),
-            "ema200": snapshot.get("ema200"),
-            "vwap": snapshot.get("vwap"),
-            "rsi": snapshot.get("rsi14"),
-            "chop": snapshot.get("choppiness_class"),
-        })
-
     if not is_valid_snapshot(symbol, snapshot):
         if symbol == DEBUG_SYMBOL:
-            logger.info(f"{symbol}: snapshot failed validation gate")
+            logger.info("%s: snapshot failed validation", symbol)
         return []
 
-    prev_snapshot = normalize_snapshot(await _load_prev_snapshot(symbol))
-    raw_candles_5m = await _load_candles_5m(symbol, n=15)
+    prev_snapshot  = normalize_snapshot(await _load_prev_snapshot(symbol))
+    candles_5m_raw = await _load_candles_5m(symbol, n=25)
     candles_5m = []
-    for c in raw_candles_5m:
+    for c in candles_5m_raw:
         if isinstance(c, list) and len(c) >= 6:
             candles_5m.append({
-                "timestamp": c[0],
-                "open": c[1],
-                "high": c[2],
-                "low": c[3],
-                "close": c[4],
-                "volume": c[5],
+                "open": c[1], "high": c[2], "low": c[3],
+                "close": c[4], "volume": c[5], "ts": c[0],
             })
         elif isinstance(c, dict):
             candles_5m.append(c)
+
     if not candles_5m:
         return []
 
+    # Fetch vol_profile:5m once for opening drive
+    redis = await get_redis()
+    vol_5m: dict = {}
+    try:
+        vp_raw = await redis.get(f"vol_profile:5m:{symbol}")
+        if vp_raw:
+            vol_5m = json.loads(vp_raw)
+    except Exception:
+        pass
+
     detected: list[dict] = []
 
-    # ── Directional signals ─────────────────────────────────────────────
+    # Async detectors
+    for coro in [
+        _detect_opening_drive(symbol, snapshot, candles_5m, vol_5m),
+        _detect_range_breakout(symbol, snapshot, candles_5m),
+    ]:
+        try:
+            sig = await coro
+            if sig:
+                sig["symbol"] = symbol
+                detected.append(sig)
+        except Exception as exc:
+            logger.warning("[signal_engines] async detector failed for %s: %s", symbol, exc)
+
+    # Sync detectors
     for detector, args in [
-        (_detect_opening_drive, (symbol, snapshot, candles_5m)),
-        (_detect_orb_breakout, (symbol, snapshot, candles_5m)),
-        (_detect_hourly_breakout, (symbol, snapshot, candles_5m)),
-        (_detect_choppiness_breakout, (symbol, snapshot, candles_5m)),
+        (_detect_hourly_breakout,    (symbol, snapshot, candles_5m)),
+        (_detect_choppiness_breakout,(symbol, snapshot, candles_5m)),
+        (_detect_supertrend_flip,    (symbol, snapshot, prev_snapshot)),
     ]:
         try:
             sig = detector(*args)
             if sig:
                 sig["symbol"] = symbol
                 detected.append(sig)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[signal_engines] Detector %s failed for %s: %s",
+        except Exception as exc:
+            logger.warning("[signal_engines] %s failed for %s: %s",
                            detector.__name__, symbol, exc)
 
-    # Supertrend flip needs prev snapshot
-    try:
-        sig = _detect_supertrend_flip(snapshot, prev_snapshot)
-        if sig:
-            sig["symbol"] = symbol
-            detected.append(sig)
-    except Exception as exc:
-        logger.warning("[signal_engines] supertrend_flip failed for %s: %s", symbol, exc)
-
-    # ── Volume surge (auxiliary, direction-neutral) ─────────────────────
-    try:
-        surge = await _detect_volume_surge(symbol, snapshot, timeframe="1m")
-        if surge:
-            surge["symbol"] = symbol
-            detected.append(surge)
-    except Exception as exc:
-        logger.warning("[signal_engines] volume_surge failed for %s: %s", symbol, exc)
-
-    if symbol == DEBUG_SYMBOL:
-        logger.info(f"{symbol}: {len(detected)} signals detected")
-
-    if detected:
-        types = [s["type"] for s in detected]
-        if symbol == "NIFTY":
-            logger.info("[signal_engines] %s — detected signals: %s", symbol, types)
+    if symbol == DEBUG_SYMBOL and detected:
+        logger.info("%s: %d signals — %s", symbol, len(detected),
+                    [s["type"] for s in detected])
 
     return detected
