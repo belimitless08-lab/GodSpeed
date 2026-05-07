@@ -369,10 +369,10 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
         grade  = signal.get("ici_grade", "IGNORE")
         action = "EXECUTE_MARKET" if grade == "EXECUTE" else ("WATCHLIST" if grade == "WATCHLIST" else "IGNORE")
         logger.info(
-            "[brain] %s %s → score=%.1f grade=%s action=%s",
+            "[brain] %s %s → score=%s grade=%s action=%s",
             symbol, signal["type"],
-            score_result.get("score", 0),
-            score_result.get("grade", "?"),
+            signal.get("ici_score", 0),
+            grade,
             action,
         )
 
@@ -410,7 +410,10 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
             payload = {
                 "symbol":       symbol,
                 "signal":       signal,
-                "score":        score_result,
+                "score": {
+                    "score": signal.get("ici_score", 0),
+                    "grade": grade,
+                },
                 "options":      options,
                 "badge":        badge,
                 "ai_alignment": ai_alignment,
