@@ -388,45 +388,51 @@ app.add_middleware(
 
 @app.get("/api/volume-leaders")
 async def get_volume_leaders():
-    """Top 10 stocks by cumulative RVOL right now. Powers Volume Surge panel."""
+    """Top 10 stocks by cumulative RVOL. Uses pipeline for efficiency."""
     try:
         redis = await get_redis()
         raw = await redis.get("universe:symbols")
         if not raw:
             return {"status": "ok", "leaders": [], "total_scanned": 0}
-        data = json.loads(raw) if isinstance(raw, bytes) else json.loads(raw)
+        data = json.loads(raw)
         if isinstance(data, list):
             symbols = data
         elif isinstance(data, dict):
             symbols = list(data.keys())
         else:
-            symbols = []
+            return {"status": "ok", "leaders": [], "total_scanned": 0}
+        # Batch all snapshot reads in one pipeline round-trip
+        async with redis.pipeline(transaction=False) as pipe:
+            for sym in symbols:
+                pipe.hmget(
+                    f"snapshot:{sym}",
+                    "cum_rvol", "ltp", "vwap", "change_pct"
+                )
+            results_raw = await pipe.execute()
         results = []
-        for sym in symbols:
+        for sym, vals in zip(symbols, results_raw):
             try:
-                cum_rvol = await redis.hget(f"snapshot:{sym}", "cum_rvol")
-                ltp      = await redis.hget(f"snapshot:{sym}", "ltp")
-                vwap     = await redis.hget(f"snapshot:{sym}", "vwap")
-                chg      = await redis.hget(f"snapshot:{sym}", "change_pct")
-                if not cum_rvol:
-                    continue
-                cr    = float(cum_rvol)
-                ltp_f = float(ltp or 0)
-                vwap_f= float(vwap or 0)
-                chg_f = float(chg or 0)
-                if cr < 0.1 or ltp_f == 0:
+                cum_rvol  = float(vals[0]) if vals[0] else 0.0
+                ltp_f     = float(vals[1]) if vals[1] else 0.0
+                vwap_f    = float(vals[2]) if vals[2] else 0.0
+                chg_f     = float(vals[3]) if vals[3] else 0.0
+                if cum_rvol < 0.1 or ltp_f == 0:
                     continue
                 results.append({
-                    "symbol":    sym,
-                    "cum_rvol":  round(cr, 2),
-                    "ltp":       round(ltp_f, 2),
+                    "symbol":     sym,
+                    "cum_rvol":   round(cum_rvol, 2),
+                    "ltp":        round(ltp_f, 2),
                     "change_pct": round(chg_f, 2),
-                    "direction": "BULL" if ltp_f >= vwap_f else "BEAR",
+                    "direction":  "BULL" if ltp_f >= vwap_f else "BEAR",
                 })
             except Exception:
                 continue
         results.sort(key=lambda x: x["cum_rvol"], reverse=True)
-        return {"status": "ok", "leaders": results[:10], "total_scanned": len(symbols)}
+        return {
+            "status":        "ok",
+            "leaders":       results[:10],
+            "total_scanned": len(symbols),
+        }
     except Exception as e:
         logger.error("[api] volume-leaders error: %s", e)
         return {"status": "error", "message": str(e), "leaders": []}
@@ -1006,50 +1012,28 @@ _INDEX_SYMBOLS = ["NIFTY", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
 @app.get("/api/indices", response_model=list[IndexData])
 async def get_indices():
     """Nifty50, Sensex, BankNifty, MidcpNifty with PCR."""
-    from execution.options_rest import fetch_underlying_ltp
     redis = await get_redis()
+
+    # Batch all reads in one pipeline
+    async with redis.pipeline(transaction=False) as pipe:
+        for sym in _INDEX_SYMBOLS:
+            pipe.hgetall(f"tick:{sym}")
+            pipe.hgetall(f"snapshot:{sym}")
+            pipe.get(f"options:pcr:{sym}")
+            pipe.get(f"options:pcr_prev:{sym}")
+        raw = await pipe.execute()
+
     result = []
-
-    for sym in _INDEX_SYMBOLS:
-        # LTP fallback chain:
-        #   1. Live tick (market hours, WebSocket streaming)
-        #   2. Snapshot (seeded morning — for stocks only; indices unseeded)
-        #   3. REST fallback (off-hours, or if WS feed dropped)
-        # fetch_underlying_ltp caches 30s, safe to call frequently.
-        tick = await redis.hgetall(f"tick:{sym}")
-        snap = await redis.hgetall(f"snapshot:{sym}")
-
+    for i, sym in enumerate(_INDEX_SYMBOLS):
+        tick, snap, pcr_raw, prev_pcr_raw = raw[i*4], raw[i*4+1], raw[i*4+2], raw[i*4+3]
         ltp = _sf(tick, "ltp") or _sf(snap, "ltp")
         if ltp <= 0:
-            try:
-                rest_ltp = await fetch_underlying_ltp(sym)
-                if rest_ltp and rest_ltp > 0:
-                    ltp = rest_ltp
-            except Exception:
-                pass
-
-        if ltp <= 0:
-            continue  # Still nothing — omit tile
-
+            continue
         prev_close = _sf(snap, "prev_close")
-        if prev_close > 0:
-            change_pct = ((ltp - prev_close) / prev_close) * 100
-        else:
-            change_pct = 0.0
-
-        pcr_raw = await redis.get(f"options:pcr:{sym}")
-        pcr     = _safe_float(pcr_raw)
-
-        prev_pcr_raw = await redis.get(f"options:pcr_prev:{sym}")
-        prev_pcr     = _safe_float(prev_pcr_raw)
-
-        if pcr > prev_pcr + 0.05:
-            pcr_dir = "UP"
-        elif pcr < prev_pcr - 0.05:
-            pcr_dir = "DOWN"
-        else:
-            pcr_dir = "FLAT"
-
+        change_pct = ((ltp - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
+        pcr = _safe_float(pcr_raw)
+        prev_pcr = _safe_float(prev_pcr_raw)
+        pcr_dir = "UP" if pcr > prev_pcr + 0.05 else "DOWN" if pcr < prev_pcr - 0.05 else "FLAT"
         result.append(IndexData(
             symbol=sym,
             name=_INDEX_DISPLAY_NAMES.get(sym, sym),
@@ -1059,7 +1043,6 @@ async def get_indices():
             pcr=round(pcr, 3),
             pcr_direction=pcr_dir,
         ))
-
     return result
 
 
@@ -1094,13 +1077,23 @@ async def get_world_indices():
 async def get_active_signals():
     """All active signals across the universe, sorted by ICI score descending."""
     redis = await get_redis()
-    keys  = await redis.keys("signal:active:*")
+
+    keys = []
+    async for k in redis.scan_iter("signal:active:*", count=100):
+        keys.append(k)
+
+    pipe = redis.pipeline(transaction=False)
+    for k in keys:
+        pipe.get(k)
+    results = await pipe.execute()
 
     signals = []
-    for k in keys:
+    for raw_json in results:
+        if not raw_json:
+            continue
         try:
-            parsed = await _read_signal_payload(redis, k)
-            if parsed:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
                 signals.append(_parse_signal(parsed))
         except Exception:
             continue
