@@ -52,7 +52,7 @@ from execution.order_manager import (
 )
 
 from strategy_brain.macro_gatekeeper  import check_macro_gates
-from strategy_brain.conviction_scorer  import fetch_scoring_inputs, compute_ici_score
+from strategy_brain.conviction_scorer  import score_signal
 from strategy_brain.signal_engines     import scan_all_signals
 from strategy_brain.retest_watchlist   import (
     add_to_retest, check_retest_triggers, get_watchlist_snapshot
@@ -360,28 +360,14 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
 
         # ── ICI Score ──────────────────────────────────────────────────
         try:
-            score_data = await fetch_scoring_inputs(
-                symbol=symbol,
-                signal_direction=signal.get("direction", "LONG"),
-                vix=vix,
-                market_time=mtime,
-            )
-            score_result = await asyncio.to_thread(
-                compute_ici_score,
-                score_data,
-                symbol,
-                signal.get("direction", "LONG"),
-                signal["type"],
-                active_signal_types,
-                vix,
-                mtime,
-            )
+            snapshot_for_score = await _load_snapshot(symbol)
+            signal = await score_signal(signal, snapshot_for_score)
         except Exception as exc:
-            logger.error("[brain] ICI scorer error for %s: %s", symbol, exc, exc_info=True)
+            logger.error("[brain] scorer error for %s: %s", symbol, exc, exc_info=True)
             await redis.hdel(_PENDING_SCORE_KEY, field_key)
             continue
-
-        action = score_result.get("action", "IGNORE")
+        grade  = signal.get("ici_grade", "IGNORE")
+        action = "EXECUTE_MARKET" if grade == "EXECUTE" else ("WATCHLIST" if grade == "WATCHLIST" else "IGNORE")
         logger.info(
             "[brain] %s %s → score=%.1f grade=%s action=%s",
             symbol, signal["type"],
