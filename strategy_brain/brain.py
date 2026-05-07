@@ -343,9 +343,7 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
         async with _SEM:
             await asyncio.sleep(0)
             raw_item = await redis.hget(_PENDING_SCORE_KEY, field_key)
-            if not raw_item:
-                continue
-
+            
         try:
             item = json.loads(raw_item)
         except (json.JSONDecodeError, TypeError):
