@@ -22,7 +22,7 @@ async def get_redis() -> redis.Redis:
     global redis_client
     if redis_client is None:
         url = os.environ.get("REDIS_URL", "redis://localhost:6379")
-        max_conns = int(os.environ.get("REDIS_MAX_CONNECTIONS", "20"))
+        max_conns = int(os.environ.get("REDIS_MAX_CONNECTIONS", "5"))
         redis_client = redis.from_url(
             url,
             encoding="utf-8",
