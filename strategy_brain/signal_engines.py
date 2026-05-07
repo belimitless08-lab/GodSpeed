@@ -23,6 +23,7 @@ Usage
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -553,7 +554,7 @@ async def _detect_choppiness_breakout(
     }
 
 
-def _detect_supertrend_flip(
+async def _detect_supertrend_flip(
     symbol: str,
     snapshot: dict,
     prev_snapshot: dict,
@@ -586,6 +587,17 @@ def _detect_supertrend_flip(
         return None
     if direction == "SHORT" and band > 0 and ltp > band:
         return None
+
+    # Fire max once per direction per day
+    try:
+        from core.redis_client import get_redis as _gr
+        _r = await _gr() if asyncio.iscoroutinefunction(_gr) else _gr()
+        fire_key = f"st_flip_fired:{symbol}:{direction}"
+        if await _r.exists(fire_key):
+            return None
+        await _r.set(fire_key, 1, ex=86400)
+    except Exception:
+        pass
 
     logger.info("[signal] SUPERTREND_FLIP %s ltp=%.2f band=%.2f rsi=%.1f",
                 direction, ltp, band, rsi14)
@@ -664,7 +676,7 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
     for coro_or_fn, args, is_async in [
         (_detect_hourly_breakout,    (symbol, snapshot, candles_5m), True),
         (_detect_choppiness_breakout,(symbol, snapshot, candles_5m), True),
-        (_detect_supertrend_flip,    (symbol, snapshot, prev_snapshot), False),
+        (_detect_supertrend_flip,    (symbol, snapshot, prev_snapshot), True),
     ]:
         try:
             sig = await coro_or_fn(*args) if is_async else coro_or_fn(*args)
