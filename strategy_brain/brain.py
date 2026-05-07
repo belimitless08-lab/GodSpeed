@@ -342,9 +342,9 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
     for field_key in symbol_fields:
         async with _SEM:
             await asyncio.sleep(0)
-        raw_item = await redis.hget(_PENDING_SCORE_KEY, field_key)
-        if not raw_item:
-            continue
+            raw_item = await redis.hget(_PENDING_SCORE_KEY, field_key)
+            if not raw_item:
+                continue
 
         try:
             item = json.loads(raw_item)
@@ -444,7 +444,7 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
                 logger.info(
                     "[brain] ★ EXECUTION PUBLISHED — %s %s grade=%s action=%s",
                     symbol, signal["type"],
-                    score_result.get("grade"),
+                    grade,
                     action,
                 )
             except Exception as exc:
