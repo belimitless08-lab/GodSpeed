@@ -912,7 +912,20 @@
     <!-- Cards rendered by JS -->
   </div>
 
-  <!-- Volume Leaders panel -->
+  <div style="margin-top:10px;">
+    <div class="card" id="volume-leaders-card">
+      <div class="card-header">
+        <span class="card-title">🔥 Volume Leaders</span>
+        <span class="card-count" id="vl-count">0</span>
+      </div>
+      <div class="signal-card-body" id="volume-leaders-list">
+        <div class="empty-state">
+          <div class="empty-icon">📊</div>
+          Updates every 5 min during market hours
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 
@@ -1798,18 +1811,7 @@ function renderSignalCards(data) {
       </div>
     </div>`;
   }).join('');
-  grid.innerHTML += `<div class="card" id="volume-leaders-card">
-    <div class="card-header">
-      <span class="card-title">🔥 Volume Leaders</span>
-      <span class="card-count" id="vl-count">0</span>
-    </div>
-    <div class="signal-card-body" id="volume-leaders-list">
-      <div class="empty-state">
-        <div class="empty-icon">📊</div>
-        Updates every 5 min during market hours
-      </div>
-    </div>
-  </div>`;
+
 }
 
 
@@ -1837,6 +1839,8 @@ function normalizeRealtimeSignal(payload) {
     symbol:           payload.symbol,
     signal_type:      sig.type || payload.signal_type || payload.type || 'UNKNOWN',
     direction:        sig.direction || payload.direction || 'LONG',
+    phase:            sig.phase  || payload.phase  || '',
+    tier:             sig.tier   || payload.tier   || '',
     ici_score:        score.score   ?? payload.ici_score   ?? null,
     ici_grade:        score.grade   ?? payload.ici_grade   ?? '',
     choppiness_class: sig.choppiness_class || payload.choppiness_class || 'NEUTRAL',
@@ -3723,14 +3727,14 @@ async function fetchVolumeLeaders() {
         el.innerHTML = data.leaders.length === 0
           ? '<div class="empty-state"><div class="empty-icon">📊</div>No data yet — updates during market hours</div>'
           : data.leaders.map((s, i) => `
-            <div style="display:grid;grid-template-columns:24px 90px 60px 1fr 70px;gap:6px;align-items:center;padding:6px 12px;border-bottom:1px solid rgba(51,65,85,0.35);">
-              <span style="font-size:10px;color:#475569;">#${i+1}</span>
-              <span style="font-weight:700;font-size:12px;color:#38bdf8;cursor:pointer;"
-                onclick="window.open('stock.html?symbol=${s.symbol}','_blank')">${s.symbol}</span>
-              <span style="font-size:11px;font-weight:700;color:${s.direction==='BULL'?'#22c55e':'#ef4444'};">${s.cum_rvol}x</span>
-              <span style="font-size:11px;color:#f1f5f9;">₹${s.ltp}</span>
-              <span style="font-size:11px;font-weight:700;color:${s.change_pct>=0?'#22c55e':'#ef4444'};">
-                ${s.change_pct>=0?'+':''}${s.change_pct}%
+            <div class="leader-row ${s.direction === 'BULL' ? 'bull' : 'bear'}">
+              <span class="rank">#${i+1}</span>
+              <span class="sym" onclick="window.open('stock.html?symbol=${s.symbol}','_blank')"
+                style="cursor:pointer;">${s.symbol}</span>
+              <span class="rvol" style="color:${s.direction==='BULL'?'#22c55e':'#ef4444'};">${s.cum_rvol}x</span>
+              <span class="ltp">₹${parseFloat(s.ltp).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+              <span class="chg ${(s.change_pct||0)>=0?'pos':'neg'}">
+                ${(s.change_pct||0)>=0?'+':''}${parseFloat(s.change_pct||0).toFixed(2)}%
               </span>
             </div>`).join('');
     } catch(e) {
