@@ -913,10 +913,20 @@
   </div>
 
   <!-- Volume Leaders panel -->
-  <div class="section-label">Volume Leaders</div>
-  <div id="volume-leaders-panel" class="panel">
-    <div class="panel-header">🔥 Volume Leaders</div>
-    <div id="volume-leaders-list"></div>
+</div>
+
+<div style="padding: 0 12px 16px;">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">🔥 Volume Leaders</span>
+      <span class="card-count" id="vl-count">0</span>
+    </div>
+    <div id="volume-leaders-list" style="padding: 4px 0;">
+      <div class="empty-state">
+        <div class="empty-icon">📊</div>
+        Updates every 5 min during market hours
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1682,11 +1692,10 @@ function renderAIStocks(listId, countId, stocks) {
 ══════════════════════════════════════════ */
 const SIGNAL_TYPES = [
   {key:'opening_drive',    label:'Opening Drive'},
-  {key:'orb_breakout',     label:'ORB Breakout'},
+  {key:'range_breakout',   label:'Range Breakout'},
   {key:'hourly_breakout',  label:'Hourly Breakout'},
   {key:'choppiness_break', label:'Choppiness Break'},
   {key:'supertrend_flip',  label:'Supertrend Flip'},
-  {key:'volume_surge',     label:'Volume Surge'},
 ];
 
 let signalData = {};
@@ -1727,7 +1736,7 @@ function getSignalLabel(sig) {
 }
 
 function renderSignalRow(sig) {
-  if (sig.ici_score != null && sig.ici_score < 50) return '';
+  if (sig.ici_score != null && sig.ici_score < 48) return '';
 
   const dirColor  = sig.direction === 'LONG' ? '#22c55e' : '#ef4444';
   const dirArrow  = sig.direction === 'LONG' ? '▲' : '▼';
@@ -1738,9 +1747,8 @@ function renderSignalRow(sig) {
   const tradColor = { GREEN: '#22c55e', AMBER: '#f59e0b', RED: '#ef4444', NONE: '#1e2d45' };
 
   let gradeColor = '#94a3b8';
-  if (sig.ici_grade === 'GOD') gradeColor = '#f59e0b';
-  else if (sig.ici_grade === 'A') gradeColor = '#22c55e';
-  else if (sig.ici_grade === 'B') gradeColor = '#38bdf8';
+  if (sig.ici_grade === 'EXECUTE')   gradeColor = '#22c55e';
+  else if (sig.ici_grade === 'WATCHLIST') gradeColor = '#f59e0b';
 
   const displayLTP = sig.ltp
     ? `₹${parseFloat(sig.ltp).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`
@@ -1763,7 +1771,7 @@ function renderSignalRow(sig) {
       </div>
     </div>
     <div class="sig-t2">
-      ${sig.ici_score != null ? `<span class="sig-badge" style="color:${gradeColor};border-color:${gradeColor};">${sig.ici_grade === 'GOD' ? '★ GOD' : sig.ici_grade} ${Math.round(sig.ici_score)}</span>` : ''}
+      ${sig.ici_score != null ? `<span class="sig-badge" style="color:${gradeColor};border-color:${gradeColor};">${sig.ici_grade === 'EXECUTE' ? '✅ EXEC' : sig.ici_grade === 'WATCHLIST' ? '👁 WATCH' : sig.ici_grade} ${Math.round(sig.ici_score)}</span>` : ''}
       <span class="sig-badge" style="color:${dirColor};border-color:${dirColor};">${dirArrow} ${sig.direction}</span>
       ${sig.sector && sig.sector !== 'UNKNOWN' && sig.sector !== 'OTHER' ? `<span class="sig-badge" style="color:#64748b;border-color:#334155;">${sig.sector}</span>` : ''}
       <span class="sig-type-txt">${cleanType}</span>
@@ -1817,17 +1825,14 @@ function normalizeRealtimeSignal(payload) {
   ).toUpperCase();
 
   const TYPE_MAP = {
-    'OPENING_DRIVE':                   'opening_drive',
-    'ORB_BREAKOUT':                    'orb_breakout',
-    'HOURLY_BREAKOUT':                 'hourly_breakout',
-    'CHOPPINESS_BREAKOUT_CONFIRMED':   'choppiness_break',
-    'CHOPPINESS_BREAKOUT_UNCONFIRMED': 'choppiness_break',
-    'SUPERTREND_FLIP':                 'supertrend_flip',
-    'VOLUME_SURGE_STRONG':             'volume_surge',
-    'VOLUME_SURGE_MODERATE':           'volume_surge',
+    'OPENING_DRIVE':       'opening_drive',
+    'RANGE_BREAKOUT':      'range_breakout',
+    'HOURLY_BREAKOUT':     'hourly_breakout',
+    'CHOPPINESS_BREAKOUT': 'choppiness_break',
+    'SUPERTREND_FLIP':     'supertrend_flip',
   };
 
-  const groupedType = TYPE_MAP[typeRaw] || 'volume_surge';
+  const groupedType = TYPE_MAP[typeRaw] || 'supertrend_flip';
 
   return {
     symbol:           payload.symbol,
@@ -1914,14 +1919,11 @@ async function fetchSignals() {
   if (data && Array.isArray(data)) {
     // API returns a flat list; group by signal_type for renderSignalCards
     const TYPE_MAP = {
-      'OPENING_DRIVE':                   'opening_drive',
-      'ORB_BREAKOUT':                    'orb_breakout',
-      'HOURLY_BREAKOUT':                 'hourly_breakout',
-      'CHOPPINESS_BREAKOUT_CONFIRMED':   'choppiness_break',
-      'CHOPPINESS_BREAKOUT_UNCONFIRMED': 'choppiness_break',
-      'SUPERTREND_FLIP':                 'supertrend_flip',
-      'VOLUME_SURGE_STRONG':             'volume_surge',
-      'VOLUME_SURGE_MODERATE':           'volume_surge',
+      'OPENING_DRIVE':       'opening_drive',
+      'RANGE_BREAKOUT':      'range_breakout',
+      'HOURLY_BREAKOUT':     'hourly_breakout',
+      'CHOPPINESS_BREAKOUT': 'choppiness_break',
+      'SUPERTREND_FLIP':     'supertrend_flip',
     };
     const grouped = {};
     const iciMap  = {};
@@ -3718,17 +3720,20 @@ async function fetchVolumeLeaders() {
         if (data.status !== 'ok') return;
         const el = document.getElementById('volume-leaders-list');
         if (!el) return;
-        el.innerHTML = data.leaders.map((s, i) => `
-            <div class="leader-row ${s.direction === 'BULL' ? 'bull' : 'bear'}">
-                <span class="rank">#${i+1}</span>
-                <span class="sym">${s.symbol}</span>
-                <span class="rvol">${s.cum_rvol}x</span>
-                <span class="ltp">${s.ltp}</span>
-                <span class="chg ${s.change_pct >= 0 ? 'pos' : 'neg'}">
-                    ${s.change_pct >= 0 ? '+' : ''}${s.change_pct}%
-                </span>
-            </div>
-        `).join('');
+        document.getElementById('vl-count').textContent = data.leaders.length;
+        el.innerHTML = data.leaders.length === 0
+          ? '<div class="empty-state"><div class="empty-icon">📊</div>No data yet — updates during market hours</div>'
+          : data.leaders.map((s, i) => `
+            <div style="display:grid;grid-template-columns:24px 90px 60px 1fr 70px;gap:6px;align-items:center;padding:6px 12px;border-bottom:1px solid rgba(51,65,85,0.35);">
+              <span style="font-size:10px;color:#475569;">#${i+1}</span>
+              <span style="font-weight:700;font-size:12px;color:#38bdf8;cursor:pointer;"
+                onclick="window.open('stock.html?symbol=${s.symbol}','_blank')">${s.symbol}</span>
+              <span style="font-size:11px;font-weight:700;color:${s.direction==='BULL'?'#22c55e':'#ef4444'};">${s.cum_rvol}x</span>
+              <span style="font-size:11px;color:#f1f5f9;">₹${s.ltp}</span>
+              <span style="font-size:11px;font-weight:700;color:${s.change_pct>=0?'#22c55e':'#ef4444'};">
+                ${s.change_pct>=0?'+':''}${s.change_pct}%
+              </span>
+            </div>`).join('');
     } catch(e) {
         console.warn('Volume leaders fetch failed:', e);
     }
