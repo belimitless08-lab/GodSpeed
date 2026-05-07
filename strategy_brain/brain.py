@@ -108,6 +108,7 @@ _PENDING_SCORE_KEY = "brain:pending_score"
 # 213 symbols all close at the same second — without this, they stampede Redis.
 # 30 concurrent = ~30 Redis connections in flight at once, well within pool.
 _SCAN_SEMAPHORE = asyncio.Semaphore(30)
+_SEM = asyncio.Semaphore(8)  # max 8 symbols processed concurrently
 background_tasks: set[asyncio.Task] = set()
 _execution_engine_started = False
 
@@ -271,7 +272,8 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
     active_signal_types = [s["type"] for s in all_signals]
 
     for signal in directional:
-        await asyncio.sleep(0)
+        async with _SEM:
+            await asyncio.sleep(0)
         direction = signal.get("direction", "LONG")
 
         try:
@@ -338,7 +340,8 @@ async def on_5m_candle(symbol: str, candle: dict) -> None:
     symbol_fields = [f for f in all_fields if f.startswith(f"{symbol}:")]
 
     for field_key in symbol_fields:
-        await asyncio.sleep(0)
+        async with _SEM:
+            await asyncio.sleep(0)
         raw_item = await redis.hget(_PENDING_SCORE_KEY, field_key)
         if not raw_item:
             continue
