@@ -2601,3 +2601,29 @@ async def snapshot_scan():
         "supertrend_flip_watch": len(results["supertrend_flip_candidates"]),
     }
     return results
+
+
+@app.get("/api/test-signal")
+async def test_signal():
+    redis = await get_redis()
+    payload = json.dumps({
+        "symbol": "RELIANCE",
+        "signal": {
+            "type": "RANGE_BREAKOUT",
+            "direction": "LONG",
+            "phase": "ORB",
+            "entry_price": 1440.00,
+            "stop_loss": 1420.00
+        },
+        "score": {"score": 68, "grade": "EXECUTE"},
+        "ltp": 1442.50,
+        "change_pct": 0.72,
+        "rsi14": 56.2,
+        "supertrend_dir": "BULL",
+        "choppiness_class": "TRENDING",
+        "sector": "OIL_GAS",
+        "atr14": 12.5,
+        "published_at": "2026-05-07T17:45:00+05:30"
+    })
+    await redis.publish("trade_execution", payload)
+    return {"status": "published"}
