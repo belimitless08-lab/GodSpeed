@@ -915,20 +915,7 @@
   <!-- Volume Leaders panel -->
 </div>
 
-<div style="padding: 0 12px 16px;">
-  <div class="card">
-    <div class="card-header">
-      <span class="card-title">🔥 Volume Leaders</span>
-      <span class="card-count" id="vl-count">0</span>
-    </div>
-    <div id="volume-leaders-list" style="padding: 4px 0;">
-      <div class="empty-state">
-        <div class="empty-icon">📊</div>
-        Updates every 5 min during market hours
-      </div>
-    </div>
-  </div>
-</div>
+
 
 
 <!-- ══════════════════════════════════════════
@@ -1811,6 +1798,18 @@ function renderSignalCards(data) {
       </div>
     </div>`;
   }).join('');
+  grid.innerHTML += `<div class="card" id="volume-leaders-card">
+    <div class="card-header">
+      <span class="card-title">🔥 Volume Leaders</span>
+      <span class="card-count" id="vl-count">0</span>
+    </div>
+    <div class="signal-card-body" id="volume-leaders-list">
+      <div class="empty-state">
+        <div class="empty-icon">📊</div>
+        Updates every 5 min during market hours
+      </div>
+    </div>
+  </div>`;
 }
 
 
