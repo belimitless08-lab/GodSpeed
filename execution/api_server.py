@@ -38,6 +38,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import os as _os
+
 from core.config import cfg, validate
 from core.redis_client import get_redis, close, ping as redis_ping
 from core.universe_builder import build_universe, get_symbols, get_lot_sizes
@@ -55,6 +57,17 @@ from execution.order_manager import (
     cancel_pending_order,
     update_trade_levels,
 )
+
+async def _get_pubsub_redis():
+    """Dedicated Redis client for pubsub — never shares pool with HTTP requests."""
+    url = _os.environ.get("REDIS_URL", "redis://localhost:6379")
+    return redis.asyncio.from_url(
+        url,
+        encoding="utf-8",
+        decode_responses=True,
+        max_connections=3,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1656,7 +1669,7 @@ async def debug_run_seeder(force: bool = False):
 async def broadcast_ticks() -> None:
     while True:
         try:
-            redis = await get_redis()
+            redis = await _get_pubsub_redis()
             pubsub = redis.pubsub()
             await pubsub.subscribe("ticks", "options:ticks")
             async for message in pubsub.listen():
@@ -1694,7 +1707,7 @@ async def broadcast_signals() -> None:
     while True:
         pubsub = None
         try:
-            redis = await get_redis()
+            redis = await _get_pubsub_redis()
             pubsub = redis.pubsub()
 
             print("⏳ [API] Subscribing...")
@@ -1761,7 +1774,7 @@ async def broadcast_order_fills() -> None:
     """
     while True:
         try:
-            redis  = await get_redis()
+            redis  = await _get_pubsub_redis()
             pubsub = redis.pubsub()
             await pubsub.subscribe("order:filled")
             logger.info("[api_server] broadcast_order_fills subscribed to order:filled.")
