@@ -485,7 +485,9 @@ def _compute_vol_profiles(
                 slot_m = (dt.minute // 5) * 5
                 slot_key = f"{dt.hour:02d}{slot_m:02d}"
                 if slot_key in day_slot_vol:
-                    day_slot_vol[slot_key] += float(candles[idx][5])
+                    volume_shares = float(candles[idx][5])
+                    close_price   = float(candles[idx][4])
+                    day_slot_vol[slot_key] += volume_shares * close_price
             except Exception:
                 continue
 
@@ -506,6 +508,25 @@ def _compute_vol_profiles(
         vol_cum[slot] = round(float(np.mean(cv)) if cv else 0.0, 2)
 
     return vol_5m, vol_cum
+
+
+def _to_5m_candles(candles_1m: list) -> list:
+    """Bucket 1m OHLCV into 5m OHLCV candles."""
+    result = []
+    bucket = []
+    for c in candles_1m:
+        bucket.append(c)
+        if len(bucket) == 5:
+            result.append([
+                bucket[0][0],                    # ts = open of first 1m
+                bucket[0][1],                    # open
+                max(x[2] for x in bucket),       # high
+                min(x[3] for x in bucket),       # low
+                bucket[-1][4],                   # close = last 1m close
+                sum(x[5] for x in bucket),       # volume sum
+            ])
+            bucket = []
+    return result
 
 
 def compute_pivots_classic(prev_high: float, prev_low: float, prev_close: float) -> dict:
@@ -892,9 +913,41 @@ async def _seed_equity_symbol(
                 )
         # Store snapshot as Redis HASH (canonical runtime format).
         # This avoids STRING/HASH type flips and WRONGTYPE races at startup.
+        raw_candles_list = [[c[0], c[1], c[2], c[3], c[4], c[5]] for c in candles]
+        snapshot_hash = _snapshot_to_hash_mapping(snapshot)
+
+        # Convert to 5m candles for ATR and EMA9 (signals fire on 5m)
+        candles_5m_list = _to_5m_candles(raw_candles_list)
+        if len(candles_5m_list) >= 15:
+            highs_5m  = np.array([c[2] for c in candles_5m_list])
+            lows_5m   = np.array([c[3] for c in candles_5m_list])
+            closes_5m = np.array([c[4] for c in candles_5m_list])
+            # ATR14 on 5m
+            atr_vals = np.zeros(len(closes_5m))
+            for i in range(1, len(closes_5m)):
+                tr = max(
+                    highs_5m[i] - lows_5m[i],
+                    abs(highs_5m[i] - closes_5m[i-1]),
+                    abs(lows_5m[i] - closes_5m[i-1]),
+                )
+                atr_vals[i] = (atr_vals[i-1] * 13 + tr) / 14 if atr_vals[i-1] > 0 else tr
+            atr14 = round(float(atr_vals[-1]), 6)
+            # EMA9 on 5m
+            ema9_5m = float(closes_5m[0])
+            for price in closes_5m[1:]:
+                ema9_5m = (float(price) - ema9_5m) * (2 / 10) + ema9_5m
+            ema9_5m = round(ema9_5m, 4)
+        else:
+            # fallback to existing values if not enough 5m candles
+            ema9_5m = ema9  # keep existing seeded ema9
+        # Write both to snapshot — ema9_5m for gatekeeper extension check
+        # atr14 is now 5m ATR, ema9 in snapshot will be updated to 5m value
+        snapshot_hash["atr14"]   = str(atr14)
+        snapshot_hash["ema9_5m"] = str(ema9_5m)
+
         await redis.hset(
             f"snapshot:{symbol}",
-            mapping=_snapshot_to_hash_mapping(snapshot),
+            mapping=snapshot_hash,
         )
         # --- NEW: Write snapshot_prev for SUPERTREND_FLIP to work at 9:15 AM ---
         await redis.set(
@@ -907,7 +960,6 @@ async def _seed_equity_symbol(
         )
 
         # --- NEW: Compute and write volume profiles ---
-        raw_candles_list = [[c[0], c[1], c[2], c[3], c[4], c[5]] for c in candles]
         vol_5m, vol_cum = _compute_vol_profiles(
             candles=raw_candles_list,
             timestamps=timestamps,
