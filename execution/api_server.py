@@ -378,8 +378,16 @@ async def get_volume_leaders():
     """Top 10 stocks by cumulative RVOL right now. Powers Volume Surge panel."""
     try:
         redis = await get_redis()
-        symbols_raw = await redis.smembers("universe:symbols")
-        symbols = [s.decode() if isinstance(s, bytes) else s for s in symbols_raw]
+        raw = await redis.get("universe:symbols")
+        if not raw:
+            return {"status": "ok", "leaders": [], "total_scanned": 0}
+        data = json.loads(raw) if isinstance(raw, bytes) else json.loads(raw)
+        if isinstance(data, list):
+            symbols = data
+        elif isinstance(data, dict):
+            symbols = list(data.keys())
+        else:
+            symbols = []
         results = []
         for sym in symbols:
             try:
