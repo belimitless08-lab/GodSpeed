@@ -580,10 +580,14 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             cum_rvol = 0.0
         else:
             current_vol = closed["volume"]
-            ist_minute  = closed.get("minute", "")  # "HH:MM" string
             # --- Per-candle RVOL via vol_profile:5m lookup ---
             try:
-                slot_key = ist_minute.replace(":", "")  # "0915", "0920" etc
+                from datetime import datetime, timezone, timedelta
+                _IST_CB = timezone(timedelta(hours=5, minutes=30))
+                _ts = closed.get("ts") or closed.get("timestamp") or closed.get("time", "")
+                _dt = datetime.fromisoformat(str(_ts)).astimezone(_IST_CB)
+                _slot_m = (_dt.minute // 5) * 5
+                slot_key = f"{_dt.hour:02d}{_slot_m:02d}"
                 vp_raw   = await redis.get(f"vol_profile:5m:{symbol}")
                 if vp_raw:
                     vp = json.loads(vp_raw)
@@ -595,7 +599,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 rvol = 0.0
             # --- Cumulative RVOL ---
             try:
-                is_first = (closed.get("minute", "") == "09:15")
+                is_first = (_dt.hour == 9 and _dt.minute < 20) if '_dt' in dir() else False
                 if is_first:
                     indicators.setdefault(symbol, {})["cum_volume"] = 0.0
                 prev_cum_vol = ind.get("cum_volume", 0.0)
