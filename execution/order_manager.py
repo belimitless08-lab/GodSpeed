@@ -1478,9 +1478,9 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
     async with redis.pipeline(transaction=True) as pipe:
         pipe.set(f"paper:trade:{trade['id']}", json.dumps(trade))
         pipe.sadd("paper:trades:open", trade["id"])
-        pipe.lpush(_TRADE_HISTORY_KEY, json.dumps(trade))
-        pipe.ltrim(_TRADE_HISTORY_KEY, 0, 200)
         await pipe.execute()
+    # History written on CLOSE only — not on open
+    # This prevents duplicate records in trades:history
     if instrument in ("CE", "PE") and trade.get("option_token") and trade.get("atm_strike"):
         try:
             await redis.publish("options:subscribe", json.dumps({
@@ -1673,8 +1673,16 @@ async def run_execution_listener() -> None:
                     continue
 
                 try:
-                    result = await place_paper_order(payload)
-                    logger.debug("[order_manager] Execution result: %s", result)
+                    # AUTO-EXECUTION DISABLED — signals display on dashboard only
+                    # Manual order required via + ORDER button
+                    logger.info(
+                        "[order_manager] Signal received (auto-execution DISABLED)"
+                        " — %s %s score=%s grade=%s",
+                        payload.get("symbol", ""),
+                        payload.get("direction", ""),
+                        payload.get("ici_score", ""),
+                        payload.get("ici_grade", ""),
+                    )
                 except Exception as exc:
                     logger.error("[order_manager] Unhandled error in place_paper_order: %s", exc, exc_info=True)
         except Exception as e:
