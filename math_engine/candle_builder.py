@@ -425,6 +425,29 @@ async def _maybe_close_tf_candles(symbol: str, new_minute: str, redis) -> None:
             pipe.publish(ch, pub_payload)
             await pipe.execute()
 
+        if tf == "5m":
+            try:
+                ind_5m       = indicators.get(symbol, {})
+                close_5m     = sym_tf["close"]
+                prev_c_5m    = ind_5m.get("last_close_5m", close_5m)
+                prev_gain_5m = ind_5m.get("rsi5m_avg_gain", 0.0)
+                prev_loss_5m = ind_5m.get("rsi5m_avg_loss", 0.0)
+                rsi14_5m, new_gain_5m, new_loss_5m = update_rsi(
+                    current_close  = close_5m,
+                    prev_close     = prev_c_5m,
+                    prev_avg_gain  = prev_gain_5m,
+                    prev_avg_loss  = prev_loss_5m,
+                )
+                indicators.setdefault(symbol, {}).update({
+                    "last_close_5m":  close_5m,
+                    "rsi5m_avg_gain": new_gain_5m,
+                    "rsi5m_avg_loss": new_loss_5m,
+                    "rsi14_5m":       rsi14_5m,
+                })
+                await redis.hset(f"snapshot:{symbol}", "rsi14_5m", str(round(rsi14_5m, 2)))
+            except Exception as _e:
+                pass
+
         # Reset accumulator — will re-open on next 1m candle
         tf_accumulators[symbol][tf] = None
 
@@ -1109,6 +1132,9 @@ async def _seed_indicators() -> None:
             "rsi14":           _f("rsi14", 50.0),
             "rsi_avg_gain":    _f("rsi_avg_gain", 0.0),
             "rsi_avg_loss":    _f("rsi_avg_loss", 0.0),
+            "rsi14_5m":        _f("rsi14_5m", 50.0),
+            "rsi5m_avg_gain":  _f("rsi5m_avg_gain", 0.0),
+            "rsi5m_avg_loss":  _f("rsi5m_avg_loss", 0.0),
             # VWAP — cum accumulators start at 0 (reset daily); vwap_history empty until candles flow
             "vwap":            _f("vwap", 0.0),
             "vwap_cum_tp_vol": 0.0,
