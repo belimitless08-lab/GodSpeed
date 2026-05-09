@@ -1918,6 +1918,27 @@ function connectSignalsWS() {
 }
 
 async function fetchSignals() {
+  // Load persisted signals first — survives page refresh and new tabs
+  try {
+    const recent = await apiFetch('/api/signals/recent');
+    if (recent && Array.isArray(recent) && recent.length > 0) {
+      for (const payload of recent) {
+        if (!payload || !payload.symbol) continue;
+        window._seenSignals = window._seenSignals || new Set();
+        const sig = (payload.signal && typeof payload.signal === 'object') ? payload.signal : {};
+        const sigType = sig.type || payload.signal_type || payload.type || 'UNKNOWN';
+        const direction = (payload.signal && payload.signal.direction) || payload.direction || '';
+        const id = `${payload.symbol}-${sigType}-${direction}`;
+        if (!window._seenSignals.has(id)) {
+          window._seenSignals.add(id);
+          injectSignal(payload);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('signals/recent unavailable', e);
+  }
+
   const data = await apiFetch('/api/signals');
   if (data && Array.isArray(data)) {
     // API returns a flat list; group by signal_type for renderSignalCards
