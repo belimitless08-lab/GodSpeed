@@ -962,7 +962,7 @@ async def _seed_equity_symbol(
         snapshot_hash["atr14"]   = str(atr14)
         snapshot_hash["ema9_5m"] = str(ema9_5m)
         snapshot_hash["ema9"]    = str(ema9_5m)
-        snapshot_hash["rsi14_5m"]       = str(round(rsi14_5m, 2))
+        snapshot_hash["rsi14"]          = str(round(rsi14_5m, 2))
         snapshot_hash["rsi5m_avg_gain"] = str(rsi5m_avg_gain)
         snapshot_hash["rsi5m_avg_loss"] = str(rsi5m_avg_loss)
 
