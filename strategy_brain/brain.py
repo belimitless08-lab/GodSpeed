@@ -223,6 +223,8 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
     3. Run macro gates on detected signals.
     4. Queue passing signals for ICI scoring on next 5m close.
     """
+    logger.info("[brain] on_1m_candle called: symbol=%s replay=%s",
+                symbol, os.environ.get("REPLAY_MODE"))
     if not _within_market_hours():
         return
 
