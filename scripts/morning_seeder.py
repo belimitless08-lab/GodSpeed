@@ -487,7 +487,7 @@ def _compute_vol_profiles(
                 if slot_key in day_slot_vol:
                     volume_shares = float(candles[idx][5])
                     close_price   = float(candles[idx][4])
-                    day_slot_vol[slot_key] += volume_shares * close_price
+                    day_slot_vol[slot_key] += volume_shares
             except Exception:
                 continue
 

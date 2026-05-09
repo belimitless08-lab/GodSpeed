@@ -599,7 +599,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 rvol = 0.0
             # --- Cumulative RVOL ---
             try:
-                is_first = (_dt.hour == 9 and _dt.minute < 20) if '_dt' in dir() else False
+                is_first = (_dt.hour == 9 and _dt.minute == 15) if '_dt' in dir() else False
                 if is_first:
                     indicators.setdefault(symbol, {})["cum_volume"] = 0.0
                 prev_cum_vol = ind.get("cum_volume", 0.0)
