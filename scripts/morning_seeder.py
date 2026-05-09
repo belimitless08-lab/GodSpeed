@@ -938,6 +938,7 @@ async def _seed_equity_symbol(
             highs_5m  = np.array([c[2] for c in candles_5m_list])
             lows_5m   = np.array([c[3] for c in candles_5m_list])
             closes_5m = np.array([c[4] for c in candles_5m_list])
+            rsi14_5m, rsi5m_avg_gain, rsi5m_avg_loss = compute_rsi14_wilder(closes_5m)
             # ATR14 on 5m
             atr_vals = np.zeros(len(closes_5m))
             for i in range(1, len(closes_5m)):
@@ -961,6 +962,9 @@ async def _seed_equity_symbol(
         snapshot_hash["atr14"]   = str(atr14)
         snapshot_hash["ema9_5m"] = str(ema9_5m)
         snapshot_hash["ema9"]    = str(ema9_5m)
+        snapshot_hash["rsi14_5m"]       = str(round(rsi14_5m, 2))
+        snapshot_hash["rsi5m_avg_gain"] = str(rsi5m_avg_gain)
+        snapshot_hash["rsi5m_avg_loss"] = str(rsi5m_avg_loss)
 
         await redis.hset(
             f"snapshot:{symbol}",
