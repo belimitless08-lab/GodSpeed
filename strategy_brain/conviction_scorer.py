@@ -156,7 +156,7 @@ async def score_signal(signal: dict, snapshot: dict) -> dict:
         er_val = 0.4
 
     if sig_type == "CHOPPINESS_BREAKOUT":
-        p5_regime = 7 if er_val < 0.25 else (5 if er_val < 0.50 else 2)
+        p5_regime = 7 if er_val < 0.25 else (5 if er_val < 0.50 else 0)
     else:
         p5_regime = 7 if er_val > 0.50 else (5 if er_val > 0.25 else 0)
 
