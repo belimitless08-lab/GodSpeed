@@ -1725,6 +1725,15 @@ async def broadcast_signals() -> None:
 
                 await signal_manager.broadcast(data)
 
+                # Persist signal to Redis for page-reload recovery
+                try:
+                    _persist_r = await get_redis()
+                    await _persist_r.lpush("signals:recent", data)
+                    await _persist_r.ltrim("signals:recent", 0, 199)
+                    await _persist_r.expire("signals:recent", 100800)
+                except Exception as _pe:
+                    log.warning("[api] Failed to persist signal: %s", _pe)
+
         except asyncio.CancelledError:
             print("🛑 [API] Shutdown signal received, exiting loop")
             break
