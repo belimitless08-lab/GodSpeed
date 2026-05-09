@@ -1093,6 +1093,14 @@ async def run_seeder(force: bool = False) -> None:
     validate()
     logger.info("=== Market Pulse Pro v2 — Morning Seeder ===")
 
+    # Clear previous day's signals — new trading day starts fresh
+    try:
+        _r = await get_redis()
+        await _r.delete("signals:recent")
+        logger.info("[seeder] Cleared signals:recent for new trading day")
+    except Exception as _e:
+        logger.warning("[seeder] Could not clear signals:recent: %s", _e)
+
     # Step 1: Login
     logger.info("Logging in to AngelOne…")
     session = await get_angel_session()
