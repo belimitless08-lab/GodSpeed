@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Optional
@@ -89,6 +90,15 @@ def is_valid_snapshot(symbol: str, s: dict) -> bool:
 
 
 def _now_ist() -> datetime:
+    # ⚠️ REPLAY_TEST_ONLY — NEVER leave FAKE_MARKET_TIME set in production.
+    # Controls signal time-window checks during replay testing only.
+    # Remove this env var from Railway brain service immediately after testing.
+    fake = os.environ.get("FAKE_MARKET_TIME")
+    if fake:
+        try:
+            return datetime.fromisoformat(fake).replace(tzinfo=_IST)
+        except Exception:
+            pass
     return datetime.now(_IST)
 
 
