@@ -244,7 +244,12 @@ async def _detect_opening_drive(
 
     gap_dir = _gap_direction(snapshot)
 
-    slot_key = f"{now.hour:02d}{(now.minute // 5) * 5:02d}"
+    try:
+        _cts = candles_5m[-1].get("ts", "") if candles_5m else ""
+        _cdt = datetime.fromisoformat(str(_cts)).astimezone(_IST)
+        slot_key = f"{_cdt.hour:02d}{(_cdt.minute // 5) * 5:02d}"
+    except Exception:
+        slot_key = f"{now.hour:02d}{(now.minute // 5) * 5:02d}"
     avg_slot_vol = float(vol_5m.get(slot_key, 0) or 0)
     lot_size = int(_safe_float(snapshot.get("lot_size"), 0))
     min_vol_mult = (2.3 if lot_size <= 500 else 2.0) if is_tier1 else 1.9
@@ -424,16 +429,20 @@ async def _detect_hourly_breakout(
         return None
 
     closes_5m = [_safe_float(x.get("close")) for x in candles_5m if _safe_float(x.get("close")) > 0]
-    if len(closes_5m) < 15:
+    if len(closes_5m) < 7:
         return None
 
-    rsi_now     = _calc_rsi_14(closes_5m)
-    rsi_30m_ago = _calc_rsi_14(closes_5m[:-6]) if len(closes_5m) >= 20 else rsi_now
+    # Use snapshot RSI (Wilder-smoothed by candle_builder) — consistent with gatekeeper
+    rsi_now = _safe_float(snapshot.get("rsi14"), 50.0)
+    # Trend confirmation: price 30m ago vs now (6 candles back)
+    price_30m_ago = closes_5m[-7] if len(closes_5m) >= 7 else closes_5m[0]
+    rsi_rising  = c > price_30m_ago   # price trending up = RSI rising
+    rsi_falling = c < price_30m_ago   # price trending down = RSI falling
 
     direction = None
-    if c > rolling_1h_high and rsi_now > rsi_30m_ago:
+    if c > rolling_1h_high and rsi_rising:
         direction = "LONG"
-    elif rolling_1h_low > 0 and c < rolling_1h_low and rsi_now < rsi_30m_ago:
+    elif rolling_1h_low > 0 and c < rolling_1h_low and rsi_falling:
         direction = "SHORT"
     if direction is None:
         return None
@@ -448,8 +457,8 @@ async def _detect_hourly_breakout(
     atr14 = _safe_float(snapshot.get("atr14"), 1.0)
     sl    = (max(vwap, l_c) - atr14 * 0.2) if direction == "LONG" else (min(vwap, h_c) + atr14 * 0.2)
 
-    logger.info("[signal] HOURLY_BREAKOUT %s high=%.2f rsi_now=%.1f rsi_30m=%.1f cum_rvol=%.2f",
-                direction, rolling_1h_high, rsi_now, rsi_30m_ago, cr)
+    logger.info("[signal] HOURLY_BREAKOUT %s high=%.2f rsi_now=%.1f p30=%.2f cum_rvol=%.2f",
+                direction, rolling_1h_high, rsi_now, price_30m_ago, cr)
     return {
         "type":        "HOURLY_BREAKOUT",
         "direction":   direction,

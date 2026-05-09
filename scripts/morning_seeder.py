@@ -511,21 +511,37 @@ def _compute_vol_profiles(
 
 
 def _to_5m_candles(candles_1m: list) -> list:
-    """Bucket 1m OHLCV into 5m OHLCV candles."""
-    result = []
-    bucket = []
+    """
+    Bucket 1m OHLCV into 5m OHLCV candles using timestamp flooring.
+    Robust to missing bars — never shifts on gaps.
+    """
+    from collections import defaultdict
+    buckets: dict = {}
+    bucket_order: list = []
+
     for c in candles_1m:
-        bucket.append(c)
-        if len(bucket) == 5:
-            result.append([
-                bucket[0][0],                    # ts = open of first 1m
-                bucket[0][1],                    # open
-                max(x[2] for x in bucket),       # high
-                min(x[3] for x in bucket),       # low
-                bucket[-1][4],                   # close = last 1m close
-                sum(x[5] for x in bucket),       # volume sum
-            ])
-            bucket = []
+        try:
+            dt = datetime.fromisoformat(str(c[0]))
+            floored_m = (dt.minute // 5) * 5
+            key = (dt.year, dt.month, dt.day, dt.hour, floored_m)
+            if key not in buckets:
+                buckets[key] = []
+                bucket_order.append(key)
+            buckets[key].append(c)
+        except Exception:
+            continue
+
+    result = []
+    for key in bucket_order:
+        bucket = buckets[key]
+        result.append([
+            bucket[0][0],                    # ts = open of first 1m
+            bucket[0][1],                    # open
+            max(x[2] for x in bucket),       # high
+            min(x[3] for x in bucket),       # low
+            bucket[-1][4],                   # close = last 1m close
+            sum(x[5] for x in bucket),       # volume sum
+        ])
     return result
 
 
