@@ -229,6 +229,7 @@ def _base_snapshot(symbol: str, ltp: float, prev_close: float,
         "prev_low":       "98.50",
         "gap_pct":        "0.50",       # gap up → LONG only
         "supertrend_dir": "BULL",
+        "ema200":         "97.5",
         "supertrend_band":"100.20",
         "orb_high":       "101.80",
         "orb_low":        "99.50",
