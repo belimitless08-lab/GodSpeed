@@ -598,6 +598,8 @@ async def main():
     try:
         await r.ping()
         log.info("[redis] Connected ✅")
+        log.info("[replay] Waiting 45s for brain to subscribe to channels...")
+        await asyncio.sleep(45)
     except Exception as exc:
         log.error("[redis] Cannot connect: %s", exc)
         sys.exit(1)
