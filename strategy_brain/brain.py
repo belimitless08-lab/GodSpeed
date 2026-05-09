@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -136,6 +137,12 @@ def _current_time_ist() -> str:
 
 
 def _within_market_hours() -> bool:
+    # ⚠️ REPLAY_TEST_ONLY — NEVER leave this set in production.
+    # REPLAY_MODE=1 bypasses all market-hours checks.
+    # Remove this env var from Railway brain service immediately after testing.
+    if os.environ.get("REPLAY_MODE") == "1":
+        return True
+
     now = _now_ist()
     h, m = now.hour, now.minute
     open_mins  = _MARKET_OPEN[0]  * 60 + _MARKET_OPEN[1]
