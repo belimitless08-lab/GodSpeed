@@ -406,16 +406,17 @@ async def get_volume_leaders():
             for sym in symbols:
                 pipe.hmget(
                     f"snapshot:{sym}",
-                    "cum_rvol", "ltp", "vwap", "change_pct"
+                    "cum_rvol", "ltp", "vwap", "prev_close"
                 )
             results_raw = await pipe.execute()
         results = []
         for sym, vals in zip(symbols, results_raw):
             try:
-                cum_rvol  = float(vals[0]) if vals[0] else 0.0
-                ltp_f     = float(vals[1]) if vals[1] else 0.0
-                vwap_f    = float(vals[2]) if vals[2] else 0.0
-                chg_f     = float(vals[3]) if vals[3] else 0.0
+                cum_rvol   = float(vals[0]) if vals[0] else 0.0
+                ltp_f      = float(vals[1]) if vals[1] else 0.0
+                vwap_f     = float(vals[2]) if vals[2] else 0.0
+                prev_close = float(vals[3]) if vals[3] else 0.0
+                chg_f      = round((ltp_f - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0.0
                 if cum_rvol < 0.1 or ltp_f == 0:
                     continue
                 results.append({
