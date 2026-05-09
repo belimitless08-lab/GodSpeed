@@ -39,6 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import os as _os
+import redis.asyncio as redis_asyncio
 
 from core.config import cfg, validate
 from core.redis_client import get_redis, close, ping as redis_ping
@@ -61,7 +62,7 @@ from execution.order_manager import (
 async def _get_pubsub_redis():
     """Dedicated Redis client for pubsub — never shares pool with HTTP requests."""
     url = _os.environ.get("REDIS_URL", "redis://localhost:6379")
-    return redis.asyncio.from_url(
+    return redis_asyncio.from_url(
         url,
         encoding="utf-8",
         decode_responses=True,
