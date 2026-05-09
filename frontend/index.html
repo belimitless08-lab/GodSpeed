@@ -1896,7 +1896,8 @@ function connectSignalsWS() {
       window._seenSignals = window._seenSignals || new Set();
       const sig = (payload.signal && typeof payload.signal === 'object' && !Array.isArray(payload.signal)) ? payload.signal : {};
       const sigType = sig.type || payload.signal_type || payload.type || 'UNKNOWN';
-      const id = `${payload.symbol}-${sigType}-${payload.published_at || Date.now()}`;
+      const direction = (payload.signal && payload.signal.direction) || payload.direction || '';
+      const id = `${payload.symbol}-${sigType}-${direction}`;
       if (window._seenSignals.has(id)) return;
       window._seenSignals.add(id);
       if (window._seenSignals.size > 500) {
