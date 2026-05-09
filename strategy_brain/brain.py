@@ -507,6 +507,7 @@ async def _subscribe_candles() -> None:
             async for message in pubsub.listen():
                 if message["type"] != "message":
                     continue
+                logger.info("[brain] PubSub message received: channel=%s", message.get("channel"))
                 await asyncio.sleep(0)
 
                 channel = message["channel"]
