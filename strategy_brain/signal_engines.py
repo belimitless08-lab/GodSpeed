@@ -221,7 +221,7 @@ async def _detect_opening_drive(
     if c == 0 or o == 0:
         return None
 
-    is_tier1 = now.minute < 30
+    is_tier1 = now.minute <= 30
     min_body = 0.80 if is_tier1 else 0.72
 
     bh = _body_health(o, h_c, l_c, c)
@@ -685,7 +685,7 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
                 detected.append(sig)
         except Exception as exc:
             logger.warning("[signal_engines] %s failed for %s: %s",
-                           detector.__name__, symbol, exc)
+                           coro_or_fn.__name__, symbol, exc)
 
     if symbol == DEBUG_SYMBOL and detected:
         logger.info("%s: %d signals — %s", symbol, len(detected),
