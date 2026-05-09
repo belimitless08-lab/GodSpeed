@@ -229,7 +229,10 @@ async def on_1m_candle(symbol: str, candle: dict) -> None:
         return
 
     snapshot = await _load_snapshot(symbol)
+    logger.info("[brain] snapshot loaded: symbol=%s fields=%d",
+                symbol, len(snapshot) if snapshot else 0)
     if not snapshot:
+        logger.info("[brain] snapshot EMPTY for %s — returning", symbol)
         return
 
     # ── Signal scan ────────────────────────────────────────────────────
