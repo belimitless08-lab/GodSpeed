@@ -1,0 +1,25 @@
+# Dockerfile.replay
+# Railway one-off service for weekend replay testing.
+# Place this file in the repo root alongside Dockerfile.seeder.
+#
+# Railway service settings:
+#   Start Command: (leave blank — CMD below handles it)
+#   Env vars required:
+#     REDIS_URL          (shared from Railway variables — already set)
+#     REPLAY_BATCH       A | B | C
+#
+# ⚠️  Brain service must also have REPLAY_MODE=1 and FAKE_MARKET_TIME set.
+# ⚠️  Remove REPLAY_MODE and FAKE_MARKET_TIME from brain after testing.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies from shared requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy full app (replay script imports from core/, strategy_brain/)
+COPY . .
+
+CMD ["python", "scripts/replay_test.py"]
