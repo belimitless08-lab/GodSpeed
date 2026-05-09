@@ -88,6 +88,7 @@ async def score_signal(signal: dict, snapshot: dict) -> dict:
     else:            p1 = 0
 
     # ── Pillar 2: Relative Strength vs NIFTY (25 pts) ───────────────────
+    nifty = {}
     try:
         nifty = await redis.hgetall("snapshot:NIFTY")
         n_ltp  = _sf(nifty.get(b"ltp")        or nifty.get("ltp"))

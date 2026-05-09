@@ -944,6 +944,7 @@ async def _seed_equity_symbol(
         # atr14 is now 5m ATR, ema9 in snapshot will be updated to 5m value
         snapshot_hash["atr14"]   = str(atr14)
         snapshot_hash["ema9_5m"] = str(ema9_5m)
+        snapshot_hash["ema9"]    = str(ema9_5m)
 
         await redis.hset(
             f"snapshot:{symbol}",
