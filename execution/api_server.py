@@ -1104,6 +1104,29 @@ async def get_active_signals():
     return signals
 
 
+@app.get("/api/signals/recent")
+async def get_recent_signals():
+    """
+    Returns all signals persisted today.
+    Cleared by morning seeder at 8:30 AM next trading day.
+    Falls back to empty list on any error.
+    """
+    try:
+        redis = await get_redis()
+        raw_list = await redis.lrange("signals:recent", 0, -1)
+        signals = []
+        for raw in raw_list:
+            try:
+                signals.append(json.loads(raw))
+            except Exception:
+                continue
+        signals.reverse()
+        return signals
+    except Exception as e:
+        log.error("[api] /api/signals/recent error: %s", e)
+        return []
+
+
 @app.get("/api/signals/{symbol}", response_model=list[SignalData])
 async def get_symbol_signals(symbol: str):
     """Active signals for a specific symbol."""
