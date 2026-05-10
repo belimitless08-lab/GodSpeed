@@ -33,11 +33,19 @@ _NSE_HEADERS = {
 
 
 def _make_nse_session() -> requests.Session:
-    """Create a requests session with NSE cookies. Required before API calls."""
-    s = requests.Session()
-    s.headers.update(_NSE_HEADERS)
-    s.get("https://www.nseindia.com/", timeout=10)
-    return s
+    """
+    Create a requests session with NSE cookies.
+    Retries once on 403 — NSE occasionally needs a second attempt.
+    """
+    for attempt in range(2):
+        s = requests.Session()
+        s.headers.update(_NSE_HEADERS)
+        resp = s.get("https://www.nseindia.com/", timeout=10)
+        if resp.status_code != 403:
+            return s
+        log.warning("[market_data] NSE homepage 403 on attempt %d — retrying", attempt + 1)
+        time.sleep(1)
+    return s  # return anyway, let the API call fail naturally if needed
 
 
 def fetch_pcr(symbol: str, session: requests.Session) -> float:
@@ -96,8 +104,10 @@ def combined_sentiment(pcr: float, prev_pcr: float, vix: float) -> str:
     """
     if pcr <= 0:
         return "NEUTRAL"
-    rising  = pcr > prev_pcr + 0.03
-    falling = pcr < prev_pcr - 0.03
+    # Skip direction signals if no previous value exists (first run)
+    has_prev = prev_pcr > 0
+    rising   = has_prev and pcr > prev_pcr + 0.03
+    falling  = has_prev and pcr < prev_pcr - 0.03
     high_vix = vix > 18
     low_vix  = 0 < vix < 13
 
