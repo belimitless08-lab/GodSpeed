@@ -40,6 +40,7 @@ from email.utils import parsedate_to_datetime
 from typing import Optional
 
 import requests
+from bs4 import BeautifulSoup
 
 from core.redis_client import get_redis as _get_redis_async
 from strategy_brain.ai_pipeline.ai_config import (
@@ -407,13 +408,17 @@ _NEXT_DATA_RE = re.compile(
 
 def scrape_groww_stock_news(symbol: str, search_id: str) -> list[dict]:
     """
-    Fetch https://groww.in/stocks/{search_id} and extract newsData from __NEXT_DATA__.
-    
-    Confirmed key path (verified 27-Apr-2026):
-      props → pageProps → stockData → newsData → [{id, title, summary, url, pubDate, source}]
-    
-    Returns filtered list of {headline, source, url, pubdate, age_hours}.
-    Uses a fresh cookie-free session per call.
+    Fetch https://groww.in/stocks/{search_id}/market-news and extract news
+    using BeautifulSoup HTML parsing.
+
+    Uses 4 fallback patterns (proven to work on Railway):
+    A: article tags
+    B: divs with known Groww news class names
+    C: section/div with 'news' in class or id
+    D: anchor fallback with financial term heuristics
+
+    Does NOT rely on __NEXT_DATA__ JSON — this approach is fragile when
+    Groww's SSR omits the JSON block for server/bot requests.
     """
     url = GROWW_STOCK_URL.format(search_id=search_id)
     session = _make_groww_session()
@@ -431,48 +436,99 @@ def scrape_groww_stock_news(symbol: str, search_id: str) -> list[dict]:
             logger.debug("[ai_scraper] Groww %d for %s", resp.status_code, symbol)
             return []
 
-        m = _NEXT_DATA_RE.search(resp.text)
-        if not m:
-            logger.debug("[ai_scraper] No __NEXT_DATA__ for %s", symbol)
-            return []
+        soup = BeautifulSoup(resp.text, "html.parser")
+        news_items = []
 
-        raw = json.loads(m.group(1))
-        news_list = (
-            raw.get("props", {})
-               .get("pageProps", {})
-               .get("stockData", {})
-               .get("newsData", [])
-        )
+        # Pattern A: article tags
+        articles = soup.find_all("article")
+        if articles:
+            news_items = articles
 
-        if not news_list:
-            logger.debug("[ai_scraper] Empty newsData for %s", symbol)
-            return []
+        # Pattern B: known Groww news div class patterns
+        if not news_items:
+            for cls in ["mnng-article", "newsArticle", "news-card",
+                        "news-item", "article-card"]:
+                candidates = soup.find_all(
+                    "div", class_=lambda c: c and cls in c
+                )
+                if candidates:
+                    news_items = candidates
+                    break
 
+        # Pattern C: section/div with 'news' in class or id
+        if not news_items:
+            news_section = soup.find(
+                lambda tag: tag.name in ("section", "div") and (
+                    (tag.get("class") and
+                     any("news" in c.lower() for c in tag.get("class", [])))
+                    or (tag.get("id") and "news" in tag.get("id", "").lower())
+                )
+            )
+            if news_section:
+                news_items = news_section.find_all(
+                    lambda tag: tag.name in ("div", "li", "article")
+                    and tag.find("a")
+                )
+
+        # Extract headlines from Patterns A/B/C
         results = []
-        for article in news_list:
-            headline = (article.get("title") or "").strip()
-            if not headline:
-                continue
+        if news_items:
+            for item in news_items:
+                a_tag = item.find("a") if item.name != "a" else item
+                if not a_tag:
+                    continue
+                text = a_tag.get_text(strip=True)
+                if not text or len(text) < 30:
+                    continue
+                href = a_tag.get("href", "")
+                url_full = href if href.startswith("http") else (
+                    f"https://groww.in{href}" if href else ""
+                )
+                if not is_headline_useful(text, symbol):
+                    continue
+                results.append({
+                    "headline":  text[:300],
+                    "source":    "groww",
+                    "url":       url_full,
+                    "pubdate":   "",
+                    "age_hours": None,
+                })
+                if len(results) >= MAX_HEADLINES_PER_STOCK:
+                    break
 
-            # Apply quality filter
-            if not is_headline_useful(headline, symbol):
-                continue
-
-            pub_date = article.get("pubDate", "")
-            age = _parse_iso_age_hours(pub_date)
-            if _is_stale(age):
-                continue
-
-            results.append({
-                "headline":  headline[:300],
-                "source":    article.get("source", "Groww"),
-                "url":       article.get("url", ""),
-                "pubdate":   pub_date,
-                "age_hours": round(age, 2) if age is not None else None,
-            })
-
-            if len(results) >= MAX_HEADLINES_PER_STOCK:
-                break
+        # Pattern D: anchor fallback with financial heuristics
+        if not results:
+            _FIN_TERMS = {
+                "share", "stock", "profit", "loss", "revenue", "quarterly",
+                "results", "dividend", "acquisition", "merger", "ipo",
+                "nse", "bse", "crore", "lakh", "rs.", "₹", "%",
+                "q1", "q2", "q3", "q4",
+            }
+            for a in soup.find_all("a", href=True):
+                href = a.get("href", "")
+                if not href or (
+                    href.startswith("/stocks/")
+                    and "/market-news" not in href
+                    and "/news/" not in href
+                ):
+                    continue
+                text = a.get_text(strip=True)
+                words = text.split()
+                lower_t = text.lower()
+                has_fin_term = any(t in lower_t for t in _FIN_TERMS)
+                if (len(text) >= 40 and len(words) >= 5
+                        and text[0].isupper()
+                        and (has_fin_term or any(c.isdigit() for c in text))):
+                    if is_headline_useful(text, symbol):
+                        results.append({
+                            "headline":  text[:300],
+                            "source":    "groww",
+                            "url":       href,
+                            "pubdate":   "",
+                            "age_hours": None,
+                        })
+                if len(results) >= MAX_HEADLINES_PER_STOCK:
+                    break
 
         return results
 
