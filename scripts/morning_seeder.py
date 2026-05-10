@@ -1451,6 +1451,18 @@ async def run_seeder(force: bool = False) -> None:
         "phase_b_seconds":  phase_b_seconds,
     }
     # ── AI Pipeline (scrape + sentiment + decisions) ──────────────────────
+    # Fetch PCR + VIX before AI pipeline so LLM has market context
+    try:
+        from core.market_data import write_market_intelligence
+        logger.info("[seeder] Fetching PCR + VIX from NSE...")
+        intel = await write_market_intelligence(redis)
+        logger.info(
+            "[seeder] Market intelligence ready: NIFTY PCR=%.3f BN PCR=%.3f VIX=%.1f → %s",
+            intel["nifty_pcr"], intel["banknifty_pcr"], intel["vix"], intel["sentiment"],
+        )
+    except Exception as _me:
+        logger.warning("[seeder] Market intelligence fetch failed: %s — AI will run without it", _me)
+
     logger.info("[seeder] Starting AI pipeline (scrape + LLM scoring)...")
     try:
         import os, redis as _redis_sync
