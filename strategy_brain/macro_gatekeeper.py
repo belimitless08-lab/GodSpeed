@@ -58,11 +58,10 @@ async def check_macro_gates(
         return _sf(v, d)
 
     ltp   = _get("ltp")
-    # Use 5m RSI (seeded and updated on 5m closes) — less noisy than 1m RSI
-    # Falls back to 1m RSI if 5m not yet available (before first 5m close)
+    # Use 5m RSI (seeded and updated on 5m closes) when available.
+    # Falls back to base RSI value in snapshot if 5m RSI is not yet populated.
     rsi14 = _get("rsi14_5m") if _get("rsi14_5m") > 0 else _get("rsi14", 50.0)
     ema9  = _get("ema9")
-    atr14 = _get("atr14")
     now   = _now_ist()
 
     if ltp <= 0:
