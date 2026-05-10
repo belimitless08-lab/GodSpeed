@@ -203,6 +203,21 @@ async def run_context_engine(redis_client) -> dict:
     _sync_redis = _redis_sync.from_url(os.environ["REDIS_URL"])
 
     headlines = get_market_headlines(_sync_redis)
+    # Real-time PCR + VIX intelligence to enrich LLM context
+    market_intel_str = "No real-time market intelligence available."
+    try:
+        intel_raw = _sync_redis.get("market:intelligence")
+        if intel_raw:
+            import json as _json2
+            intel = _json2.loads(intel_raw)
+            market_intel_str = (
+                f"NIFTY PCR={intel.get('nifty_pcr', 0):.2f} "
+                f"BANKNIFTY PCR={intel.get('banknifty_pcr', 0):.2f} "
+                f"India VIX={intel.get('vix', 0):.1f} "
+                f"Combined Sentiment={intel.get('sentiment', 'NEUTRAL')}"
+            )
+    except Exception:
+        pass
     if not headlines:
         logger.warning("[ai_engine] Context: no market headlines — using neutral default")
         await _cache_context(redis_client, _neutral)
@@ -213,7 +228,8 @@ async def run_context_engine(redis_client) -> dict:
         f"{i+1}. {h['headline']}" for i, h in enumerate(headlines[:25])
     )
 
-    prompt = format_prompt("context", headlines=hl_text)
+    prompt = format_prompt("context", headlines=hl_text,
+                           market_intel=market_intel_str)
     result = await _call_llm("context", prompt)
 
     if "error" in result:
