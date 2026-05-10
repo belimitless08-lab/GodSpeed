@@ -238,6 +238,8 @@ class MarketBreadth(BaseModel):
     above_ema200_pct: float
     sector_performance: dict[str, float]
     computed_at: str
+    pcr: float = 0.0
+    nifty_trend: str = ""
 
 
 class SignalData(BaseModel):
@@ -996,6 +998,13 @@ async def get_market_breadth():
     above_ema200 = int(_sf(raw, "above_ema200"))
     universe_size = int(_sf(raw, "total", 1))
 
+    # Read PCR and Nifty trend for macro panel
+    nifty_pcr_raw   = await redis.get("options:pcr:NIFTY")
+    nifty_snap      = await redis.hgetall("snapshot:NIFTY")
+    nifty_pcr       = _safe_float(nifty_pcr_raw) if nifty_pcr_raw else 0.0
+    nifty_trend_raw = nifty_snap.get("supertrend_dir", "") if nifty_snap else ""
+    nifty_trend     = nifty_trend_raw.decode() if isinstance(nifty_trend_raw, bytes) else (nifty_trend_raw or "")
+
     return MarketBreadth(
         advances=advances,
         declines=declines,
@@ -1005,6 +1014,8 @@ async def get_market_breadth():
         above_ema200_pct=round(above_ema200 / max(universe_size, 1) * 100, 2),
         sector_performance=sector_performance,
         computed_at=raw.get("computed_at", ""),
+        pcr=round(nifty_pcr, 3),
+        nifty_trend=nifty_trend,
     )
 
 
