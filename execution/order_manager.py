@@ -586,6 +586,10 @@ async def place_paper_order(execution_payload: dict) -> dict:
         "pnl_abs":       None,
         "pnl_pct":       None,
         "exit_reason":   None,
+        # Top-level options fields for LTP tracking in positions drawer
+        "instrument":    payload.get("instrument", "EQ"),
+        "atm_strike":    options.get("atm_strike"),
+        "strike":        options.get("atm_strike"),
         # Preserve options context for UI display
         "options_context": {
             "atm_strike":   options.get("atm_strike"),
