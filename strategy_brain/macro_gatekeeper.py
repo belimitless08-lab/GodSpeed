@@ -87,12 +87,6 @@ async def check_macro_gates(
             failed.append("EMA9_EXTENDED")
             logger.info("[gate2] %s BLOCKED EMA9 ext=%.2f%%", symbol, ext_pct)
 
-    # ── Gate 3: Minimum ATR ──────────────────────────────────────────────
-    if ltp > 0 and atr14 > 0:
-        atr_pct = atr14 / ltp * 100
-        if atr_pct < 0.2:
-            failed.append("ATR_TOO_LOW")
-            logger.info("[gate3] %s BLOCKED ATR=%.3f%%", symbol, atr_pct)
 
     passed = len(failed) == 0
     if passed:

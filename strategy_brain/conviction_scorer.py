@@ -160,15 +160,9 @@ async def score_signal(signal: dict, snapshot: dict) -> dict:
     else:
         p5_regime = 7 if er_val > 0.50 else (5 if er_val > 0.25 else 0)
 
-    try:
-        nifty_st = _decode(nifty.get(b"supertrend_dir") or nifty.get("supertrend_dir"))
-        aligned  = (direction == "LONG"  and "BULL" in nifty_st) or \
-                   (direction == "SHORT" and "BEAR" in nifty_st)
-        p5_align = 3 if aligned else 0
-    except Exception:
-        p5_align = 0
-
-    p5 = min(p5_regime + p5_align, 10)
+    # Supertrend alignment removed — direction unreliable until 5m 
+    # supertrend seeding is verified. P5 is regime score only.
+    p5 = min(p5_regime, 10)
 
     # ── Signal bonus ─────────────────────────────────────────────────────
     bkey = sig_type
