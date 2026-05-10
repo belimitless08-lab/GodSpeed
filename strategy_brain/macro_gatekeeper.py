@@ -5,9 +5,9 @@ Macro Gatekeeper v2 — 3 hard gates only.
 Replaces the old 6-gate design.
 
 Gate 1: RSI Extremes   — LONG blocked if RSI > 80, SHORT if RSI < 20
-                         Bypassed before 10:30 AM (RSI unreliable on 5m)
+                         Bypassed before 10:30 AM. Uses 5m RSI.
 Gate 2: EMA9 Extension — LTP > 3% away from EMA9 (both directions)
-Gate 3: Minimum ATR    — ATR14 < 0.2% of LTP (dead stock filter)
+                         Uses 5m EMA9 updated on 5m close.
 
 Public API (backward compatible with brain.py):
     passed, failed_gates = await check_macro_gates(symbol, direction)
