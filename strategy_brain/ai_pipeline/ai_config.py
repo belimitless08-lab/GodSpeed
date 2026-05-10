@@ -229,6 +229,9 @@ Analyze today's market headlines and return the macro environment that will affe
 Headlines:
 {headlines}
 
+Real-time Market Intelligence (PCR + VIX):
+{market_intel}
+
 Respond ONLY with valid JSON, no markdown, no extra text:
 {{
     "market_bias": "bullish",
@@ -266,7 +269,8 @@ Rules:
 - sector_bias values: "bullish" / "bearish" / "neutral"
 - themes: max 5 short phrases
 - key_events: max 3 specific events (e.g. "RBI policy meet", "US CPI data")
-- global_macro: one sentence, specific (e.g. "Nikkei up 1.2%, crude oil flat at $82")"""
+- global_macro: one sentence, specific (e.g. "Nikkei up 1.2%, crude oil flat at $82")
+- Use market_intel (PCR/VIX) to refine market_bias: high PCR is bullish (smart hedging), high VIX adds uncertainty"""
 
 
 # 5B — Sentiment Engine (~60-80 gpt-oss calls)
