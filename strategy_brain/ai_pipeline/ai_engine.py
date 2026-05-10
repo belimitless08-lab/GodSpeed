@@ -352,7 +352,7 @@ async def run_sentiment_engine(redis_client, context: dict) -> dict[str, dict]:
                 results[symbol] = call_result
 
                 # Cache individual sentiment
-                _cache_sentiment(redis_client, symbol, call_result)
+                await _cache_sentiment(redis_client, symbol, call_result)
 
             if (idx + 1) % 20 == 0:
                 logger.info(
@@ -370,10 +370,10 @@ async def run_sentiment_engine(redis_client, context: dict) -> dict[str, dict]:
     return results
 
 
-def _cache_sentiment(redis_client, symbol: str, data: dict) -> None:
+async def _cache_sentiment(redis_client, symbol: str, data: dict) -> None:
     try:
         key = REDIS_KEYS["sentiment"].format(symbol=symbol)
-        redis_client.setex(key, REDIS_TTL["engine"], json.dumps(data))
+        await redis_client.setex(key, REDIS_TTL["engine"], json.dumps(data))
     except Exception as e:
         logger.error("[ai_engine] Failed to cache sentiment for %s: %s", symbol, e)
 
