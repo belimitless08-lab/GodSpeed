@@ -740,8 +740,7 @@ async def _run_pcr_vix_update() -> None:
                 await redis.setex("market:pcr_sentiment", 7200, sentiment)
 
                 # Write structured intelligence for AI context
-                import json as _json
-                intel = _json.dumps({
+                intel = json.dumps({
                     "nifty_pcr":      nifty_pcr,
                     "banknifty_pcr":  bank_pcr,
                     "vix":            vix,
