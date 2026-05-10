@@ -940,7 +940,6 @@ async def _seed_equity_symbol(
             closes_5m = np.array([c[4] for c in candles_5m_list])
 
             rsi14_5m, rsi5m_avg_gain, rsi5m_avg_loss = compute_rsi14_wilder(closes_5m)
-            st_dir_5m, st_band_5m = compute_supertrend(highs_5m, lows_5m, closes_5m)
             # ATR14 on 5m
             atr_vals = np.zeros(len(closes_5m))
             for i in range(1, len(closes_5m)):
@@ -967,8 +966,6 @@ async def _seed_equity_symbol(
         snapshot_hash["rsi14"]          = str(round(rsi14_5m, 2))
         snapshot_hash["rsi5m_avg_gain"] = str(rsi5m_avg_gain)
         snapshot_hash["rsi5m_avg_loss"] = str(rsi5m_avg_loss)
-        snapshot_hash["supertrend_dir"]  = "BULL" if st_dir_5m == 1 else "BEAR"
-        snapshot_hash["supertrend_band"] = str(round(st_band_5m, 4))
 
         await redis.hset(
             f"snapshot:{symbol}",
