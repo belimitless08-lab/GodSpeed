@@ -938,6 +938,7 @@ async def _seed_equity_symbol(
             highs_5m  = np.array([c[2] for c in candles_5m_list])
             lows_5m   = np.array([c[3] for c in candles_5m_list])
             closes_5m = np.array([c[4] for c in candles_5m_list])
+
             rsi14_5m, rsi5m_avg_gain, rsi5m_avg_loss = compute_rsi14_wilder(closes_5m)
             st_dir_5m, st_band_5m = compute_supertrend(highs_5m, lows_5m, closes_5m)
             # ATR14 on 5m

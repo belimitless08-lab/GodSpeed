@@ -281,7 +281,6 @@ async def _flush_candle_to_redis(
 
     is_index = symbol in _INDEX_SYMBOLS
     snapshot_mapping = {
-        "ema9":            str(updated_ind["ema9"]),
         "ema16":           str(updated_ind["ema16"]),
         "ema200":          str(updated_ind["ema200"]),
         "atr14":           str(updated_ind["atr14"]),
@@ -290,7 +289,6 @@ async def _flush_candle_to_redis(
         "supertrend_dir":  st_label,
         "supertrend_band": str(updated_ind["supertrend_band"]),
         # RSI14 — rsi_avg_gain / rsi_avg_loss stored for next incremental update
-        "rsi14":           str(updated_ind["rsi14"]),
         "rsi_avg_gain":    str(updated_ind["rsi_avg_gain"]),
         "rsi_avg_loss":    str(updated_ind["rsi_avg_loss"]),
         # VWAP — only vwap scalar in snapshot; accumulators live in memory
@@ -447,6 +445,43 @@ async def _maybe_close_tf_candles(symbol: str, new_minute: str, redis) -> None:
                 await redis.hset(f"snapshot:{symbol}", "rsi14_5m", str(round(rsi14_5m, 2)))
             except Exception as _e:
                 pass
+
+        if tf == "5m":
+            try:
+                ind_5m       = indicators.get(symbol, {})
+                close_5m     = sym_tf["close"]
+                prev_c_5m    = ind_5m.get("last_close_5m", close_5m)
+
+                # RSI14 on 5m closes — smoother and more reliable
+                # than 1m RSI for signal gating
+                rsi14_5m, rg, rl = update_rsi(
+                    current_close  = close_5m,
+                    prev_close     = prev_c_5m,
+                    prev_avg_gain  = ind_5m.get("rsi5m_avg_gain", 0.0),
+                    prev_avg_loss  = ind_5m.get("rsi5m_avg_loss", 0.0),
+                )
+
+                # EMA9 on 5m closes — seeded at 8:30 AM by seeder,
+                # updated here every 5m. Not overwritten by 1m candles.
+                ema9_5m = update_ema(
+                    close_5m,
+                    ind_5m.get("ema9_5m_state", close_5m),
+                    9,
+                )
+
+                indicators.setdefault(symbol, {}).update({
+                    "last_close_5m":  close_5m,
+                    "rsi5m_avg_gain": rg,
+                    "rsi5m_avg_loss": rl,
+                    "ema9_5m_state":  ema9_5m,
+                })
+
+                await redis.hset(f"snapshot:{symbol}", mapping={
+                    "rsi14": str(round(rsi14_5m, 2)),
+                    "ema9":  str(round(ema9_5m, 4)),
+                })
+            except Exception:
+                pass  # never block candle flow
 
         # Reset accumulator — will re-open on next 1m candle
         tf_accumulators[symbol][tf] = None
@@ -1132,9 +1167,11 @@ async def _seed_indicators() -> None:
             "rsi14":           _f("rsi14", 50.0),
             "rsi_avg_gain":    _f("rsi_avg_gain", 0.0),
             "rsi_avg_loss":    _f("rsi_avg_loss", 0.0),
-            "rsi14_5m":        _f("rsi14_5m", 50.0),
             "rsi5m_avg_gain":  _f("rsi5m_avg_gain", 0.0),
             "rsi5m_avg_loss":  _f("rsi5m_avg_loss", 0.0),
+            "ema9_5m_state":   _f("ema9", close),
+            "last_close_5m":   _f("ema9", close),
+            "rsi14_5m":        _f("rsi14_5m", 50.0),
             # VWAP — cum accumulators start at 0 (reset daily); vwap_history empty until candles flow
             "vwap":            _f("vwap", 0.0),
             "vwap_cum_tp_vol": 0.0,
