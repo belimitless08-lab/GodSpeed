@@ -42,6 +42,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import requests as _requests
 
 from core.config import cfg, validate
 from core.redis_client import get_redis, close as close_redis
@@ -578,6 +579,98 @@ async def _breadth_background_task() -> None:
             await _run_breadth_safe()
 
 
+def _fetch_pcr_sync(symbol: str) -> float:
+    """
+    Fetch PCR for NIFTY or BANKNIFTY from NSE option chain.
+    Runs synchronously — call via asyncio.to_thread().
+    Returns PCR as float or 0.0 on failure.
+    """
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36",
+            "Accept":          "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer":         "https://www.nseindia.com/option-chain",
+        }
+        session = _requests.Session()
+        session.headers.update(headers)
+        # Step 1: visit main site to get cookies
+        session.get("https://www.nseindia.com/", timeout=10)
+        # Step 2: fetch option chain
+        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
+        resp = session.get(url, timeout=15)
+        data = resp.json()
+        records = data.get("records", {}).get("data", [])
+        ce_oi = sum(r.get("CE", {}).get("openInterest", 0) for r in records if "CE" in r)
+        pe_oi = sum(r.get("PE", {}).get("openInterest", 0) for r in records if "PE" in r)
+        if ce_oi > 0:
+            return round(pe_oi / ce_oi, 3)
+        return 0.0
+    except Exception as exc:
+        logger.warning("[brain] PCR fetch failed for %s: %s", symbol, exc)
+        return 0.0
+
+
+def _pcr_sentiment(pcr: float, prev_pcr: float) -> str:
+    """Deduce market sentiment from PCR level and direction."""
+    if pcr <= 0:
+        return "NEUTRAL"
+    rising = pcr > prev_pcr + 0.03
+    falling = pcr < prev_pcr - 0.03
+    if pcr > 1.5:
+        return "EXTREME_BULLISH"
+    if pcr > 1.2 and rising:
+        return "BULLISH"
+    if pcr < 0.5:
+        return "EXTREME_BEARISH"
+    if pcr < 0.8 and falling:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
+async def _run_pcr_update() -> None:
+    """
+    Fetch PCR for NIFTY and BANKNIFTY from NSE every 60 minutes.
+    Writes to Redis:
+        options:pcr:NIFTY         → current PCR float string
+        options:pcr_prev:NIFTY    → previous PCR float string
+        options:pcr:BANKNIFTY     → current PCR float string
+        options:pcr_prev:BANKNIFTY→ previous PCR float string
+        market:pcr_sentiment      → "BULLISH" / "BEARISH" / "NEUTRAL" etc.
+    Only runs during market hours.
+    """
+    while True:
+        await asyncio.sleep(3600)  # wait 1 hour before first fetch
+        if not _within_market_hours():
+            continue
+        try:
+            redis = await get_redis()
+            for symbol in ("NIFTY", "BANKNIFTY"):
+                # Save previous value
+                prev_raw = await redis.get(f"options:pcr:{symbol}")
+                prev_pcr = float(prev_raw) if prev_raw else 0.0
+                # Fetch new value in thread (requests is blocking)
+                pcr = await asyncio.to_thread(_fetch_pcr_sync, symbol)
+                if pcr > 0:
+                    await redis.set(f"options:pcr_prev:{symbol}", str(prev_pcr))
+                    await redis.set(f"options:pcr:{symbol}", str(pcr))
+                    logger.info("[brain] PCR %s=%.3f (prev=%.3f)", symbol, pcr, prev_pcr)
+            # Write overall sentiment based on NIFTY PCR
+            nifty_pcr_raw = await redis.get("options:pcr:NIFTY")
+            nifty_prev_raw = await redis.get("options:pcr_prev:NIFTY")
+            if nifty_pcr_raw:
+                sentiment = _pcr_sentiment(
+                    float(nifty_pcr_raw),
+                    float(nifty_prev_raw) if nifty_prev_raw else 0.0,
+                )
+                await redis.setex("market:pcr_sentiment", 7200, sentiment)
+                logger.info("[brain] PCR sentiment: %s", sentiment)
+        except Exception as exc:
+            logger.warning("[brain] PCR update error: %s", exc)
+
+
 async def start_execution_engine() -> None:
     global _execution_engine_started
     if _execution_engine_started:
@@ -622,10 +715,13 @@ async def run_brain() -> None:
     await start_execution_engine()
     premarket_task = asyncio.create_task(_premarket_news_task(), name="premarket_news")
     breadth_task = asyncio.create_task(_breadth_background_task(), name="breadth_bg")
+    pcr_task = asyncio.create_task(_run_pcr_update(), name="pcr_update")
     background_tasks.add(premarket_task)
     background_tasks.add(breadth_task)
+    background_tasks.add(pcr_task)
     premarket_task.add_done_callback(background_tasks.discard)
     breadth_task.add_done_callback(background_tasks.discard)
+    pcr_task.add_done_callback(background_tasks.discard)
 
     # Prime market breadth once on startup
     asyncio.create_task(_run_breadth_safe())
