@@ -63,7 +63,7 @@ GROWW_SEARCH_URL = (
 )
 
 # Groww stock page — __NEXT_DATA__ extraction
-GROWW_STOCK_URL = "https://groww.in/stocks/{search_id}"
+GROWW_STOCK_URL = "https://groww.in/stocks/{search_id}/market-news"
 
 # Google Finance fallback (SSR, news in HTML)
 GOOGLE_FINANCE_URL = "https://www.google.com/finance/quote/{symbol}:NSE?hl=en"
