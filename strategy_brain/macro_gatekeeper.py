@@ -1,7 +1,7 @@
 """
 strategy_brain/macro_gatekeeper.py
 =====================================
-Macro Gatekeeper v2 — 3 hard gates only.
+Macro Gatekeeper v2 — 2 hard gates.
 Replaces the old 6-gate design.
 
 Gate 1: RSI Extremes   — LONG blocked if RSI > 80, SHORT if RSI < 20
