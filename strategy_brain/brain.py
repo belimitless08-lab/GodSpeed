@@ -42,9 +42,9 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-import requests as _requests
 
 from core.config import cfg, validate
+from core.market_data import write_market_intelligence as _write_market_intel
 from core.redis_client import get_redis, close as close_redis
 from core.universe_builder import get_symbols
 from execution.order_manager import (
@@ -579,184 +579,30 @@ async def _breadth_background_task() -> None:
             await _run_breadth_safe()
 
 
-def _fetch_pcr_sync(symbol: str) -> float:
-    """
-    Fetch PCR for NIFTY or BANKNIFTY from NSE option chain.
-    Runs synchronously — call via asyncio.to_thread().
-
-    PCR interpretation (contrarian view for Indian F&O intraday):
-    - High PCR = participants buying puts to hedge longs = underlying likely stable/rising
-    - Low PCR = aggressive call buying = market potentially overextended
-    This is standard practice on Indian F&O desks (Sensibull, NiftyTrader etc.)
-    """
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-            "Accept":          "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer":         "https://www.nseindia.com/option-chain",
-        }
-        session = _requests.Session()
-        session.headers.update(headers)
-        session.get("https://www.nseindia.com/", timeout=10)
-        url  = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-        resp = session.get(url, timeout=15)
-        data = resp.json()
-        records = data.get("records", {}).get("data", [])
-        ce_oi = sum(r.get("CE", {}).get("openInterest", 0) for r in records if "CE" in r)
-        pe_oi = sum(r.get("PE", {}).get("openInterest", 0) for r in records if "PE" in r)
-        return round(pe_oi / ce_oi, 3) if ce_oi > 0 else 0.0
-    except Exception as exc:
-        logger.warning("[brain] PCR fetch failed for %s: %s", symbol, exc)
-        return 0.0
-
-
-def _fetch_vix_sync() -> float:
-    """
-    Fetch India VIX from NSE allIndices API.
-    Runs synchronously — call via asyncio.to_thread().
-    Returns VIX float or 0.0 on failure.
-    """
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-            "Accept":          "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer":         "https://www.nseindia.com/",
-        }
-        session = _requests.Session()
-        session.headers.update(headers)
-        session.get("https://www.nseindia.com/", timeout=10)
-        resp = session.get(
-            "https://www.nseindia.com/api/allIndices", timeout=15
-        )
-        data = resp.json()
-        for item in data.get("data", []):
-            if "VIX" in str(item.get("symbol", "")).upper():
-                return round(float(item.get("last", 0) or 0), 2)
-        return 0.0
-    except Exception as exc:
-        logger.warning("[brain] VIX fetch failed: %s", exc)
-        return 0.0
-
-
-def _combined_sentiment(pcr: float, prev_pcr: float, vix: float) -> str:
-    """
-    Combined PCR + VIX market sentiment for NIFTY intraday F&O.
-
-    PCR contrarian interpretation:
-    - High PCR = smart money hedging longs with puts → bullish underlying
-    - Low PCR  = aggressive call buying → overextended, potential reversal
-    - Rising PCR = hedging increasing = bullish lean
-    - Falling PCR = hedging reducing = bearish lean
-
-    VIX context:
-    - VIX < 13  = Low fear, calm market
-    - VIX 13-18 = Normal
-    - VIX > 18  = Elevated fear / uncertainty
-    """
-    if pcr <= 0:
-        return "NEUTRAL"
-    rising  = pcr > prev_pcr + 0.03
-    falling = pcr < prev_pcr - 0.03
-    high_vix = vix > 18
-    low_vix  = 0 < vix < 13
-
-    # Extreme readings take priority
-    if pcr > 1.5:
-        return "EXTREME_BULLISH"
-    if pcr < 0.5:
-        return "EXTREME_BEARISH"
-
-    # Combined PCR + VIX readings
-    if pcr > 1.2 and low_vix:
-        return "BULLISH"           # Smart hedging in calm market
-    if pcr > 1.2 and high_vix:
-        return "REVERSAL_WATCH"    # Panic hedging — watch for bounce
-    if pcr < 0.7 and high_vix:
-        return "BEARISH"           # Call spec + fear = downside risk
-    if pcr < 0.8 and low_vix:
-        return "NEUTRAL_CAUTION"   # Complacency with low hedging
-
-    # Direction-based when no extreme condition
-    if pcr > 1.0 and rising:
-        return "BULLISH_LEAN"
-    if pcr < 0.9 and falling:
-        return "BEARISH_LEAN"
-    return "NEUTRAL"
-
-
 async def _run_pcr_vix_update() -> None:
     """
-    Fetch PCR (NIFTY + BANKNIFTY) and India VIX from NSE every 60 minutes.
+    Fetch PCR (NIFTY + BANKNIFTY) and India VIX every 60 minutes.
     Fetches immediately on startup if market is open, then waits 60 min.
-
-    Writes to Redis:
-        options:pcr:NIFTY          current PCR float
-        options:pcr_prev:NIFTY     previous PCR float
-        options:pcr:BANKNIFTY      current PCR float
-        options:pcr_prev:BANKNIFTY previous PCR float
-        market:vix                 India VIX float
-        market:pcr_sentiment       combined sentiment string
-        market:intelligence        JSON summary for AI context
+    Uses core.market_data.write_market_intelligence (shared with seeder).
+    Brain writes include 7200s TTL; seeder writes have no TTL.
     """
     while True:
         if _within_market_hours():
             try:
                 redis = await get_redis()
-
-                # Fetch NIFTY PCR
-                nifty_prev_raw = await redis.get("options:pcr:NIFTY")
-                nifty_prev     = float(nifty_prev_raw) if nifty_prev_raw else 0.0
-                nifty_pcr      = await asyncio.to_thread(_fetch_pcr_sync, "NIFTY")
-                await asyncio.sleep(1.5)   # polite delay between NSE calls
-
-                # Fetch BANKNIFTY PCR
-                bank_prev_raw  = await redis.get("options:pcr:BANKNIFTY")
-                bank_prev      = float(bank_prev_raw) if bank_prev_raw else 0.0
-                bank_pcr       = await asyncio.to_thread(_fetch_pcr_sync, "BANKNIFTY")
-                await asyncio.sleep(1.5)
-
-                # Fetch VIX
-                vix = await asyncio.to_thread(_fetch_vix_sync)
-
-                # Store values
-                if nifty_pcr > 0:
-                    await redis.set("options:pcr_prev:NIFTY", str(nifty_prev))
-                    await redis.set("options:pcr:NIFTY", str(nifty_pcr))
-                if bank_pcr > 0:
-                    await redis.set("options:pcr_prev:BANKNIFTY", str(bank_prev))
-                    await redis.set("options:pcr:BANKNIFTY", str(bank_pcr))
-                if vix > 0:
-                    await redis.setex("market:vix", 7200, str(vix))
-
-                # Combined sentiment using NIFTY PCR + VIX
-                pcr_for_sentiment = nifty_pcr if nifty_pcr > 0 else nifty_prev
-                sentiment = _combined_sentiment(pcr_for_sentiment, nifty_prev, vix)
-                await redis.setex("market:pcr_sentiment", 7200, sentiment)
-
-                # Write structured intelligence for AI context
-                intel = json.dumps({
-                    "nifty_pcr":      nifty_pcr,
-                    "banknifty_pcr":  bank_pcr,
-                    "vix":            vix,
-                    "sentiment":      sentiment,
-                })
-                await redis.setex("market:intelligence", 7200, intel)
-
+                data  = await _write_market_intel(redis)
+                # Brain overwrites with TTL so keys expire if brain stops
+                await redis.expire("market:vix",           7200)
+                await redis.expire("market:pcr_sentiment", 7200)
+                await redis.expire("market:intelligence",  7200)
                 logger.info(
                     "[brain] PCR NIFTY=%.3f BN=%.3f VIX=%.1f → %s",
-                    nifty_pcr, bank_pcr, vix, sentiment,
+                    data["nifty_pcr"], data["banknifty_pcr"],
+                    data["vix"], data["sentiment"],
                 )
             except Exception as exc:
                 logger.warning("[brain] PCR/VIX update error: %s", exc)
-
-        await asyncio.sleep(3600)   # wait 60 min before next fetch
-
+        await asyncio.sleep(3600)
 
 
 async def start_execution_engine() -> None:
