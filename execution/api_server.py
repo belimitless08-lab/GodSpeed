@@ -238,8 +238,10 @@ class MarketBreadth(BaseModel):
     above_ema200_pct: float
     sector_performance: dict[str, float]
     computed_at: str
-    pcr: float = 0.0
+    vix: float = 0.0
     nifty_trend: str = ""
+    pcr: float = 0.0
+    pcr_sentiment: str = ""
 
 
 class SignalData(BaseModel):
@@ -998,10 +1000,14 @@ async def get_market_breadth():
     above_ema200 = int(_sf(raw, "above_ema200"))
     universe_size = int(_sf(raw, "total", 1))
 
-    # Read PCR and Nifty trend for macro panel
     nifty_pcr_raw   = await redis.get("options:pcr:NIFTY")
     nifty_snap      = await redis.hgetall("snapshot:NIFTY")
-    nifty_pcr       = _safe_float(nifty_pcr_raw) if nifty_pcr_raw else 0.0
+    vix_raw         = await redis.get("market:vix")
+    sentiment_raw   = await redis.get("market:pcr_sentiment")
+
+    nifty_pcr    = _safe_float(nifty_pcr_raw) if nifty_pcr_raw else 0.0
+    vix_val      = _safe_float(vix_raw)        if vix_raw      else 0.0
+    sentiment    = (sentiment_raw or "NEUTRAL")
     nifty_trend_raw = nifty_snap.get("supertrend_dir", "") if nifty_snap else ""
     nifty_trend     = nifty_trend_raw.decode() if isinstance(nifty_trend_raw, bytes) else (nifty_trend_raw or "")
 
@@ -1015,7 +1021,9 @@ async def get_market_breadth():
         sector_performance=sector_performance,
         computed_at=raw.get("computed_at", ""),
         pcr=round(nifty_pcr, 3),
+        vix=round(vix_val, 2),
         nifty_trend=nifty_trend,
+        pcr_sentiment=sentiment,
     )
 
 
