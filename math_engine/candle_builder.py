@@ -1148,8 +1148,8 @@ async def _seed_indicators() -> None:
             "rsi_avg_loss":    _f("rsi_avg_loss", 0.0),
             "rsi5m_avg_gain":  _f("rsi5m_avg_gain", 0.0),
             "rsi5m_avg_loss":  _f("rsi5m_avg_loss", 0.0),
-            "ema9_5m_state":   _f("ema9", close),
-            "last_close_5m":   _f("last_close", close),
+            "ema9_5m_state":   _f("ema9", 0.0),
+            "last_close_5m":   _f("last_close", 0.0),
             "rsi14_5m":        _f("rsi14_5m", 50.0),
             # VWAP — cum accumulators start at 0 (reset daily); vwap_history empty until candles flow
             "vwap":            _f("vwap", 0.0),
