@@ -534,6 +534,10 @@ async def _detect_choppiness_breakout(
     if not candles_5m or len(candles_5m) < 6:
         return None
 
+    now_c = _now_ist()
+    if now_c.hour >= 14 and now_c.minute >= 30:
+        return None  # Too late to enter choppiness breakout
+
     candle = candles_5m[-1]
     o   = _safe_float(candle.get("open"))
     h_c = _safe_float(candle.get("high"))
@@ -566,7 +570,7 @@ async def _detect_choppiness_breakout(
         prior_closes = [_safe_float(x.get("close")) for x in candles_5m[:i + 1]]
         if len(prior_closes) < 5:
             break
-        er_prior = _calc_efficiency_ratio(prior_closes, period=min(12, len(prior_closes) - 1))
+        er_prior = _calc_efficiency_ratio(prior_closes, period=min(5, len(prior_closes) - 1))
         if er_prior < 0.35:
             compression_count += 1
         else:
@@ -589,6 +593,11 @@ async def _detect_choppiness_breakout(
 
     comp_high = max(highs[i] for i in comp_indices)
     comp_low  = min(lows[i]  for i in comp_indices)
+
+    # Compression zone must be meaningful — not just microvolatility
+    atr14 = _safe_float(snapshot.get("atr14"), 1.0)
+    if (comp_high - comp_low) < atr14 * 0.3:
+        return None
 
     direction = None
     if c > comp_high:
