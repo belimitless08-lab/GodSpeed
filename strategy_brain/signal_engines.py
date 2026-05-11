@@ -325,7 +325,8 @@ async def _detect_range_breakout(
         return None
 
     redis = await get_redis()
-    if await redis.exists(f"range_breakout_fired:{symbol}"):
+    fire_key = f"range_breakout_{phase}_fired:{symbol}"
+    if await redis.exists(fire_key):
         return None
 
     if not candles_5m:
@@ -371,7 +372,7 @@ async def _detect_range_breakout(
     if direction is None:
         return None
 
-    await redis.set(f"range_breakout_fired:{symbol}", 1, ex=86400)
+    await redis.set(fire_key, 1, ex=86400)
 
     atr14 = _safe_float(snapshot.get("atr14"), 1.0)
     sl    = (range_low - atr14 * 0.3) if direction == "LONG" else (range_high + atr14 * 0.3)
