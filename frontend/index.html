@@ -1696,6 +1696,7 @@ const SIGNAL_TYPES = [
 ];
 
 let signalData = {};
+let _signalSort = 'score';  // 'score' | 'change'
 window._symbolIciMap = {};  // symbol → best ici_score across all active signals
 
 function tradDot(val) {
@@ -1790,18 +1791,45 @@ function renderSignalRow(sig) {
   </div>`;
 }
 
+function _setSort(mode) {
+  _signalSort = mode;
+  renderSignalCards(signalData);
+}
+
 function renderSignalCards(data) {
   const grid = document.getElementById('signals-grid');
   const vlCard = document.getElementById('volume-leaders-card');
   grid.innerHTML = SIGNAL_TYPES.map(({key, label}) => {
     const sigs = (data && data[key]) || [];
-    const visible = sigs.slice(0, 10);
+    const sorted = [...sigs].sort((a, b) => {
+      if (_signalSort === 'change') {
+        return Math.abs(b.change_pct || 0) - Math.abs(a.change_pct || 0);
+      }
+      return (b.ici_score || 0) - (a.ici_score || 0);
+    });
+    const visible = sorted.slice(0, 10);
     const rows = visible.map(renderSignalRow).filter(Boolean).join('');
     const more = sigs.length > 10 ? `<div class="signal-more">and ${sigs.length - 10} more…</div>` : '';
     return `<div class="card">
-      <div class="card-header">
-        <span class="card-title">${label}</span>
-        <span class="card-count">${sigs.length}</span>
+      <div class="card-header" style="flex-direction:column;gap:4px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+          <span class="card-title">${label}</span>
+          <span class="card-count">${sigs.length}</span>
+        </div>
+        <div style="display:flex;gap:6px;padding-top:2px;">
+          <button onclick="_setSort('score')"
+            style="font-size:9px;padding:2px 8px;border-radius:3px;border:none;cursor:pointer;
+                   background:${_signalSort==='score'?'var(--accent)':'var(--border)'};
+                   color:${_signalSort==='score'?'#000':'var(--muted)'};">
+            SCORE
+          </button>
+          <button onclick="_setSort('change')"
+            style="font-size:9px;padding:2px 8px;border-radius:3px;border:none;cursor:pointer;
+                   background:${_signalSort==='change'?'var(--accent)':'var(--border)'};
+                   color:${_signalSort==='change'?'#000':'var(--muted)'};">
+            % CHANGE
+          </button>
+        </div>
       </div>
       <div class="signal-card-body">
         ${rows || '<div class="empty-state"><div class="empty-icon">📭</div>No active signals</div>'}
