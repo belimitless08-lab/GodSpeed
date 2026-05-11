@@ -642,11 +642,11 @@
 .sig-t1-left { display:flex; align-items:center; gap:8px; }
 .sig-t1-right { display:flex; flex-direction:column; align-items:flex-end; }
 .sig-sym {
-  font-size: 20px; font-weight: 800; color: #ffffff;
+  font-size: 13px; font-weight: 700; color: #ffffff;
   cursor: pointer; letter-spacing: 0.5px; transition: color 0.15s;
 }
 .sig-sym:hover { color: #38bdf8; }
-.sig-ltp { font-size: 20px; font-weight: 800; color: #ffffff; font-variant-numeric: tabular-nums; }
+.sig-ltp { font-size: 14px; font-weight: 700; color: #ffffff; font-variant-numeric: tabular-nums; }
 .sig-chg { font-size: 12px; font-weight: 700; text-align: right; }
 .sig-chart-btn {
   background: rgba(56,189,248,0.1);
@@ -1871,7 +1871,7 @@ function injectSignal(payload) {
   signalData[key].unshift(signal);
 
   if (signalData[key].length > 50) {
-    signalData[key] = signalData[key].slice(0, 50);
+    signalData[key] = signalData[key].slice(0, 15);
   }
 
   if (signal.ici_score != null &&
