@@ -2085,6 +2085,7 @@ let pivotSeries = [];
 let sessionSepSeries = null;
 let lastCandleTime = null;
 let currentChartSymbol = null;
+let _chartRefreshTimer = null;
 let currentTF = '5m';
 let chartPinned = false;
 let hoverTimer = null;
@@ -2333,9 +2334,14 @@ function positionPopup(e) {
   const popup = document.getElementById('chart-popup');
   const pw = 700, ph = 600;
   const vw = window.innerWidth, vh = window.innerHeight;
+  // Always try to open above the click point first
   let x = e.clientX + 16;
-  let y = e.clientY - 50;
-  if (x + pw > vw - 8) x = e.clientX - pw - 16;
+  let y = e.clientY - ph - 20;
+  // If not enough space above, try below
+  if (y < 70) y = e.clientY + 20;
+  // Clamp horizontally
+  if (x + pw > vw - 8) x = Math.max(8, e.clientX - pw - 16);
+  // Clamp vertically — never go below viewport
   if (y + ph > vh - 8) y = vh - ph - 8;
   if (y < 70) y = 70;
   if (x < 8) x = 8;
@@ -2343,14 +2349,43 @@ function positionPopup(e) {
   popup.style.top  = y + 'px';
 }
 
+function _startChartRefresh(symbol, tf) {
+  // Refresh candles every 60s so chart stays current without reopening
+  if (_chartRefreshTimer) clearInterval(_chartRefreshTimer);
+  _chartRefreshTimer = setInterval(async () => {
+    if (!currentChartSymbol || !candleSeries) return;
+    const data = await apiFetch(`/api/candles/${currentChartSymbol}?tf=${currentTF}`);
+    if (!data || !Array.isArray(data.candles)) return;
+    const raw = data.candles;
+    // Only update — never call setData (avoids resetting chart position)
+    raw.slice(-5).forEach(c => {
+      try {
+        candleSeries.update({
+          time:  c.time,
+          open:  c.open,
+          high:  c.high,
+          low:   c.low,
+          close: c.close,
+        });
+      } catch (_) {}
+    });
+  }, 60000);
+}
+
+function _stopChartRefresh() {
+  if (_chartRefreshTimer) { clearInterval(_chartRefreshTimer); _chartRefreshTimer = null; }
+}
+
 function openPopup(symbol, e) {
   const popup = document.getElementById('chart-popup');
   popup.classList.add('visible');
   if (e) positionPopup(e);
   loadChart(symbol, currentTF);
+  _startChartRefresh(symbol, currentTF);
 }
 
 function closePopup() {
+  _stopChartRefresh();
   if (sessionSepSeries) { try { chart.removeSeries(sessionSepSeries); } catch(e) {} sessionSepSeries = null; }
   pivotSeries.forEach(s => { try { chart.removeSeries(s); } catch(e) {} });
   pivotSeries = [];
@@ -2401,6 +2436,7 @@ document.querySelectorAll('.tab-btn[data-tf]').forEach(btn => {
     btn.classList.add('active');
     currentTF = btn.dataset.tf;
     if (currentChartSymbol) loadChart(currentChartSymbol, currentTF);
+    if (currentChartSymbol) _startChartRefresh(currentChartSymbol, currentTF);
   });
 });
 
