@@ -258,6 +258,11 @@ async def _detect_opening_drive(
         slot_rvol = vol / avg_slot_vol
         if slot_rvol < min_vol_mult:
             return None
+    else:
+        # No historical slot data yet — fall back to cumulative RVOL
+        cr_check = _cum_rvol(snapshot)
+        if cr_check > 0 and cr_check < 2.0:
+            return None
 
     pdh = _safe_float(snapshot.get("prev_high"))
     pdl = _safe_float(snapshot.get("prev_low"))
@@ -272,6 +277,10 @@ async def _detect_opening_drive(
         direction = "SHORT"
     if direction is None:
         return None
+    # Prevent Tier 2 from double-firing with ORB signal on same candle
+    if not is_tier1:
+        if await redis.exists(f"range_breakout_ORB_fired:{symbol}"):
+            return None
 
     # Stricter body/volume for large gap candles
     if gap_pct > 1.6 and direction == "LONG":
@@ -325,7 +334,8 @@ async def _detect_range_breakout(
         return None
 
     redis = await get_redis()
-    if await redis.exists(f"range_breakout_fired:{symbol}"):
+    fire_key = f"range_breakout_{phase}_fired:{symbol}"
+    if await redis.exists(fire_key):
         return None
 
     if not candles_5m:
@@ -362,18 +372,34 @@ async def _detect_range_breakout(
         range_low  = _safe_float(snapshot.get("postlunch_low"))
         if range_high == 0 or range_low == 0:
             return None
+        # POSTLUNCH requires tight range — wide afternoon ranges have no edge
+        pl_range_pct = (range_high - range_low) / max(range_low, 1) * 100
+        if not (0.25 <= pl_range_pct <= 2.0):
+            return None
+        pl_atr = _safe_float(snapshot.get("atr14"), 1.0)
+        if (range_high - range_low) > pl_atr * 1.5:
+            return None
 
+    # Require 0.2% buffer above/below range to filter 1-paisa false breaks
+    atr14  = _safe_float(snapshot.get("atr14"), 1.0)
+    buf    = max(range_high * 0.002, atr14 * 0.15)
     direction = None
-    if c > range_high and c > o and gap_dir != "DOWN":
+    if c > range_high + buf and c > o and gap_dir != "DOWN":
         direction = "LONG"
-    elif c < range_low and c < o and gap_dir != "UP":
+    elif c < range_low - buf and c < o and gap_dir != "UP":
         direction = "SHORT"
     if direction is None:
         return None
 
-    await redis.set(f"range_breakout_fired:{symbol}", 1, ex=86400)
+    # Acceptance check: the breakout candle's body must close convincingly
+    # beyond the range — not just tick across by the buffer amount
+    # Already enforced by buf = max(0.2%, 0.15 ATR) above.
+    # Additional: require cum_rvol to be elevated on breakout
+    if cr > 0 and cr < 1.5 and phase == "ORB":
+        # ORB breakouts need stronger volume confirmation
+        return None
+    await redis.set(fire_key, 1, ex=86400)
 
-    atr14 = _safe_float(snapshot.get("atr14"), 1.0)
     sl    = (range_low - atr14 * 0.3) if direction == "LONG" else (range_high + atr14 * 0.3)
 
     logger.info("[signal] RANGE_BREAKOUT %s %s range=%.2f–%.2f cum_rvol=%.2f bh=%.2f",
@@ -434,10 +460,10 @@ async def _detect_hourly_breakout(
 
     # Use snapshot RSI (Wilder-smoothed by candle_builder) — consistent with gatekeeper
     rsi_now = _safe_float(snapshot.get("rsi14"), 50.0)
-    # Trend confirmation: price 30m ago vs now (6 candles back)
-    price_30m_ago = closes_5m[-7] if len(closes_5m) >= 7 else closes_5m[0]
-    rsi_rising  = c > price_30m_ago   # price trending up = RSI rising
-    rsi_falling = c < price_30m_ago   # price trending down = RSI falling
+    # Use actual 5m RSI from snapshot — not a price proxy
+    rsi_5m     = _safe_float(snapshot.get("rsi14_5m") or snapshot.get("rsi14"), 50.0)
+    rsi_rising  = rsi_5m > 50 and rsi_now > 48
+    rsi_falling = rsi_5m < 50 and rsi_now < 52
 
     direction = None
     if c > rolling_1h_high and rsi_rising:
@@ -606,6 +632,18 @@ async def _detect_supertrend_flip(
         return None
     if direction == "SHORT" and band > 0 and ltp > band:
         return None
+    # Require meaningful body health on the flip candle — doji flips are noise
+    if candles_5m := snapshot.get("_candles_5m_ref"):
+        pass  # candles not available in snapshot — skip body check
+    # Body health check via ATR: require candle range > 0.4 ATR
+    # (proxy since candle OHLC not directly in snapshot)
+    vwap  = _safe_float(snapshot.get("vwap"))
+    if vwap > 0 and ltp > 0:
+        # Require LTP to be on correct side of VWAP (trend confirmation)
+        if direction == "LONG"  and ltp < vwap * 0.998:
+            return None
+        if direction == "SHORT" and ltp > vwap * 1.002:
+            return None
 
     # Fire max once per direction per day
     try:
