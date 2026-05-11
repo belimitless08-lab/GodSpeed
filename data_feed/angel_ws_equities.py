@@ -140,7 +140,7 @@ async def _is_nse_open(jwt: str) -> bool:
         logger.info("[angel_ws] NSE closed — weekend (%s).", now_ist.strftime("%A"))
         return False
 
-    open_t  = now_ist.replace(hour=9,  minute=15, second=0, microsecond=0)
+    open_t  = now_ist.replace(hour=9,  minute=0, second=0, microsecond=0)
     close_t = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
 
     is_open = open_t <= now_ist <= close_t
