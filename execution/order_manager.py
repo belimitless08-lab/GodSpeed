@@ -158,21 +158,17 @@ async def _get_execution_ltp(
 
     if ltp > 0:
         age_sec = (_now_ist() - _parse_ts(ts_raw)).total_seconds() if ts_raw else 999999
-        market_is_open = await check_market_open()
-
-        # Tier 1: Live fresh tick
-        if market_is_open and age_sec < 10:
+        # Tier 1: Live fresh tick (age < 10s)
+        if age_sec < 10:
             return ltp, "LIVE_WS"
-
-        # Tier 2: Stale but usable (market closed or old tick but data present)
+        # Tier 2: Stale but usable
         return ltp, "LAST_CLOSE"
 
     # ── Tier 1.5: Short bounded wait for fresh WS tick on CE/PE ─────────
     # TEMPORARY: this bounded fallback keeps execution latency predictable.
     # Long-term this should become fully event-driven (await tick arrival).
     if instrument in ("CE", "PE") and atm_strike:
-        market_is_open = await check_market_open()
-        if market_is_open:
+        if True:  # market open already verified by caller
             for _ in range(3):  # max ~150ms wait
                 await asyncio.sleep(0.05)
                 tick = await redis.hgetall(tick_key)
@@ -1400,15 +1396,19 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
     if instrument == "EQ":
         lot_size = 1
         quantity = order["lots"]
+        account  = await get_paper_account()
     else:
-        lot_size = await get_option_lot_size(
-            symbol,
-            order.get("atm_strike"),
-            instrument,
-            order.get("expiry_date"),
+        # Parallel read — saves one sequential Redis round trip
+        lot_size_result, account = await asyncio.gather(
+            get_option_lot_size(
+                symbol,
+                order.get("atm_strike"),
+                instrument,
+                order.get("expiry_date"),
+            ),
+            get_paper_account(),
         )
-        if lot_size < 1:
-            lot_size = 1
+        lot_size = lot_size_result if lot_size_result >= 1 else 1
         quantity = order["lots"] * lot_size
 
     if order["direction"] == "LONG":
@@ -1418,8 +1418,7 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
         sl_price = ltp * (1 + order["sl_pct"] / 100)
         tg_price = ltp * (1 - order["tg_pct"] / 100)
 
-    margin  = ltp * quantity * _INTRADAY_MARGIN_RATE
-    account = await get_paper_account()
+    margin = ltp * quantity * _INTRADAY_MARGIN_RATE
     if account["available_margin"] < margin:
         logger.warning(
             "[order_manager] Trigger fill rejected — insufficient margin "
@@ -1537,10 +1536,18 @@ async def _check_pending_orders(candle: dict) -> None:
     pending_ids = await redis.smembers("pending:orders")
     today_str   = date.today().isoformat()   # "YYYY-MM-DD"
 
-    for order_id in pending_ids:
-        raw = await redis.get(f"pending:order:{order_id}")
+    if not pending_ids:
+        return
+
+    # Batch-read all pending orders in one pipeline — eliminates
+    # N sequential Redis round trips (one per pending order)
+    async with redis.pipeline(transaction=False) as pipe:
+        for order_id in pending_ids:
+            pipe.get(f"pending:order:{order_id}")
+        raw_results = await pipe.execute()
+
+    for order_id, raw in zip(pending_ids, raw_results):
         if not raw:
-            # Key expired or was deleted — clean up the set entry
             await redis.srem("pending:orders", order_id)
             continue
         order = json.loads(raw)
@@ -1596,6 +1603,13 @@ async def _check_pending_orders(candle: dict) -> None:
         logger.info(
             "[order_manager] Trigger fired — %s %s close=%.2f trigger=%.2f",
             order["symbol"], order["direction"], close_price, order["trigger_price"],
+        )
+        logger.info(
+            "[order_manager] Trigger latency — %s filled in %.0fms after candle close",
+            order["symbol"],
+            (datetime.now(timezone(timedelta(hours=5, minutes=30))) -
+             _parse_ts(candle.get("ts", ""))).total_seconds() * 1000
+            if candle.get("ts") else -1,
         )
 
 
