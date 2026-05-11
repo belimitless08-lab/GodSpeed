@@ -277,6 +277,15 @@ async def _detect_opening_drive(
         direction = "SHORT"
     if direction is None:
         return None
+    # Gap-up false fire: if stock opened ABOVE PDH due to gap,
+    # require price to be within 1% of PDH — not chasing extended gap.
+    open_price = _safe_float(candle.get("open"))
+    if direction == "LONG" and open_price >= pdh and pdh > 0:
+        if c > pdh * 1.01:
+            return None   # Too extended from PDH — gap exhaustion risk
+    if direction == "SHORT" and open_price <= pdl and pdl > 0:
+        if c < pdl * 0.99:
+            return None
     # Prevent Tier 2 from double-firing with ORB signal on same candle
     if not is_tier1:
         if await redis.exists(f"range_breakout_ORB_fired:{symbol}"):
