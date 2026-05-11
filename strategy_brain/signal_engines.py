@@ -532,8 +532,8 @@ async def _detect_hourly_breakout(
     atr14 = _safe_float(snapshot.get("atr14"), 1.0)
     sl    = (max(vwap, l_c) - atr14 * 0.2) if direction == "LONG" else (min(vwap, h_c) + atr14 * 0.2)
 
-    logger.info("[signal] HOURLY_BREAKOUT %s high=%.2f rsi_now=%.1f p30=%.2f cum_rvol=%.2f",
-                direction, rolling_1h_high, rsi_now, price_30m_ago, cr)
+    logger.info("[signal] HOURLY_BREAKOUT %s high=%.2f rsi_5m=%.1f rsi_now=%.1f cum_rvol=%.2f",
+                direction, rolling_1h_high, rsi_5m, rsi_now, cr)
     return {
         "type":        "HOURLY_BREAKOUT",
         "direction":   direction,
