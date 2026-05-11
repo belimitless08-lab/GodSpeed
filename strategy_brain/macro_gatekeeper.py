@@ -18,6 +18,7 @@ Public API (backward compatible with brain.py):
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -27,6 +28,11 @@ from core.redis_client import get_redis
 logger = logging.getLogger(__name__)
 
 _IST = timezone(timedelta(hours=5, minutes=30))
+
+DRCG_LOOKBACK        = 8     # 40 min rolling window
+DRCG_MIN_COIL        = 5     # 25 min minimum coiling
+DRCG_MAX_WIDTH_PCT   = 0.75  # tighter than 0.75% = consolidation
+DRCG_BREAKOUT_BUFFER = 0.08  # 0.08% buffer against fakeouts
 
 
 def _sf(v, d: float = 0.0) -> float:
@@ -38,6 +44,58 @@ def _sf(v, d: float = 0.0) -> float:
 
 def _now_ist() -> datetime:
     return datetime.now(_IST)
+
+
+async def _is_consolidating(redis_client, symbol: str, ltp: float) -> tuple[bool, str]:
+    """
+    Dynamic Rolling Consolidation Gate.
+    Reads last 8 x 5m candles from Redis. Returns (blocked, reason).
+    """
+    if ltp <= 0 or not symbol:
+        return False, "DRCG:ALLOW_BAD_INPUT"
+    try:
+        raw = await redis_client.lrange(f"candles:5m:{symbol}", -DRCG_LOOKBACK, -1)
+    except Exception:
+        return False, "DRCG:ALLOW_REDIS_ERROR"
+
+    if not raw or len(raw) < DRCG_LOOKBACK:
+        return False, "DRCG:ALLOW_INSUFFICIENT_DATA"
+
+    try:
+        candles = [json.loads(c) for c in raw]
+        # Candles stored as [ts, open, high, low, close, volume]
+        highs = [c[2] for c in candles]
+        lows  = [c[3] for c in candles]
+    except Exception:
+        return False, "DRCG:ALLOW_PARSE_ERROR"
+
+    rolling_high    = max(highs)
+    rolling_low     = min(lows)
+    range_width_pct = (rolling_high - rolling_low) / rolling_low * 100 if rolling_low > 0 else 0
+
+    # Immediate breakout on latest candle → allow
+    curr = candles[-1]
+    if curr[2] > rolling_high or curr[3] < rolling_low:
+        return False, f"DRCG:ALLOW_BREAKOUT({range_width_pct:.2f}%)"
+
+    # Range too wide → not consolidation → allow
+    if range_width_pct >= DRCG_MAX_WIDTH_PCT:
+        return False, f"DRCG:ALLOW_WIDE({range_width_pct:.2f}%)"
+
+    # Count consecutive closes inside buffered range
+    buf_high = rolling_high * (1 + DRCG_BREAKOUT_BUFFER / 100)
+    buf_low  = rolling_low  * (1 - DRCG_BREAKOUT_BUFFER / 100)
+    coil = 0
+    for c in reversed(candles):
+        if buf_low <= c[4] <= buf_high:
+            coil += 1
+        else:
+            break
+
+    if coil < DRCG_MIN_COIL:
+        return False, f"DRCG:ALLOW_SHORT_COIL({coil})"
+
+    return True, f"DRCG:BLOCK tight={range_width_pct:.2f}% coil={coil}c [{rolling_low:.2f}–{rolling_high:.2f}]"
 
 
 async def check_macro_gates(
@@ -92,19 +150,22 @@ async def check_macro_gates(
             logger.info("[gate2] %s BLOCKED EMA9 ext=%.2f%%", symbol, ext_pct)
 
 
-    # ── Gate 3: ORB Range Hold (active after 9:30 AM only) ──────────────
-    # Before 9:30 AM: ORB not yet formed — gate is inactive, signals fire freely.
-    # After 9:30 AM: if LTP is strictly inside the 9:15–9:30 opening range,
-    # the stock is still consolidating with no directional edge. Block it.
-    # A breakout (LTP >= orb_high or LTP <= orb_low) is NOT blocked.
+    # ── Gate 3: ORB Range Hold (active 9:30 AM – ~9:55 AM window) ───────
     gate3_active = (now.hour == 9 and now.minute >= 30) or now.hour > 9
     if gate3_active and orb_high > 0 and orb_low > 0:
-        if orb_low < ltp < orb_high:
+        orb_range_pct = (orb_high - orb_low) / ltp * 100 if ltp > 0 else 0
+        if orb_range_pct >= 0.3 and orb_low < ltp < orb_high:
             failed.append("IN_ORB_RANGE")
             logger.info(
-                "[gate3] %s BLOCKED — LTP %.2f inside ORB [%.2f–%.2f]",
-                symbol, ltp, orb_low, orb_high,
+                "[gate3] %s BLOCKED — LTP %.2f inside ORB [%.2f–%.2f] range=%.2f%%",
+                symbol, ltp, orb_low, orb_high, orb_range_pct,
             )
+
+    # ── Gate 4: DRCG — Dynamic Rolling Consolidation (all day) ─────────
+    _drcg_blocked, _drcg_reason = await _is_consolidating(redis, symbol, ltp)
+    if _drcg_blocked:
+        failed.append("DYNAMIC_CONSOLIDATION")
+        logger.info("[gate4] %s %s", symbol, _drcg_reason)
 
     passed = len(failed) == 0
     if passed:
