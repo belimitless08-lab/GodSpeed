@@ -711,9 +711,7 @@ async def _detect_supertrend_flip(
             )
             if above_band < 2:
                 return None
-    # Require meaningful body health on the flip candle — doji flips are noise
-    if candles_5m := snapshot.get("_candles_5m_ref"):
-        pass  # candles not available in snapshot — skip body check
+    # Body health via VWAP alignment — candle OHLC not needed
     # Body health check via ATR: require candle range > 0.4 ATR
     # (proxy since candle OHLC not directly in snapshot)
     vwap  = _safe_float(snapshot.get("vwap"))
