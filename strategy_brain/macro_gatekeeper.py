@@ -8,6 +8,9 @@ Gate 1: RSI Extremes   — LONG blocked if RSI > 80, SHORT if RSI < 20
                          Bypassed before 10:30 AM. Uses 5m RSI.
 Gate 2: EMA9 Extension — LTP > 3% away from EMA9 (both directions)
                          Uses 5m EMA9 updated on 5m close.
+Gate 3: ORB Range Hold — Active after 9:30 AM only.
+                         Blocks if LTP is inside 9:15–9:30 opening range.
+                         Stock still consolidating — no edge to trade.
 
 Public API (backward compatible with brain.py):
     passed, failed_gates = await check_macro_gates(symbol, direction)
@@ -57,12 +60,14 @@ async def check_macro_gates(
         v = snap.get(key.encode()) or snap.get(key)
         return _sf(v, d)
 
-    ltp   = _get("ltp")
+    ltp      = _get("ltp")
     # Use 5m RSI (seeded and updated on 5m closes) when available.
     # Falls back to base RSI value in snapshot if 5m RSI is not yet populated.
-    rsi14 = _get("rsi14_5m") if _get("rsi14_5m") > 0 else _get("rsi14", 50.0)
-    ema9  = _get("ema9")
-    now   = _now_ist()
+    rsi14    = _get("rsi14_5m") if _get("rsi14_5m") > 0 else _get("rsi14", 50.0)
+    ema9     = _get("ema9")
+    orb_high = _get("orb_high", 0.0)
+    orb_low  = _get("orb_low",  0.0)
+    now      = _now_ist()
 
     if ltp <= 0:
         return False, ["NO_LTP"]
@@ -86,6 +91,20 @@ async def check_macro_gates(
             failed.append("EMA9_EXTENDED")
             logger.info("[gate2] %s BLOCKED EMA9 ext=%.2f%%", symbol, ext_pct)
 
+
+    # ── Gate 3: ORB Range Hold (active after 9:30 AM only) ──────────────
+    # Before 9:30 AM: ORB not yet formed — gate is inactive, signals fire freely.
+    # After 9:30 AM: if LTP is strictly inside the 9:15–9:30 opening range,
+    # the stock is still consolidating with no directional edge. Block it.
+    # A breakout (LTP >= orb_high or LTP <= orb_low) is NOT blocked.
+    gate3_active = (now.hour == 9 and now.minute >= 30) or now.hour > 9
+    if gate3_active and orb_high > 0 and orb_low > 0:
+        if orb_low < ltp < orb_high:
+            failed.append("IN_ORB_RANGE")
+            logger.info(
+                "[gate3] %s BLOCKED — LTP %.2f inside ORB [%.2f–%.2f]",
+                symbol, ltp, orb_low, orb_high,
+            )
 
     passed = len(failed) == 0
     if passed:
