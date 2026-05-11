@@ -495,6 +495,23 @@ async def _detect_hourly_breakout(
         direction = "SHORT"
     if direction is None:
         return None
+    # Require the 1h high/low to have been previously tested —
+    # a level that was never touched is just a grinding trend, not a breakout.
+    # At least one of the prior 4 candles must have touched the level.
+    if len(candles_5m) >= 5:
+        prior_4 = candles_5m[-5:-1]
+        if direction == "LONG":
+            was_tested = any(
+                _safe_float(x.get("high")) >= rolling_1h_high * 0.998
+                for x in prior_4
+            )
+        else:
+            was_tested = any(
+                _safe_float(x.get("low")) <= rolling_1h_low * 1.002
+                for x in prior_4
+            )
+        if not was_tested:
+            return None
 
     redis = await get_redis()
     fire_key = f"hourly_breakout_fired:{symbol}:{direction}"
