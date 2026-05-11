@@ -661,6 +661,7 @@ async def _detect_supertrend_flip(
     symbol: str,
     snapshot: dict,
     prev_snapshot: dict,
+    candles_5m: list | None = None,
 ) -> Optional[dict]:
     """
     SUPERTREND_FLIP — direction change detected on 5m candle close.
@@ -690,6 +691,26 @@ async def _detect_supertrend_flip(
         return None
     if direction == "SHORT" and band > 0 and ltp > band:
         return None
+
+    # Require price to have spent ≥2 candles on the wrong side before flipping.
+    # A single-candle flip is noise — real trend changes build pressure first.
+    if candles_5m and len(candles_5m) >= 5 and band > 0:
+        prior_4 = candles_5m[-5:-1]
+        if direction == "LONG":
+            # Before BULL flip, prior candles should have closed below band
+            below_band = sum(
+                1 for x in prior_4
+                if _safe_float(x.get("close")) < band
+            )
+            if below_band < 2:
+                return None
+        else:
+            above_band = sum(
+                1 for x in prior_4
+                if _safe_float(x.get("close")) > band
+            )
+            if above_band < 2:
+                return None
     # Require meaningful body health on the flip candle — doji flips are noise
     if candles_5m := snapshot.get("_candles_5m_ref"):
         pass  # candles not available in snapshot — skip body check
@@ -791,7 +812,7 @@ async def scan_all_signals(symbol: str, snapshot: dict | None = None) -> list[di
     for coro_or_fn, args, is_async in [
         (_detect_hourly_breakout,    (symbol, snapshot, candles_5m), True),
         (_detect_choppiness_breakout,(symbol, snapshot, candles_5m), True),
-        (_detect_supertrend_flip,    (symbol, snapshot, prev_snapshot), True),
+        (_detect_supertrend_flip,    (symbol, snapshot, prev_snapshot, candles_5m), True),
     ]:
         try:
             sig = await coro_or_fn(*args) if is_async else coro_or_fn(*args)
