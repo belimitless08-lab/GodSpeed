@@ -637,12 +637,11 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 is_first = False
                 if '_dt' in locals():
                     is_first = (_dt.hour == 9 and _dt.minute == 15)
-                if is_first:
-                    indicators.setdefault(symbol, {})["cum_volume"] = 0.0
-                    prev_cum_vol = 0.0
-                else:
-                    prev_cum_vol = ind.get("cum_volume", 0.0)
-                new_cum_vol  = prev_cum_vol + current_vol
+                # closed["volume"] = cumulative session shares from AngelOne
+                # (total shares traded since 9:15 AM — NOT incremental per candle)
+                # Use directly — do NOT accumulate. vol_profile:cum uses the same
+                # cumulative convention from historical data.
+                new_cum_vol = current_vol
                 vp_cum_raw = await redis.get(f"vol_profile:cum:{symbol}")
                 if vp_cum_raw:
                     vp_cum       = json.loads(vp_cum_raw)
