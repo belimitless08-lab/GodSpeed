@@ -311,6 +311,21 @@ async def _detect_opening_drive(
     }
 
 
+def _has_acceptance(candles_5m: list, direction: str, level: float) -> bool:
+    """
+    Acceptance confirmation: the candle BEFORE the current one also
+    closed on the correct side of the level.
+    This means two consecutive 5m closes confirmed the breakout — not a wick.
+    Works without waiting for the next candle (uses candles[-2]).
+    Returns True only when previous candle also broke out.
+    """
+    if len(candles_5m) < 2:
+        return False
+    prev_close = _safe_float(candles_5m[-2].get("close"))
+    if direction == "LONG":
+        return prev_close > level
+    return prev_close < level
+
 async def _detect_range_breakout(
     symbol: str,
     snapshot: dict,
@@ -390,6 +405,14 @@ async def _detect_range_breakout(
         direction = "SHORT"
     if direction is None:
         return None
+
+    # Acceptance: for ORB, require previous 5m candle to also have closed
+    # above/below the level — confirms breakout, not a single-candle wick.
+    # POSTLUNCH skipped — shorter window, acceptance too restrictive.
+    if phase == "ORB":
+        accept_level = range_high if direction == "LONG" else range_low
+        if not _has_acceptance(candles_5m, direction, accept_level):
+            return None
 
     # Acceptance check: the breakout candle's body must close convincingly
     # beyond the range — not just tick across by the buffer amount
