@@ -158,6 +158,66 @@ def _body_health(o: float, h: float, l: float, c: float) -> float:
     return abs(c - o) / candle_range
 
 
+def _pa_confluence(
+    candles_5m: list,
+    direction: str,
+    skip_directional: bool = False,
+) -> bool:
+    """
+    Pure price-action confluence gate. All passing conditions must hold.
+    Returns True (pass) when insufficient data exists — never blocks on missing data.
+
+    skip_directional=True: skips condition 4 (used for CHOPPINESS_BREAKOUT
+    where prior candles are intentionally choppy during compression phase).
+    """
+    if len(candles_5m) < 4:
+        return True
+
+    candle = candles_5m[-1]
+    o = _safe_float(candle.get("open"))
+    h = _safe_float(candle.get("high"))
+    l = _safe_float(candle.get("low"))
+    c = _safe_float(candle.get("close"))
+    candle_range = h - l
+    if candle_range < 0.001:
+        return False
+
+    # 1. Range expansion — current candle >= 1.5x avg range of prior 3
+    prior_3 = candles_5m[-4:-1]
+    avg_prior_range = sum(
+        _safe_float(x.get("high")) - _safe_float(x.get("low"))
+        for x in prior_3
+    ) / 3
+    if avg_prior_range > 0 and candle_range < avg_prior_range * 1.5:
+        return False
+
+    # 2. Close strength — closes >= 65% into range in signal direction
+    if direction == "LONG":
+        if (c - l) / candle_range < 0.65:
+            return False
+    else:
+        if (h - c) / candle_range < 0.65:
+            return False
+
+    # 3. No absorption — real body >= 40% of range
+    if abs(c - o) < candle_range * 0.40:
+        return False
+
+    # 4. Directional closes — prior 2 candles close in signal direction
+    # Skipped for CHOPPINESS_BREAKOUT (compression = alternating closes by design)
+    if not skip_directional and len(candles_5m) >= 3:
+        p1 = candles_5m[-2]
+        p2 = candles_5m[-3]
+        c1, o1 = _safe_float(p1.get("close")), _safe_float(p1.get("open"))
+        c2, o2 = _safe_float(p2.get("close")), _safe_float(p2.get("open"))
+        if direction == "LONG" and not (c1 > o1 and c2 > o2):
+            return False
+        if direction == "SHORT" and not (c1 < o1 and c2 < o2):
+            return False
+
+    return True
+
+
 def _calc_efficiency_ratio(closes: list, period: int = 12) -> float:
     if len(closes) < period + 1:
         return 0.5
@@ -286,6 +346,10 @@ async def _detect_opening_drive(
     if direction == "SHORT" and open_price <= pdl and pdl > 0:
         if c < pdl * 0.99:
             return None
+
+    if not _pa_confluence(candles_5m, direction):
+        return None
+
     # Prevent Tier 2 from double-firing with ORB signal on same candle
     if not is_tier1:
         if await redis.exists(f"range_breakout_ORB_fired:{symbol}"):
@@ -415,6 +479,9 @@ async def _detect_range_breakout(
     if direction is None:
         return None
 
+    if not _pa_confluence(candles_5m, direction):
+        return None
+
     # Acceptance: for ORB, require previous 5m candle to also have closed
     # above/below the level — confirms breakout, not a single-candle wick.
     # POSTLUNCH skipped — shorter window, acceptance too restrictive.
@@ -504,6 +571,10 @@ async def _detect_hourly_breakout(
         direction = "SHORT"
     if direction is None:
         return None
+
+    if not _pa_confluence(candles_5m, direction):
+        return None
+
     # Require the 1h high/low to have been previously tested —
     # a level that was never touched is just a grinding trend, not a breakout.
     # At least one of the prior 4 candles must have touched the level.
@@ -631,6 +702,9 @@ async def _detect_choppiness_breakout(
     elif c < comp_low:
         direction = "SHORT"
     if direction is None:
+        return None
+
+    if not _pa_confluence(candles_5m, direction, skip_directional=True):
         return None
 
     redis = await get_redis()
