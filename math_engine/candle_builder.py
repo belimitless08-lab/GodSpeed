@@ -222,6 +222,31 @@ def _update_supertrend(
     return direction, band
 
 
+def _compute_vol_state(
+    cum_rvol: float,
+    vol_accel: float,
+    prev_state: str,
+    prev_vol_accel: float,
+    prev_cum_rvol: float,
+) -> str:
+    """
+    Volume State Machine.
+    DRY       — no meaningful volume activity
+    BUILDING  — volume picking up but not confirmed
+    BURST     — institutional step-change in volume
+    CLIMAX    — high volume but acceleration fading (exhaustion risk)
+    FADE      — volume retreating after BURST or CLIMAX
+    """
+    if cum_rvol < 1.0:
+        return "DRY"
+    if cum_rvol > 2.5 and prev_vol_accel > 0 and vol_accel < prev_vol_accel:
+        return "CLIMAX"
+    if cum_rvol > 1.5 and vol_accel >= 2.0:
+        return "BURST"
+    if prev_state in ("BURST", "CLIMAX") and prev_cum_rvol > 0 and cum_rvol < prev_cum_rvol:
+        return "FADE"
+    return "BUILDING"
+
 def _calc_choppiness(candles_14: list[list]) -> float:
     """
     Choppiness index over the last 14 candles.
@@ -280,6 +305,7 @@ async def _flush_candle_to_redis(
     candle_key   = f"candles:1m:{symbol}"
 
     is_index = symbol in _INDEX_SYMBOLS
+    vol_state = updated_ind.get("vol_state", "DRY")
     snapshot_mapping = {
         "ema16":           str(updated_ind["ema16"]),
         "ema200":          str(updated_ind["ema200"]),
@@ -305,6 +331,7 @@ async def _flush_candle_to_redis(
         "cum_rvol":   str(updated_ind.get("cum_rvol", 0.0)),
         "vol_accel":   str(updated_ind.get("vol_accel", 0.0)),
         "consec_rvol": str(updated_ind.get("consec_rvol", 0)),
+        "vol_state": vol_state if not is_index else "DRY",
         "first5m_high": str(indicators.get(symbol, {}).get("first5m_high", 0.0)),
         "first5m_low":  str(indicators.get(symbol, {}).get("first5m_low", 0.0)),
         "cum_volume": str(updated_ind.get("cum_volume", 0.0)),
@@ -649,6 +676,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             cum_rvol    = 0.0
             vol_accel   = 0.0
             consec_rvol = 0
+            vol_state   = "DRY"
         else:
             current_vol = closed["volume"]
             # closed["volume"] = AngelOne cumulative session shares since 9:15 AM.
@@ -711,6 +739,18 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             consec_rvol = (prev_consec + 1) if rvol >= 1.3 else 0
             indicators.setdefault(symbol, {})["consec_rvol"] = consec_rvol
 
+            # --- Volume State Machine ---
+            vol_state = _compute_vol_state(
+                cum_rvol       = cum_rvol,
+                vol_accel      = vol_accel,
+                prev_state     = ind.get("vol_state", "DRY"),
+                prev_vol_accel = ind.get("prev_vol_accel", 0.0),
+                prev_cum_rvol  = ind.get("prev_cum_rvol", 0.0),
+            )
+            indicators.setdefault(symbol, {})["prev_vol_accel"] = vol_accel
+            indicators.setdefault(symbol, {})["prev_cum_rvol"]  = cum_rvol
+            indicators.setdefault(symbol, {})["vol_state"]      = vol_state
+
         # Assemble updated indicator dict
         updated_ind: dict[str, Any] = {
             "ema9":            new_ema9,
@@ -733,6 +773,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             "cum_rvol":   cum_rvol,
             "vol_accel":   vol_accel,
             "consec_rvol": consec_rvol,
+            "vol_state":   vol_state,
         }
 
         # Persist to Redis (async I/O — back on event loop)
@@ -1225,6 +1266,9 @@ async def _seed_indicators() -> None:
             "vol_profile_cum": {},
             "recent_vols":     [],
             "consec_rvol":     0,
+            "vol_state":       "DRY",
+            "prev_vol_accel":  0.0,
+            "prev_cum_rvol":   0.0,
             "first5m_high":    0.0,
             "first5m_low":     0.0,
             "postlunch_high":   0.0,
