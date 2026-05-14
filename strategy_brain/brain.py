@@ -608,103 +608,133 @@ async def _run_pcr_vix_update() -> None:
 async def _run_volume_ranking() -> None:
     """
     Rank all universe symbols by composite volume score every 5 minutes.
+    Fires immediately on startup if within market hours, then every 5 minutes.
 
-    Score = cum_rvol(40%) + vol_accel(25%) + consec_rvol(15%) + cum_volume(20%).
-    All components max-normalised across the live universe.
-    Each entry also carries first5m_breakout direction for the frontend filter:
-      - breakout_dir = "LONG"  → LTP above first 5m candle wick high
-      - breakout_dir = "SHORT" → LTP below first 5m candle wick low
-      - breakout_dir = None    → still inside first 5m range (blocked)
-
-    Top 15 written to Redis key: volume_leaders:ranked (JSON list, TTL 360s).
+    Enhancements:
+    - Session phase normalisation via elif+mins phase multiplier
+    - Liquidity tiering (avg_volume_5d < 200K requires cum_rvol >= 2.5)
+    - Expiry day handling (Thursday — all thresholds raised 30%)
+    - first5m breakout filter
+    - vol_state included in each ranked entry
     """
-    while True:
-        await asyncio.sleep(300)
-        if not _within_market_hours():
-            continue
-        try:
-            redis   = await get_redis()
-            symbols = await get_symbols()
-            rows    = []
+    def _phase_multiplier() -> float:
+        """
+        Returns RVOL divisor by session phase.
+        Higher value = harder to qualify (e.g. Close Surge always high vol).
+        Lower value  = easier to qualify (e.g. Dead Zone naturally quiet).
+        """
+        now  = _now_ist()
+        mins = now.hour * 60 + now.minute
+        if   mins < 600:  return 1.0   # 09:15–10:00 Opening Drive
+        elif mins < 690:  return 1.0   # 10:00–11:30 Morning Core
+        elif mins < 780:  return 0.7   # 11:30–13:00 Dead Zone
+        elif mins < 810:  return 0.75  # 13:00–13:30 Post-lunch
+        elif mins < 900:  return 0.85  # 13:30–15:00 Afternoon Core
+        else:             return 1.3   # 15:00–15:30 Close Surge
 
-            for sym in symbols:
+    def _sf(snap, k, d=0.0):
+        try:
+            return float(snap.get(k, d) or d)
+        except Exception:
+            return d
+
+    while True:
+        if _within_market_hours():
+            try:
+                redis   = await get_redis()
+                symbols = await get_symbols()
+
+                # Expiry day — raise effective thresholds 30% on Thursdays
                 try:
-                    snap = await redis.hgetall(f"snapshot:{sym}")
-                    if not snap:
+                    is_expiry = (await redis.get("market:is_expiry") or b"0") in (b"1", "1")
+                except Exception:
+                    is_expiry = False
+                expiry_mult  = 1.3 if is_expiry else 1.0
+                rvol_divisor = _phase_multiplier() * expiry_mult
+
+                rows = []
+                for sym in symbols:
+                    try:
+                        snap = await redis.hgetall(f"snapshot:{sym}")
+                        if not snap:
+                            continue
+
+                        cum_rvol     = _sf(snap, "cum_rvol")
+                        vol_accel    = _sf(snap, "vol_accel")
+                        consec_rvol  = _sf(snap, "consec_rvol")
+                        cum_volume   = _sf(snap, "cum_volume")
+                        avg_vol_5d   = _sf(snap, "avg_volume_5d")
+                        ltp          = _sf(snap, "ltp")
+                        first5m_high = _sf(snap, "first5m_high")
+                        first5m_low  = _sf(snap, "first5m_low")
+
+                        # Liquidity guard: small-cap needs stronger RVOL signal
+                        if 0 < avg_vol_5d < 200_000 and cum_rvol < 2.5:
+                            continue
+
+                        # Phase + expiry normalised RVOL
+                        adj_rvol = cum_rvol / max(rvol_divisor, 0.1)
+
+                        # First 5m candle breakout filter
+                        if first5m_high > 0 and first5m_low > 0:
+                            if ltp > first5m_high:
+                                breakout_dir = "LONG"
+                            elif ltp < first5m_low:
+                                breakout_dir = "SHORT"
+                            else:
+                                breakout_dir = None
+                        else:
+                            breakout_dir = None
+
+                        rows.append({
+                            "symbol":       sym,
+                            "cum_rvol":     cum_rvol,
+                            "adj_rvol":     round(adj_rvol, 3),
+                            "vol_accel":    vol_accel,
+                            "consec_rvol":  consec_rvol,
+                            "cum_volume":   cum_volume,
+                            "ltp":          ltp,
+                            "first5m_high": first5m_high,
+                            "first5m_low":  first5m_low,
+                            "breakout_dir": breakout_dir,
+                            "vol_state":    (snap.get("vol_state") or b"DRY"),
+                        })
+                    except Exception as sym_exc:
+                        logger.debug("[brain] vol rank skip %s: %s", sym, sym_exc)
                         continue
 
-                    def _sf(k, d=0.0):
-                        try:
-                            return float(snap.get(k, d) or d)
-                        except Exception:
-                            return d
+                if rows:
+                    max_cr  = max(r["adj_rvol"]    for r in rows) or 1.0
+                    max_va  = max(r["vol_accel"]   for r in rows) or 1.0
+                    max_con = max(r["consec_rvol"] for r in rows) or 1.0
+                    max_vol = max(r["cum_volume"]  for r in rows) or 1.0
 
-                    cum_rvol    = _sf("cum_rvol")
-                    vol_accel   = _sf("vol_accel")
-                    consec_rvol = _sf("consec_rvol")
-                    cum_volume  = _sf("cum_volume")
-                    ltp         = _sf("ltp")
-                    first5m_high = _sf("first5m_high")
-                    first5m_low  = _sf("first5m_low")
+                    for r in rows:
+                        r["vol_leader_score"] = round((
+                            0.40 * (r["adj_rvol"]    / max_cr)  +
+                            0.25 * (r["vol_accel"]   / max_va)  +
+                            0.15 * (r["consec_rvol"] / max_con) +
+                            0.20 * (r["cum_volume"]  / max_vol)
+                        ) * 100, 1)
 
-                    # First 5m candle breakout filter
-                    if first5m_high > 0 and first5m_low > 0:
-                        if ltp > first5m_high:
-                            breakout_dir = "LONG"
-                        elif ltp < first5m_low:
-                            breakout_dir = "SHORT"
-                        else:
-                            breakout_dir = None   # inside range — blocked
-                    else:
-                        breakout_dir = None       # first5m not yet locked (before 9:20)
+                    rows.sort(key=lambda x: x["vol_leader_score"], reverse=True)
+                    top15 = rows[:15]
 
-                    rows.append({
-                        "symbol":        sym,
-                        "cum_rvol":      cum_rvol,
-                        "vol_accel":     vol_accel,
-                        "consec_rvol":   consec_rvol,
-                        "cum_volume":    cum_volume,
-                        "ltp":           ltp,
-                        "first5m_high":  first5m_high,
-                        "first5m_low":   first5m_low,
-                        "breakout_dir":  breakout_dir,
-                    })
-                except Exception as sym_exc:
-                    logger.debug("[brain] volume ranking skip %s: %s", sym, sym_exc)
-                    continue
+                    await redis.set("volume_leaders:ranked", json.dumps(top15), ex=360)
+                    logger.info(
+                        "[brain] Vol ranking — leader=%s score=%.1f "
+                        "breakout=%s phase_div=%.2f expiry=%s",
+                        top15[0]["symbol"]           if top15 else "none",
+                        top15[0]["vol_leader_score"] if top15 else 0,
+                        top15[0]["breakout_dir"]     if top15 else "none",
+                        rvol_divisor,
+                        is_expiry,
+                    )
 
-            if not rows:
-                continue
+            except Exception as exc:
+                logger.warning("[brain] volume ranking error: %s", exc)
 
-            # Max-normalise each component across the universe
-            max_cr  = max(r["cum_rvol"]    for r in rows) or 1.0
-            max_va  = max(r["vol_accel"]   for r in rows) or 1.0
-            max_con = max(r["consec_rvol"] for r in rows) or 1.0
-            max_vol = max(r["cum_volume"]  for r in rows) or 1.0
-
-            for r in rows:
-                r["vol_leader_score"] = round((
-                    0.40 * (r["cum_rvol"]    / max_cr)  +
-                    0.25 * (r["vol_accel"]   / max_va)  +
-                    0.15 * (r["consec_rvol"] / max_con) +
-                    0.20 * (r["cum_volume"]  / max_vol)
-                ) * 100, 1)
-
-            rows.sort(key=lambda x: x["vol_leader_score"], reverse=True)
-            top15 = rows[:15]
-
-            await redis.set("volume_leaders:ranked", json.dumps(top15), ex=360)
-            logger.info(
-                "[brain] Volume ranking updated — leader: %s score=%.1f breakout=%s",
-                top15[0]["symbol"]        if top15 else "none",
-                top15[0]["vol_leader_score"] if top15 else 0,
-                top15[0]["breakout_dir"]  if top15 else "none",
-            )
-
-        except Exception as exc:
-            logger.warning("[brain] volume ranking error: %s", exc)
-
-
+        await asyncio.sleep(300)
 async def start_execution_engine() -> None:
     global _execution_engine_started
     if _execution_engine_started:
