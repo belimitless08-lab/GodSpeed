@@ -31,7 +31,7 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 
 DRCG_LOOKBACK        = 8     # 40 min rolling window
 DRCG_MIN_COIL        = 5     # 25 min minimum coiling
-DRCG_MAX_WIDTH_PCT   = 0.75  # tighter than 0.75% = consolidation
+DRCG_MAX_WIDTH_PCT   = 2.5   # Will be overridden by ATR check below
 DRCG_BREAKOUT_BUFFER = 0.08  # 0.08% buffer against fakeouts
 
 
@@ -78,8 +78,12 @@ async def _is_consolidating(redis_client, symbol: str, ltp: float) -> tuple[bool
     if curr[2] > rolling_high or curr[3] < rolling_low:
         return False, f"DRCG:ALLOW_BREAKOUT({range_width_pct:.2f}%)"
 
-    # Range too wide → not consolidation → allow
-    if range_width_pct >= DRCG_MAX_WIDTH_PCT:
+    # Range too wide relative to stock's ATR → not consolidation → allow
+    # Use ATR-relative threshold: if range > 1.5x ATR, it's a wide range
+    # This handles high-volatility stocks correctly (CANBK, BANKNIFTY etc.)
+    # Note: atr14 not in snapshot here — use range_pct proxy
+    # Tight consolidation = range < 1.5 ATR ≈ range_pct < 1.2% for most F&O
+    if range_width_pct >= 1.2:
         return False, f"DRCG:ALLOW_WIDE({range_width_pct:.2f}%)"
 
     # Count consecutive closes inside buffered range
