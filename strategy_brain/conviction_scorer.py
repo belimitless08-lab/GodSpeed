@@ -80,12 +80,17 @@ async def score_signal(signal: dict, snapshot: dict) -> dict:
     signal["atr14"]      = round(_sf(snapshot.get("atr14")), 2)
     signal["rsi14"]      = round(_sf(snapshot.get("rsi14"), 50.0), 1)
 
-    # ── Pillar 1: Cumulative RVOL (25 pts) ──────────────────────────────
-    cr = _sf(snapshot.get("cum_rvol"))
-    if   cr >= 1.8: p1 = 25
-    elif cr >= 1.5: p1 = 18
-    elif cr >= 1.3: p1 = 10
-    else:            p1 = 0
+    # ── Pillar 1: Cumulative RVOL base + boost (25 pts max) ─────────────
+    cr  = _sf(snapshot.get("cum_rvol"))
+    va  = _sf(snapshot.get("vol_accel"))
+    con = _sf(snapshot.get("consec_rvol"))
+    if   cr >= 1.8: base = 25
+    elif cr >= 1.5: base = 18
+    elif cr >= 1.3: base = 10
+    else:            base = 0
+    # Boost: vol_accel >= 2.0 adds 2pts, consec_rvol >= 3 adds 1pt
+    boost = (2 if va >= 2.0 else (1 if va >= 1.5 else 0)) + (1 if con >= 3 else 0)
+    p1 = min(25, base + boost)
 
     # ── Pillar 2: Relative Strength vs NIFTY (25 pts) ───────────────────
     nifty = {}
@@ -184,9 +189,9 @@ async def score_signal(signal: dict, snapshot: dict) -> dict:
 
     logger.info(
         "[scorer] %s %s %s score=%d grade=%s "
-        "p1=%d p2=%d p3=%d p4=%d p5=%d bonus=%d er=%.3f",
+        "p1=%d(cr=%.2f va=%.1f con=%.0f) p2=%d p3=%d p4=%d p5=%d bonus=%d er=%.3f",
         symbol, sig_type, direction, total, grade,
-        p1, p2, p3, p4, p5, bonus, er_val,
+        p1, cr, va, con, p2, p3, p4, p5, bonus, er_val,
     )
     return signal
 
