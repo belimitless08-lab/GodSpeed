@@ -727,6 +727,25 @@
     font-size: 12px;
   }
   .leader-row:last-child { border-bottom: none; }
+
+  /* ── OPTIONS LEADERS PANEL ── */
+  .opt-leader-row {
+    display: grid;
+    grid-template-columns: 1fr 48px 68px 58px;
+    gap: 4px; align-items: center;
+    padding: 6px 12px;
+    border-bottom: 1px solid rgba(51,65,85,0.35);
+    font-size: 11px;
+  }
+  .opt-leader-row:last-child { border-bottom: none; }
+  .opt-sym {
+    display: flex; align-items: center; gap: 3px;
+    font-weight: 600; font-size: 11px; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis;
+  }
+  .opt-rvol { font-weight: 700; color: var(--gold); text-align: right; }
+  .opt-ltp  { text-align: right; color: var(--text); }
+  .opt-chg  { text-align: right; font-weight: 600; }
   .leader-row.bull { border-left: 2px solid var(--green); }
   .leader-row.bear { border-left: 2px solid var(--red); }
   .leader-row .rank { color: var(--muted); font-size: 10px; font-weight: 700; }
@@ -855,11 +874,15 @@
 </div>
 
 <!-- ══════════════════════════════════════════
-     WATCHLIST SECTION
+     WATCHLIST + OPTIONS LEADERS
 ══════════════════════════════════════════ -->
 <div style="padding:0 12px;">
-    <div class="section-label">Watchlist</div>
-    <div class="card">
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:start;">
+
+    <!-- LEFT: Watchlist (unchanged) -->
+    <div>
+      <div class="section-label">Watchlist</div>
+      <div class="card">
         <div style="padding:8px 12px;border-bottom:1px solid var(--border);position:relative;">
             <input type="text" id="wl-search"
                 placeholder="Search and add symbol…"
@@ -883,7 +906,39 @@
                 <div style="font-size:11px;color:var(--muted);">Add symbols to track them here</div>
             </div>
         </div>
+      </div>
     </div>
+
+    <!-- RIGHT: Options Volume Leaders (new) -->
+    <div>
+      <div class="section-label">🔥 Options Leaders</div>
+      <div class="card" id="options-leaders-card">
+        <div class="card-header">
+          <span class="card-title" style="color:var(--gold);">ATM Turnover Flow</span>
+          <span class="card-count" id="opt-count"
+                style="background:var(--gold);color:#000;">0</span>
+        </div>
+        <!-- Column headers -->
+        <div style="display:grid;grid-template-columns:1fr 48px 68px 58px;
+                    gap:4px;padding:4px 12px 2px;
+                    font-size:9px;letter-spacing:0.08em;
+                    color:var(--muted);text-transform:uppercase;
+                    border-bottom:1px solid var(--border);">
+          <span>Symbol</span>
+          <span style="text-align:right;">Vol</span>
+          <span style="text-align:right;">LTP</span>
+          <span style="text-align:right;">Chg%</span>
+        </div>
+        <div id="options-leaders-list">
+          <div class="empty-state">
+            <div class="empty-icon">📈</div>
+            Updates every 5 min during market hours
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
 </div>
 
 <!-- ══════════════════════════════════════════
@@ -3857,6 +3912,49 @@ async function fetchVolumeLeaders() {
 // Call on load and every 5 minutes
 fetchVolumeLeaders();
 setInterval(fetchVolumeLeaders, 5 * 60 * 1000);
+
+/* ══════════════════════════════════════════
+   OPTIONS LEADERS
+══════════════════════════════════════════ */
+async function fetchOptionsLeaders() {
+    try {
+        const res  = await fetch('/api/options-leaders');
+        const data = await res.json();
+        if (data.status !== 'ok') return;
+        const el = document.getElementById('options-leaders-list');
+        if (!el) return;
+        document.getElementById('opt-count').textContent = data.leaders.length;
+        if (data.leaders.length === 0) {
+            el.innerHTML = '<div class="empty-state"><div class="empty-icon">📈</div>No data yet</div>';
+            return;
+        }
+        el.innerHTML = data.leaders.map((s, i) => {
+            const chgPos  = (s.change_pct || 0) >= 0;
+            const chgStr  = (chgPos ? '+' : '') + parseFloat(s.change_pct || 0).toFixed(2) + '%';
+            const ltpStr  = '₹' + parseFloat(s.ltp).toLocaleString('en-IN',
+                              {minimumFractionDigits:2, maximumFractionDigits:2});
+            const rvolStr = parseFloat(s.atm_rvol).toFixed(1) + 'x';
+            return `
+            <div class="opt-leader-row">
+              <span class="opt-sym">
+                <span style="font-size:9px;color:var(--muted);min-width:16px;">#${i+1}</span>
+                <span>${s.symbol}</span>
+                <button onclick="openPopup('${s.symbol}', event)"
+                  style="background:none;border:none;cursor:pointer;padding:0;
+                         color:var(--accent);font-size:10px;opacity:0.7;flex-shrink:0;">↗</button>
+              </span>
+              <span class="opt-rvol">${rvolStr}</span>
+              <span class="opt-ltp">${ltpStr}</span>
+              <span class="opt-chg" style="color:${chgPos?'var(--green)':'var(--red)'};">${chgStr}</span>
+            </div>`;
+        }).join('');
+    } catch(e) {
+        console.warn('Options leaders fetch failed:', e);
+    }
+}
+fetchOptionsLeaders();
+setInterval(fetchOptionsLeaders, 5 * 60 * 1000);
+
 
 /* ══════════════════════════════════════════
    POLLING MANAGER
