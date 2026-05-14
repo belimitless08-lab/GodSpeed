@@ -1145,6 +1145,43 @@ async def _seed_options_symbol(
 
         redis = await get_redis()
         await redis.set(f"options:prev:{symbol}", json.dumps(result))
+
+        # --- ATM Turnover Baseline ---
+        # Computes yesterday's ATM CE+PE combined premium turnover.
+        # Uses ce/pe dicts already in scope — zero extra API calls.
+        # ce["volumes"][-1]  = yesterday's CE daily contracts traded (ONE_DAY candle[5])
+        # ce["prev_close"]   = yesterday's CE closing premium (ONE_DAY candle[-1][4])
+        # Turnover = contracts × premium × lot_size = actual ₹ money flow
+        try:
+            lot_raw  = await redis.hget(f"snapshot:{symbol}", "lot_size")
+            lot_size = int(float(lot_raw or 1))
+
+            ce_vol_prev = float(ce["volumes"][-1]) if ce["volumes"] else 0.0
+            pe_vol_prev = float(pe["volumes"][-1]) if pe["volumes"] else 0.0
+
+            yesterday_turnover = (
+                (ce_vol_prev * ce["prev_close"] * lot_size) +
+                (pe_vol_prev * pe["prev_close"] * lot_size)
+            )
+
+            await redis.set(
+                f"options:atm_turnover_prev:{symbol}",
+                str(yesterday_turnover),
+            )
+            # Reset today's running total — angel_ws_atm_tracker increments live
+            await redis.set(f"options:atm_turnover_today:{symbol}", "0")
+
+            logger.debug(
+                "[seeder] %s ATM baseline=%.0f "
+                "(ce=%.0f×%.4f + pe=%.0f×%.4f) lot=%d",
+                symbol, yesterday_turnover,
+                ce_vol_prev, ce["prev_close"],
+                pe_vol_prev, pe["prev_close"],
+                lot_size,
+            )
+        except Exception as _atm_exc:
+            logger.warning("[seeder] %s ATM baseline failed: %s", symbol, _atm_exc)
+
         return True
 
     except Exception as exc:
