@@ -176,6 +176,9 @@ async def score_signal(signal: dict, snapshot: dict) -> dict:
     elif sig_type == "RANGE_BREAKOUT":
         bkey = f"RANGE_BREAKOUT_{signal.get('phase', 'ORB')}"
     bonus = SIGNAL_BONUS.get(bkey, 3)
+    # Multi-day volume build confirmation
+    if snapshot.get("vol_trend_3d") == "RISING":
+        bonus = min(bonus + 3, 13)  # cap total bonus at 13
 
     total = p1 + p2 + p3 + p4 + p5 + bonus
     grade = _grade(total)
