@@ -303,6 +303,10 @@ async def _flush_candle_to_redis(
         "rvol":            str(updated_ind.get("rvol", 0.0)),
         "live_volume_ratio": str(updated_ind.get("rvol", 0.0)),
         "cum_rvol":   str(updated_ind.get("cum_rvol", 0.0)),
+        "vol_accel":   str(updated_ind.get("vol_accel", 0.0)),
+        "consec_rvol": str(updated_ind.get("consec_rvol", 0)),
+        "first5m_high": str(indicators.get(symbol, {}).get("first5m_high", 0.0)),
+        "first5m_low":  str(indicators.get(symbol, {}).get("first5m_low", 0.0)),
         "cum_volume": str(updated_ind.get("cum_volume", 0.0)),
         # ltp = close of the last completed 1m candle — consumed by macro gates,
         # conviction scorer, and signal engines.  Must be kept current or Gate 2
@@ -463,6 +467,23 @@ async def _maybe_close_tf_candles(symbol: str, new_minute: str, redis) -> None:
         # Reset accumulator — will re-open on next 1m candle
         tf_accumulators[symbol][tf] = None
 
+        if tf == "5m" and sym_tf:
+            try:
+                _ft = datetime.fromisoformat(str(sym_tf["ts"])).astimezone(_IST)
+                if _ft.hour == 9 and _ft.minute == 15:
+                    indicators.setdefault(symbol, {})["first5m_high"] = float(sym_tf["high"])
+                    indicators.setdefault(symbol, {})["first5m_low"]  = float(sym_tf["low"])
+                    await redis.hset(f"snapshot:{symbol}", mapping={
+                        "first5m_high": str(sym_tf["high"]),
+                        "first5m_low":  str(sym_tf["low"]),
+                    })
+                    logger.debug(
+                        "[candle_builder] %s first5m locked H=%.2f L=%.2f",
+                        symbol, float(sym_tf["high"]), float(sym_tf["low"]),
+                    )
+            except Exception:
+                pass
+
 
 def _update_tf_accumulator(symbol: str, candle: dict[str, Any]) -> None:
     """Merge a closed 1m candle into 5m, 15m, and 1hr in-memory accumulators."""
@@ -576,6 +597,19 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 prev_cum_tp_vol = ind.get("vwap_cum_tp_vol", 0.0)
                 prev_cum_vol    = ind.get("vwap_cum_vol",    0.0)
 
+            # Daily refresh — reload vol_profiles and reset per-session state at 9:15
+            if is_first_candle:
+                try:
+                    vp5_raw = await redis.get(f"vol_profile:5m:{symbol}")
+                    vpc_raw = await redis.get(f"vol_profile:cum:{symbol}")
+                    indicators[symbol]["vol_profile_5m"]  = json.loads(vp5_raw) if vp5_raw else {}
+                    indicators[symbol]["vol_profile_cum"] = json.loads(vpc_raw) if vpc_raw else {}
+                except Exception:
+                    pass
+                # Reset per-session accumulators — prevent yesterday bleeding in
+                indicators[symbol]["recent_vols"] = []
+                indicators[symbol]["consec_rvol"] = 0
+
             new_vwap, new_cum_tp_vol, new_cum_vol = update_vwap(
                 prev_cum_tp_vol = prev_cum_tp_vol,
                 prev_cum_vol    = prev_cum_vol,
@@ -611,8 +645,10 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 pass
 
         if is_index:
-            rvol     = 0.0
-            cum_rvol = 0.0
+            rvol        = 0.0
+            cum_rvol    = 0.0
+            vol_accel   = 0.0
+            consec_rvol = 0
         else:
             current_vol = closed["volume"]
             # closed["volume"] = AngelOne cumulative session shares since 9:15 AM.
@@ -629,9 +665,8 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 _dt = datetime.fromisoformat(str(_ts)).astimezone(_IST_CB)
                 _slot_m = (_dt.minute // 5) * 5
                 slot_key = f"{_dt.hour:02d}{_slot_m:02d}"
-                vp_raw   = await redis.get(f"vol_profile:5m:{symbol}")
-                if vp_raw:
-                    vp = json.loads(vp_raw)
+                vp = ind.get("vol_profile_5m", {})
+                if vp:
                     avg_slot_vol = float(vp.get(slot_key, 0) or 0)
                     # Use incremental volume vs incremental slot average — apples-to-apples
                     rvol = round(incremental_vol / max(avg_slot_vol, 1), 3) if avg_slot_vol > 0 else 0.0
@@ -650,9 +685,8 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 # Use directly — do NOT accumulate. vol_profile:cum uses the same
                 # cumulative convention from historical data.
                 new_cum_vol = current_vol
-                vp_cum_raw = await redis.get(f"vol_profile:cum:{symbol}")
-                if vp_cum_raw:
-                    vp_cum       = json.loads(vp_cum_raw)
+                vp_cum = ind.get("vol_profile_cum", {})
+                if vp_cum:
                     avg_cum_vol  = float(vp_cum.get(slot_key, 0) or 0)
                     cum_rvol     = round(new_cum_vol / max(avg_cum_vol, 1), 3) if avg_cum_vol > 0 else 0.0
                 else:
@@ -660,6 +694,22 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             except Exception:
                 new_cum_vol = ind.get("cum_volume", 0.0) + current_vol
                 cum_rvol    = 0.0
+
+            # --- vol_accel: current candle vs avg of prior 4 ---
+            recent_vols = list(ind.get("recent_vols") or [])
+            recent_vols.append(incremental_vol)
+            if len(recent_vols) > 5:
+                recent_vols = recent_vols[-5:]
+            if len(recent_vols) >= 5 and sum(recent_vols[-5:-1]) > 0:
+                vol_accel = round(incremental_vol / max(sum(recent_vols[-5:-1]) / 4, 1), 3)
+            else:
+                vol_accel = 0.0
+            indicators.setdefault(symbol, {})["recent_vols"] = recent_vols
+
+            # --- consec_rvol: consecutive candles with rvol >= 1.3 ---
+            prev_consec = ind.get("consec_rvol", 0)
+            consec_rvol = (prev_consec + 1) if rvol >= 1.3 else 0
+            indicators.setdefault(symbol, {})["consec_rvol"] = consec_rvol
 
         # Assemble updated indicator dict
         updated_ind: dict[str, Any] = {
@@ -681,6 +731,8 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             "rvol":            rvol,
             "cum_volume": new_cum_vol if not is_index else 0.0,
             "cum_rvol":   cum_rvol,
+            "vol_accel":   vol_accel,
+            "consec_rvol": consec_rvol,
         }
 
         # Persist to Redis (async I/O — back on event loop)
@@ -1169,10 +1221,25 @@ async def _seed_indicators() -> None:
             "last_low":        _f("last_low"),
             "cum_volume":      0.0,
             "cum_rvol":        0.0,
+            "vol_profile_5m":  {},
+            "vol_profile_cum": {},
+            "recent_vols":     [],
+            "consec_rvol":     0,
+            "first5m_high":    0.0,
+            "first5m_low":     0.0,
             "postlunch_high":   0.0,
             "postlunch_low":    999999.0,
             "postlunch_locked": False,
         }
+
+        try:
+            vp5_raw = await redis.get(f"vol_profile:5m:{symbol}")
+            vpc_raw = await redis.get(f"vol_profile:cum:{symbol}")
+            indicators[symbol]["vol_profile_5m"]  = json.loads(vp5_raw) if vp5_raw else {}
+            indicators[symbol]["vol_profile_cum"] = json.loads(vpc_raw) if vpc_raw else {}
+        except Exception:
+            indicators[symbol]["vol_profile_5m"]  = {}
+            indicators[symbol]["vol_profile_cum"] = {}
 
         # Also initialise TF accumulator slots
         tf_accumulators.setdefault(symbol, {"5m": None, "15m": None, "1hr": None})
