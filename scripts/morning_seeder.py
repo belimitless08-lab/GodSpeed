@@ -108,6 +108,7 @@ def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
         # Supertrend fields consumed by signal engines
         "supertrend_dir": str(supertrend.get("direction", "BULL")),
         "supertrend_band": str(supertrend.get("band", 0.0)),
+        "vol_trend_3d": str(snapshot.get("vol_trend_3d", "FLAT")),
         # Keep nested payloads for diagnostics/backward compatibility
         "prev_day": json.dumps(prev_day),
         "supertrend": json.dumps(supertrend),
@@ -301,7 +302,7 @@ def _get_date_range() -> tuple[datetime, datetime]:
 
     today_ist = ist_now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
-    from_dt = (today_ist - timedelta(days=7)).replace(hour=9, minute=15)
+    from_dt = (today_ist - timedelta(days=15)).replace(hour=9, minute=15)
     to_dt   = (today_ist - timedelta(days=1)).replace(hour=23, minute=59)
 
     return from_dt, to_dt
@@ -442,6 +443,49 @@ def compute_supertrend(
     return ("BULL" if direction == 1 else "BEAR"), round(band, 4)
 
 
+def _detect_outlier_days(
+    day_totals: dict[str, float],
+    threshold: float = 3.0,
+) -> set[str]:
+    """
+    Identify days where total volume exceeds threshold × median of all days.
+    Used to down-weight earnings/event days in vol_profile computation.
+    Returns set of outlier day strings (YYYY-MM-DD).
+    """
+    import statistics
+    totals = list(day_totals.values())
+    if len(totals) < 3:
+        return set()
+    try:
+        med = statistics.median(totals)
+        if med == 0:
+            return set()
+        return {day for day, vol in day_totals.items() if vol > med * threshold}
+    except Exception:
+        return set()
+
+
+def _decay_weighted_mean(
+    values: list[float],
+    alpha: float = 0.7,
+) -> float:
+    """
+    Exponential decay weighted mean.
+    Most recent value (last in list) gets highest weight.
+    α=0.7 means most recent day contributes ~70% of residual weight.
+    """
+    n = len(values)
+    if n == 0:
+        return 0.0
+    # weights[i] = alpha * (1-alpha)^(n-1-i)
+    # so values[-1] gets alpha, values[-2] gets alpha*(1-alpha), etc.
+    weights = [alpha * ((1 - alpha) ** (n - 1 - i)) for i in range(n)]
+    total_w = sum(weights)
+    if total_w == 0:
+        return float(np.mean(values))
+    return sum(v * w for v, w in zip(values, weights)) / total_w
+
+
 def _compute_vol_profiles(
     candles: list[list],
     timestamps: list[str],
@@ -449,11 +493,10 @@ def _compute_vol_profiles(
     sorted_days: list[str],
 ) -> tuple[dict, dict]:
     """
-    Compute per-5m-slot and cumulative volume profiles from 5 days of 1m candles.
-    
-    Returns:
-        vol_5m:  {"0915": avg_vol, "0920": avg_vol, ...}  5m slot averages
-        vol_cum: {"0915": avg_cum, "0920": avg_cum, ...}  cumulative averages
+    Compute per-5m-slot and cumulative volume profiles.
+    Uses up to 10 trading days with exponential decay weighting (α=0.7).
+    Outlier days (>3× median total volume — earnings/events) are down-weighted
+    by factor 0.3 before entering the weighted average.
     """
     # Define all valid 5m slots 9:15 to 15:25
     slot_keys = []
@@ -465,47 +508,58 @@ def _compute_vol_profiles(
             m = 0
             h += 1
 
-    # For each trading day compute per-slot volume and cumulative volume
-    days_to_use = sorted_days[-5:]  # last 5 trading days
+    # Use up to last 10 trading days (lookback extended to 15 cal days in Change 1)
+    days_to_use = sorted_days[-10:]
     slot_volumes_by_day: dict[str, list[float]] = {k: [] for k in slot_keys}
-    cum_volumes_by_day:  dict[str, list[float]] = {k: [] for k in slot_keys}
+    cum_volumes_by_day: dict[str, list[float]] = {k: [] for k in slot_keys}
+
+    # Compute daily totals for outlier detection
+    day_totals: dict[str, float] = {}
+    for day in days_to_use:
+        indices = day_map.get(day, [])
+        day_totals[day] = float(np.sum([float(candles[i][5]) for i in indices]))
+
+    outlier_days = _detect_outlier_days(day_totals)
+    if outlier_days:
+        logger.debug("[vol_profile] outlier days detected: %s", outlier_days)
 
     for day in days_to_use:
         indices = day_map.get(day, [])
         if not indices:
             continue
 
-        # Build slot -> volume map for this day from 1m candles
+        # Down-weight outlier days by 0.3 before contributing to profile
+        day_weight_modifier = 0.3 if day in outlier_days else 1.0
+
         day_slot_vol: dict[str, float] = {k: 0.0 for k in slot_keys}
         for idx in indices:
             ts = timestamps[idx]
             try:
                 dt = datetime.fromisoformat(ts)
-                # Round down to nearest 5m slot
-                slot_m = (dt.minute // 5) * 5
+                slot_m   = (dt.minute // 5) * 5
                 slot_key = f"{dt.hour:02d}{slot_m:02d}"
                 if slot_key in day_slot_vol:
-                    volume_shares = float(candles[idx][5])
-                    close_price   = float(candles[idx][4])
-                    day_slot_vol[slot_key] += volume_shares
+                    day_slot_vol[slot_key] += float(candles[idx][5])
             except Exception:
                 continue
 
-        # Build cumulative for this day
+        # Apply outlier modifier to all slots for this day
+        day_slot_vol = {k: v * day_weight_modifier for k, v in day_slot_vol.items()}
+
         running_cum = 0.0
         for slot in slot_keys:
             running_cum += day_slot_vol[slot]
             slot_volumes_by_day[slot].append(day_slot_vol[slot])
             cum_volumes_by_day[slot].append(running_cum)
 
-    # Average across days
-    vol_5m = {}
-    vol_cum = {}
+    # Decay-weighted average across days (most recent = highest weight)
+    vol_5m: dict[str, float] = {}
+    vol_cum: dict[str, float] = {}
     for slot in slot_keys:
         sv = slot_volumes_by_day[slot]
         cv = cum_volumes_by_day[slot]
-        vol_5m[slot]  = round(float(np.mean(sv)) if sv else 0.0, 2)
-        vol_cum[slot] = round(float(np.mean(cv)) if cv else 0.0, 2)
+        vol_5m[slot] = round(_decay_weighted_mean(sv) if sv else 0.0, 2)
+        vol_cum[slot] = round(_decay_weighted_mean(cv) if cv else 0.0, 2)
 
     return vol_5m, vol_cum
 
@@ -839,6 +893,15 @@ async def _seed_equity_symbol(
 
         # avg_volume_5d: mean of per-day totals across all available days
         daily_volumes = [float(np.sum(volumes[day_map[d]])) for d in sorted_days]
+        # Multi-day volume build — stealth accumulation signal
+        # Checks if daily total volume has increased for 3 consecutive days
+        _recent_3 = daily_volumes[-3:] if len(daily_volumes) >= 3 else []
+        if len(_recent_3) == 3 and _recent_3[0] < _recent_3[1] < _recent_3[2]:
+            vol_trend_3d = "RISING"     # 3 consecutive days of increasing volume
+        elif len(_recent_3) == 3 and _recent_3[0] > _recent_3[1] > _recent_3[2]:
+            vol_trend_3d = "FALLING"
+        else:
+            vol_trend_3d = "FLAT"
         avg_volume_5d = float(np.mean(daily_volumes[-5:])) if daily_volumes else 0.0
 
         choppiness14    = compute_choppiness(highs, lows, closes)
@@ -865,6 +928,7 @@ async def _seed_equity_symbol(
             "ema200":        round(ema200, 4),
             "atr14":         round(atr14, 4),
             "avg_volume_5d": round(avg_volume_5d, 2),
+            "vol_trend_3d": vol_trend_3d,
             "rsi14":         rsi14,
             "rsi_avg_gain":  rsi_avg_gain,
             "rsi_avg_loss":  rsi_avg_loss,
