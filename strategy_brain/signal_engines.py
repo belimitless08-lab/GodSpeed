@@ -378,7 +378,7 @@ async def _detect_range_breakout(
         return None
 
     cr = _cum_rvol(snapshot)
-    if cr > 0 and cr < 1.3:
+    if cr == 0 or cr < 1.3:
         return None
 
     gap_dir = _gap_direction(snapshot)
@@ -427,7 +427,7 @@ async def _detect_range_breakout(
     # beyond the range — not just tick across by the buffer amount
     # Already enforced by buf = max(0.2%, 0.15 ATR) above.
     # Additional: require cum_rvol to be elevated on breakout
-    if cr > 0 and cr < 1.5 and phase == "ORB":
+    if (cr == 0 or cr < 1.5) and phase == "ORB":
         # ORB breakouts need stronger volume confirmation
         return None
     await redis.set(fire_key, 1, ex=86400)
@@ -478,7 +478,7 @@ async def _detect_hourly_breakout(
         return None
 
     cr = _cum_rvol(snapshot)
-    if cr > 0 and cr < 1.3:
+    if cr == 0 or cr < 1.3:
         return None
 
     rolling_1h_high = _safe_float(snapshot.get("rolling_1h_high"))
@@ -575,7 +575,7 @@ async def _detect_choppiness_breakout(
         return None
 
     cr = _cum_rvol(snapshot)
-    if cr > 0 and cr < 1.3:
+    if cr == 0 or cr < 1.3:
         return None
 
     closes = [_safe_float(x.get("close")) for x in candles_5m]
