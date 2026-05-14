@@ -1768,6 +1768,12 @@ function renderSignalRow(sig) {
         <span class="sig-chg" style="color:${chgColor};">${displayChg}</span>
       </div>
     </div>
+    <div class="sig-time" style="font-size:9px;color:var(--muted);
+         text-align:right;padding:1px 8px 2px;letter-spacing:0.03em;">
+      ${sig.detected_at
+          ? sig.detected_at.substring(11,16)
+          : ''}
+    </div>
     <div class="sig-t2">
       ${sig.ici_score != null ? `<span class="sig-badge" style="color:${gradeColor};border-color:${gradeColor};">${sig.ici_grade === 'EXECUTE' ? '✅ EXEC' : sig.ici_grade === 'WATCHLIST' ? '👁 WATCH' : sig.ici_grade} ${Math.round(sig.ici_score)}</span>` : ''}
       <span class="sig-badge" style="color:${dirColor};border-color:${dirColor};">${dirArrow} ${sig.direction}</span>
@@ -1805,6 +1811,10 @@ function renderSignalCards(data) {
       if (_signalSort === 'change') {
         return Math.abs(b.change_pct || 0) - Math.abs(a.change_pct || 0);
       }
+      if (_signalSort === 'time') {
+        // Most recent first
+        return (b.detected_at || '').localeCompare(a.detected_at || '');
+      }
       return (b.ici_score || 0) - (a.ici_score || 0);
     });
     const visible = sorted.slice(0, 10);
@@ -1828,6 +1838,12 @@ function renderSignalCards(data) {
                    background:${_signalSort==='change'?'var(--accent)':'var(--border)'};
                    color:${_signalSort==='change'?'#000':'var(--muted)'};">
             % CHANGE
+          </button>
+          <button onclick="_setSort('time')"
+            style="font-size:9px;padding:2px 8px;border-radius:3px;border:none;cursor:pointer;
+                   background:${_signalSort==='time'?'var(--accent)':'var(--border)'};
+                   color:${_signalSort==='time'?'#000':'var(--muted)'};">
+            TIME
           </button>
         </div>
       </div>
