@@ -1779,6 +1779,12 @@ function renderSignalRow(sig) {
       <span class="sig-badge" style="color:${dirColor};border-color:${dirColor};">${dirArrow} ${sig.direction}</span>
       ${sig.sector && sig.sector !== 'UNKNOWN' && sig.sector !== 'OTHER' ? `<span class="sig-badge" style="color:#64748b;border-color:#334155;">${sig.sector}</span>` : ''}
       <span class="sig-type-txt">${cleanType}</span>
+      ${sig.detected_at
+        ? `<span style="margin-left:auto;font-size:9px;color:var(--muted);
+               font-variant-numeric:tabular-nums;letter-spacing:0.03em;">
+               ${sig.detected_at.substring(11,16)}
+             </span>`
+        : ''}
     </div>
     <div class="sig-t3">
       <div class="sig-tech">
