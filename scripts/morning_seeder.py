@@ -1106,6 +1106,20 @@ async def run_seeder(force: bool = False) -> None:
     except Exception as _e:
         logger.warning("[seeder] Could not clear signals:recent: %s", _e)
 
+    # Expiry day detection — NSE weekly expiry is every Thursday
+    try:
+        _ist_tz    = timezone(timedelta(hours=5, minutes=30))
+        _today     = datetime.now(_ist_tz)
+        _is_expiry = (_today.weekday() == 3)   # 3 = Thursday
+        _er        = await get_redis()
+        await _er.set("market:is_expiry", "1" if _is_expiry else "0")
+        logger.info(
+            "[seeder] Expiry day flag: %s (weekday=%d)",
+            _is_expiry, _today.weekday(),
+        )
+    except Exception as _exp_exc:
+        logger.warning("[seeder] Could not write expiry flag: %s", _exp_exc)
+
     # Step 1: Login
     logger.info("Logging in to AngelOne…")
     session = await get_angel_session()
