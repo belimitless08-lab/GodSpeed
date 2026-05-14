@@ -791,6 +791,9 @@ async def _run_options_volume_ranking() -> None:
                             except Exception:
                                 return d
 
+                        _ltp  = _sf("ltp")
+                        _prev = _sf("prev_close")
+
                         # ATM strike from options:prev (correct source)
                         atm_strike = 0
                         try:
@@ -808,8 +811,8 @@ async def _run_options_volume_ranking() -> None:
                             "today_turnover": round(today),
                             "prev_turnover":  round(prev),
                             "atm_strike":     atm_strike,
-                            "ltp":            _sf("ltp"),
-                            "change_pct":     _sf("change_pct"),
+                            "ltp":            _ltp,
+                            "change_pct": round((_ltp - _prev) / max(_prev, 1) * 100, 2) if _prev > 0 else 0.0,
                             "vol_state":      (snap.get("vol_state") or b"DRY"),
                         })
 
