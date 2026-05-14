@@ -3816,8 +3816,12 @@ async function fetchVolumeLeaders() {
           : data.leaders.map((s, i) => `
             <div class="leader-row ${s.direction === 'BULL' ? 'bull' : 'bear'}">
               <span class="rank">#${i+1}</span>
-              <span class="sym" onclick="window.open('stock.html?symbol=${s.symbol}','_blank')"
-                style="cursor:pointer;">${s.symbol}</span>
+              <span class="sym" style="display:flex;align-items:center;gap:4px;">
+                ${s.symbol}
+                <button onclick="openPopup('${s.symbol}', event)"
+                  style="background:none;border:none;cursor:pointer;padding:0;
+                         color:var(--accent);font-size:10px;opacity:0.7;">↗</button>
+              </span>
               <span class="rvol" style="color:${s.direction==='BULL'?'#22c55e':'#ef4444'};">${s.cum_rvol}x</span>
               <span class="ltp">₹${parseFloat(s.ltp).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
               <span class="chg ${(s.change_pct||0)>=0?'pos':'neg'}">
