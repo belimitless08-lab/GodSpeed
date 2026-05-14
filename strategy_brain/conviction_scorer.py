@@ -176,9 +176,10 @@ async def score_signal(signal: dict, snapshot: dict) -> dict:
     elif sig_type == "RANGE_BREAKOUT":
         bkey = f"RANGE_BREAKOUT_{signal.get('phase', 'ORB')}"
     bonus = SIGNAL_BONUS.get(bkey, 3)
-    # Multi-day volume build confirmation
-    if snapshot.get("vol_trend_3d") == "RISING":
-        bonus = min(bonus + 3, 13)  # cap total bonus at 13
+    # Multi-day volume build confirmation (+3 bonus, cap total at 13)
+    vol_trend = _decode(snapshot.get("vol_trend_3d", "FLAT"))
+    if vol_trend == "RISING":
+        bonus = min(bonus + 3, 13)
 
     total = p1 + p2 + p3 + p4 + p5 + bonus
     grade = _grade(total)
@@ -192,9 +193,11 @@ async def score_signal(signal: dict, snapshot: dict) -> dict:
 
     logger.info(
         "[scorer] %s %s %s score=%d grade=%s "
-        "p1=%d(cr=%.2f va=%.1f con=%.0f) p2=%d p3=%d p4=%d p5=%d bonus=%d er=%.3f",
+        "p1=%d(cr=%.2f va=%.1f con=%.0f) p2=%d p3=%d p4=%d p5=%d "
+        "bonus=%d(trend=%s) er=%.3f",
         symbol, sig_type, direction, total, grade,
-        p1, cr, va, con, p2, p3, p4, p5, bonus, er_val,
+        p1, cr, va, con, p2, p3, p4, p5,
+        bonus, vol_trend, er_val,
     )
     return signal
 
