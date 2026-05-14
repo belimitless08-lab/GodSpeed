@@ -735,6 +735,113 @@ async def _run_volume_ranking() -> None:
                 logger.warning("[brain] volume ranking error: %s", exc)
 
         await asyncio.sleep(300)
+
+
+async def _run_options_volume_ranking() -> None:
+    """
+    Rank all F&O symbols by ATM option turnover RVOL every 5 minutes.
+
+    Completely separate from equity Volume Leaders (_run_volume_ranking).
+    Options flow is a distinct signal — measures institutional premium
+    money flow, not equity share volume.
+
+    Source data written by:
+      - morning_seeder.py Phase B → options:atm_turnover_prev:{symbol}
+      - angel_ws_options.py      → options:atm_turnover_today:{symbol}
+
+    Top 15 written to Redis: options_leaders:ranked (JSON, TTL 360s).
+    """
+    while True:
+        if _within_market_hours():
+            try:
+                redis = await get_redis()
+                symbols = await get_symbols()
+                rows = []
+
+                for sym in symbols:
+                    try:
+                        today_raw = await redis.get(f"options:atm_turnover_today:{sym}")
+                        prev_raw = await redis.get(f"options:atm_turnover_prev:{sym}")
+
+                        if not today_raw or not prev_raw:
+                            continue
+
+                        today = float(today_raw)
+                        prev = float(prev_raw)
+
+                        # Skip symbols with no baseline (seeder didn't run yet
+                        # or Phase B failed for this symbol)
+                        if prev <= 0:
+                            continue
+
+                        atm_rvol = round(today / prev, 3)
+
+                        # Minimum activity filter — ignore noise
+                        if today < 1_000_000:   # ₹10L minimum today's turnover
+                            continue
+
+                        # Display fields from equity snapshot
+                        snap = await redis.hgetall(f"snapshot:{sym}")
+                        if not snap:
+                            continue
+
+                        def _sf(k, d=0.0):
+                            try:
+                                return float(snap.get(k, d) or d)
+                            except Exception:
+                                return d
+
+                        # ATM strike from options:prev (correct source)
+                        atm_strike = 0
+                        try:
+                            prev_data = await redis.get(f"options:prev:{sym}")
+                            if prev_data:
+                                atm_strike = int(
+                                    json.loads(prev_data).get("atm_strike") or 0
+                                )
+                        except Exception:
+                            pass
+
+                        rows.append({
+                            "symbol":         sym,
+                            "atm_rvol":       atm_rvol,
+                            "today_turnover": round(today),
+                            "prev_turnover":  round(prev),
+                            "atm_strike":     atm_strike,
+                            "ltp":            _sf("ltp"),
+                            "change_pct":     _sf("change_pct"),
+                            "vol_state":      (snap.get("vol_state") or b"DRY"),
+                        })
+
+                    except Exception as sym_exc:
+                        logger.debug(
+                            "[brain] options rank skip %s: %s", sym, sym_exc
+                        )
+                        continue
+
+                if rows:
+                    rows.sort(key=lambda x: x["atm_rvol"], reverse=True)
+                    top15 = rows[:15]
+
+                    await redis.set(
+                        "options_leaders:ranked",
+                        json.dumps(top15),
+                        ex=360,
+                    )
+                    logger.info(
+                        "[brain] Options ranking updated — leader=%s atm_rvol=%.2f "
+                        "today=₹%.0fL",
+                        top15[0]["symbol"] if top15 else "none",
+                        top15[0]["atm_rvol"] if top15 else 0,
+                        top15[0]["today_turnover"] / 100_000 if top15 else 0,
+                    )
+
+            except Exception as exc:
+                logger.warning("[brain] options ranking error: %s", exc)
+
+        await asyncio.sleep(300)
+
+
 async def start_execution_engine() -> None:
     global _execution_engine_started
     if _execution_engine_started:
@@ -783,6 +890,11 @@ async def run_brain() -> None:
     vol_rank_task = asyncio.create_task(_run_volume_ranking(), name="volume_ranking")
     background_tasks.add(vol_rank_task)
     vol_rank_task.add_done_callback(background_tasks.discard)
+    opt_rank_task = asyncio.create_task(
+        _run_options_volume_ranking(), name="options_volume_ranking"
+    )
+    background_tasks.add(opt_rank_task)
+    opt_rank_task.add_done_callback(background_tasks.discard)
     background_tasks.add(premarket_task)
     background_tasks.add(breadth_task)
     background_tasks.add(pcr_task)
