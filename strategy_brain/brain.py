@@ -605,6 +605,106 @@ async def _run_pcr_vix_update() -> None:
         await asyncio.sleep(3600)
 
 
+async def _run_volume_ranking() -> None:
+    """
+    Rank all universe symbols by composite volume score every 5 minutes.
+
+    Score = cum_rvol(40%) + vol_accel(25%) + consec_rvol(15%) + cum_volume(20%).
+    All components max-normalised across the live universe.
+    Each entry also carries first5m_breakout direction for the frontend filter:
+      - breakout_dir = "LONG"  → LTP above first 5m candle wick high
+      - breakout_dir = "SHORT" → LTP below first 5m candle wick low
+      - breakout_dir = None    → still inside first 5m range (blocked)
+
+    Top 15 written to Redis key: volume_leaders:ranked (JSON list, TTL 360s).
+    """
+    while True:
+        await asyncio.sleep(300)
+        if not _within_market_hours():
+            continue
+        try:
+            redis   = await get_redis()
+            symbols = await get_symbols()
+            rows    = []
+
+            for sym in symbols:
+                try:
+                    snap = await redis.hgetall(f"snapshot:{sym}")
+                    if not snap:
+                        continue
+
+                    def _sf(k, d=0.0):
+                        try:
+                            return float(snap.get(k, d) or d)
+                        except Exception:
+                            return d
+
+                    cum_rvol    = _sf("cum_rvol")
+                    vol_accel   = _sf("vol_accel")
+                    consec_rvol = _sf("consec_rvol")
+                    cum_volume  = _sf("cum_volume")
+                    ltp         = _sf("ltp")
+                    first5m_high = _sf("first5m_high")
+                    first5m_low  = _sf("first5m_low")
+
+                    # First 5m candle breakout filter
+                    if first5m_high > 0 and first5m_low > 0:
+                        if ltp > first5m_high:
+                            breakout_dir = "LONG"
+                        elif ltp < first5m_low:
+                            breakout_dir = "SHORT"
+                        else:
+                            breakout_dir = None   # inside range — blocked
+                    else:
+                        breakout_dir = None       # first5m not yet locked (before 9:20)
+
+                    rows.append({
+                        "symbol":        sym,
+                        "cum_rvol":      cum_rvol,
+                        "vol_accel":     vol_accel,
+                        "consec_rvol":   consec_rvol,
+                        "cum_volume":    cum_volume,
+                        "ltp":           ltp,
+                        "first5m_high":  first5m_high,
+                        "first5m_low":   first5m_low,
+                        "breakout_dir":  breakout_dir,
+                    })
+                except Exception as sym_exc:
+                    logger.debug("[brain] volume ranking skip %s: %s", sym, sym_exc)
+                    continue
+
+            if not rows:
+                continue
+
+            # Max-normalise each component across the universe
+            max_cr  = max(r["cum_rvol"]    for r in rows) or 1.0
+            max_va  = max(r["vol_accel"]   for r in rows) or 1.0
+            max_con = max(r["consec_rvol"] for r in rows) or 1.0
+            max_vol = max(r["cum_volume"]  for r in rows) or 1.0
+
+            for r in rows:
+                r["vol_leader_score"] = round((
+                    0.40 * (r["cum_rvol"]    / max_cr)  +
+                    0.25 * (r["vol_accel"]   / max_va)  +
+                    0.15 * (r["consec_rvol"] / max_con) +
+                    0.20 * (r["cum_volume"]  / max_vol)
+                ) * 100, 1)
+
+            rows.sort(key=lambda x: x["vol_leader_score"], reverse=True)
+            top15 = rows[:15]
+
+            await redis.set("volume_leaders:ranked", json.dumps(top15), ex=360)
+            logger.info(
+                "[brain] Volume ranking updated — leader: %s score=%.1f breakout=%s",
+                top15[0]["symbol"]        if top15 else "none",
+                top15[0]["vol_leader_score"] if top15 else 0,
+                top15[0]["breakout_dir"]  if top15 else "none",
+            )
+
+        except Exception as exc:
+            logger.warning("[brain] volume ranking error: %s", exc)
+
+
 async def start_execution_engine() -> None:
     global _execution_engine_started
     if _execution_engine_started:
@@ -650,6 +750,9 @@ async def run_brain() -> None:
     premarket_task = asyncio.create_task(_premarket_news_task(), name="premarket_news")
     breadth_task = asyncio.create_task(_breadth_background_task(), name="breadth_bg")
     pcr_task = asyncio.create_task(_run_pcr_vix_update(), name="pcr_vix_update")
+    vol_rank_task = asyncio.create_task(_run_volume_ranking(), name="volume_ranking")
+    background_tasks.add(vol_rank_task)
+    vol_rank_task.add_done_callback(background_tasks.discard)
     background_tasks.add(premarket_task)
     background_tasks.add(breadth_task)
     background_tasks.add(pcr_task)
