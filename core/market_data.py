@@ -17,40 +17,14 @@ import logging
 import time
 
 import requests
+from nsepython import nse_optionchain_scrapper, nsefetch
 
 log = logging.getLogger(__name__)
 
-_NSE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept":          "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer":         "https://www.nseindia.com/option-chain",
-}
-
-
-def _make_nse_session() -> requests.Session:
+def fetch_pcr(symbol: str) -> float:
     """
-    Create a requests session with NSE cookies.
-    Retries once on 403 — NSE occasionally needs a second attempt.
-    """
-    for attempt in range(2):
-        s = requests.Session()
-        s.headers.update(_NSE_HEADERS)
-        resp = s.get("https://www.nseindia.com/", timeout=10)
-        if resp.status_code != 403:
-            return s
-        log.warning("[market_data] NSE homepage 403 on attempt %d — retrying", attempt + 1)
-        time.sleep(1)
-    return s  # return anyway, let the API call fail naturally if needed
-
-
-def fetch_pcr(symbol: str, session: requests.Session) -> float:
-    """
-    Fetch PCR for NIFTY or BANKNIFTY from NSE option chain API.
+    Fetch PCR for NIFTY or BANKNIFTY via nsepython.
+    nsepython handles NSE session and cookies internally — no manual session needed.
     Works on weekends — returns Friday's closing data.
 
     PCR interpretation (contrarian, standard for Indian F&O intraday):
@@ -58,28 +32,24 @@ def fetch_pcr(symbol: str, session: requests.Session) -> float:
       Low PCR  = aggressive call buying → overextended, potential reversal
     """
     try:
-        url  = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-        resp = session.get(url, timeout=15)
-        data = resp.json()
+        data    = nse_optionchain_scrapper(symbol)
         records = data.get("records", {}).get("data", [])
-        ce_oi = sum(r.get("CE", {}).get("openInterest", 0) for r in records if "CE" in r)
-        pe_oi = sum(r.get("PE", {}).get("openInterest", 0) for r in records if "PE" in r)
+        ce_oi   = sum(r.get("CE", {}).get("openInterest", 0) for r in records if "CE" in r)
+        pe_oi   = sum(r.get("PE", {}).get("openInterest", 0) for r in records if "PE" in r)
         return round(pe_oi / ce_oi, 3) if ce_oi > 0 else 0.0
     except Exception as exc:
         log.warning("[market_data] PCR fetch failed for %s: %s", symbol, exc)
         return 0.0
 
 
-def fetch_vix(session: requests.Session) -> float:
+def fetch_vix() -> float:
     """
-    Fetch India VIX from NSE allIndices API.
+    Fetch India VIX via nsepython's nsefetch.
+    nsepython handles NSE session and cookies internally.
     Works on weekends — returns Friday's closing VIX.
     """
     try:
-        resp = session.get(
-            "https://www.nseindia.com/api/allIndices", timeout=15
-        )
-        data = resp.json()
+        data = nsefetch("https://www.nseindia.com/api/allIndices")
         for item in data.get("data", []):
             if "VIX" in str(item.get("symbol", "")).upper():
                 return round(float(item.get("last") or 0), 2)
@@ -132,17 +102,15 @@ def _fetch_all_sync() -> dict:
     """
     result = {"nifty_pcr": 0.0, "banknifty_pcr": 0.0, "vix": 0.0, "sentiment": "NEUTRAL"}
     try:
-        session = _make_nse_session()
-
-        nifty_pcr = fetch_pcr("NIFTY", session)
+        nifty_pcr = fetch_pcr("NIFTY")
         log.info("[market_data] NIFTY PCR=%.3f", nifty_pcr)
         time.sleep(1.5)  # polite delay between NSE API calls
 
-        bank_pcr = fetch_pcr("BANKNIFTY", session)
+        bank_pcr = fetch_pcr("BANKNIFTY")
         log.info("[market_data] BANKNIFTY PCR=%.3f", bank_pcr)
         time.sleep(1.5)
 
-        vix = fetch_vix(session)
+        vix = fetch_vix()
         log.info("[market_data] India VIX=%.2f", vix)
 
         pcr_for_sentiment = nifty_pcr if nifty_pcr > 0 else 0.0
