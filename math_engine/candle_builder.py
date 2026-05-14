@@ -239,11 +239,11 @@ def _compute_vol_state(
     """
     if cum_rvol < 1.0:
         return "DRY"
-    if cum_rvol > 2.5 and prev_vol_accel > 0 and vol_accel < prev_vol_accel:
+    if cum_rvol > 2.5 and prev_vol_accel >= 2.0 and vol_accel < 1.5:
         return "CLIMAX"
     if cum_rvol > 1.5 and vol_accel >= 2.0:
         return "BURST"
-    if prev_state in ("BURST", "CLIMAX") and prev_cum_rvol > 0 and cum_rvol < prev_cum_rvol:
+    if prev_state in ("BURST", "CLIMAX") and prev_cum_rvol > 0 and cum_rvol < prev_cum_rvol * 0.9:
         return "FADE"
     return "BUILDING"
 
@@ -634,8 +634,11 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 except Exception:
                     pass
                 # Reset per-session accumulators — prevent yesterday bleeding in
-                indicators[symbol]["recent_vols"] = []
-                indicators[symbol]["consec_rvol"] = 0
+                indicators[symbol]["recent_vols"]  = []
+                indicators[symbol]["consec_rvol"]  = 0
+                indicators[symbol]["vol_state"]     = "DRY"
+                indicators[symbol]["prev_vol_accel"] = 0.0
+                indicators[symbol]["prev_cum_rvol"]  = 0.0
 
             new_vwap, new_cum_tp_vol, new_cum_vol = update_vwap(
                 prev_cum_tp_vol = prev_cum_tp_vol,
