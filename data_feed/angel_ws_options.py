@@ -81,6 +81,18 @@ REDIS_TICKS_CHANNEL       = "options:ticks"
 REDIS_HEALTH_KEY          = "options_feed:health"
 
 # ---------------------------------------------------------------------------
+# ATM Turnover tracking — static subscription for all F&O universe symbols
+# Runs on same WS connection alongside brain dynamic subscriptions.
+# Token limit = 1000/connection. Brain uses ~200, ATM uses ~418 = 618 total.
+# ---------------------------------------------------------------------------
+# token_str → (symbol, opt_type, lot_size, atm_strike)
+_ATM_REGISTRY: dict[str, tuple[str, str, int, int]] = {}
+# "SYMBOL:CE" / "SYMBOL:PE" → last cumulative volume seen
+_ATM_LAST_VOL: dict[str, int] = {}
+# symbols awaiting first-tick baseline (prevents double-count on reconnect)
+_ATM_PRIMING: set[str] = set()
+
+# ---------------------------------------------------------------------------
 # Contract registry
 # ---------------------------------------------------------------------------
 
@@ -332,6 +344,92 @@ async def _write_health(
         logger.warning("[options_ws] Could not write health: %s", exc)
 
 
+async def _load_atm_registry(redis) -> int:
+    """
+    Load ATM CE/PE tokens for all F&O symbols from options:prev:{symbol}.
+    Token path: options:prev.strikes.atm.ce_token / pe_token
+    Written by morning_seeder Phase B — no instrument master parsing needed.
+    Returns number of symbols registered.
+    """
+    from core.universe_builder import get_symbols
+    symbols    = await get_symbols()
+    registered = 0
+    skipped    = 0
+
+    for sym in symbols:
+        try:
+            prev_raw = await redis.get(f"options:prev:{sym}")
+            if not prev_raw:
+                skipped += 1
+                continue
+            prev       = json.loads(prev_raw)
+            strikes    = prev.get("strikes", {})
+            atm_info   = strikes.get("atm", {})
+            ce_token   = str(atm_info.get("ce_token", "")).strip()
+            pe_token   = str(atm_info.get("pe_token", "")).strip()
+            atm_strike = int(atm_info.get("strike") or prev.get("atm_strike") or 0)
+            if not ce_token or not pe_token or atm_strike <= 0:
+                skipped += 1
+                continue
+            lot_raw  = await redis.hget(f"snapshot:{sym}", "lot_size")
+            lot_size = int(float(lot_raw or 1))
+            _ATM_REGISTRY[ce_token] = (sym, "CE", lot_size, atm_strike)
+            _ATM_REGISTRY[pe_token] = (sym, "PE", lot_size, atm_strike)
+            _ATM_PRIMING.add(sym)
+            registered += 1
+        except Exception as exc:
+            logger.debug("[options_ws] ATM registry skip %s: %s", sym, exc)
+            skipped += 1
+
+    logger.info(
+        "[options_ws] ATM registry loaded — symbols=%d tokens=%d skipped=%d",
+        registered, registered * 2, skipped,
+    )
+    return registered
+
+
+async def _accumulate_atm(redis, token: str, ltp: float, volume: int) -> None:
+    """
+    Accumulate ATM option turnover for Options Volume Leaders.
+    Turnover formula: delta_volume × ltp × lot_size (₹ premium flow).
+    volume_traded_today in AngelOne packets is cumulative session volume.
+    Priming mechanism prevents double-count on reconnect.
+    """
+    entry = _ATM_REGISTRY.get(token)
+    if not entry:
+        return
+    sym, opt_type, lot_size, _ = entry
+    cache_key = f"{sym}:{opt_type}"
+
+    # First tick after startup/reconnect — set baseline without accumulating
+    if sym in _ATM_PRIMING:
+        _ATM_LAST_VOL[cache_key] = volume
+        other = "PE" if opt_type == "CE" else "CE"
+        # Find other type's token to check if it's also primed
+        other_primed = any(
+            cache_key.replace(f":{opt_type}", f":{other}") in _ATM_LAST_VOL
+            for _ in [1]
+        )
+        if other_primed:
+            _ATM_PRIMING.discard(sym)
+        return
+
+    last      = _ATM_LAST_VOL.get(cache_key, 0)
+    delta_vol = volume - last
+    if delta_vol <= 0:
+        _ATM_LAST_VOL[cache_key] = volume
+        return
+
+    try:
+        await redis.incrbyfloat(
+            f"options:atm_turnover_today:{sym}",
+            delta_vol * ltp * lot_size,
+        )
+        _ATM_LAST_VOL[cache_key] = volume
+    except Exception as exc:
+        logger.debug("[options_ws] ATM incrbyfloat error %s: %s", sym, exc)
+
+
 # ---------------------------------------------------------------------------
 # In-session state — shared between the two concurrent tasks
 # ---------------------------------------------------------------------------
@@ -524,14 +622,26 @@ async def _tick_receiver(ws, state: _FeedState, redis) -> None:
         async with state.lock:
             contract = state.active_contracts.get(token)
 
-        if contract is None:
+        is_atm = token in _ATM_REGISTRY
+
+        # Skip completely unknown tokens (not brain-subscribed AND not ATM)
+        if contract is None and not is_atm:
             logger.debug("[options_ws] Unknown token %r — skipping.", token)
             continue
 
-        try:
-            await _write_options_tick(redis, contract, tick)
-        except Exception as exc:
-            logger.warning("[options_ws] Redis write error for %s: %s", token, exc)
+        # Write tick for brain-subscribed contracts (unchanged path)
+        if contract is not None:
+            try:
+                await _write_options_tick(redis, contract, tick)
+            except Exception as exc:
+                logger.warning("[options_ws] Redis write error for %s: %s", token, exc)
+
+        # ATM turnover accumulation — independent of brain subscriptions
+        if is_atm:
+            try:
+                await _accumulate_atm(redis, token, tick["ltp"], tick["volume"])
+            except Exception as exc:
+                logger.debug("[options_ws] ATM accum error %s: %s", token, exc)
 
         tick_count    += 1
         health_window += 1
@@ -733,6 +843,29 @@ async def _run_ws_session(session: dict, state: _FeedState) -> None:
         else:
             logger.info("[options_ws] No prior subscriptions to restore.")
 
+        # Re-prime on every reconnect (prevents double-count)
+        _ATM_LAST_VOL.clear()
+        for sym in list(_ATM_PRIMING):
+            pass  # already in priming set from initial load
+        # Re-add all ATM symbols to priming
+        for tok, entry in _ATM_REGISTRY.items():
+            _ATM_PRIMING.add(entry[0])
+
+        # Subscribe all static ATM tokens (separate from brain subscriptions)
+        if _ATM_REGISTRY:
+            atm_tokens = list(_ATM_REGISTRY.keys())
+            for i in range(0, len(atm_tokens), 200):
+                batch = atm_tokens[i:i + 200]
+                try:
+                    await ws.send(_build_subscribe_msg(batch))
+                    await asyncio.sleep(0.1)
+                except Exception as exc:
+                    logger.warning("[options_ws] ATM subscribe batch failed: %s", exc)
+            logger.info(
+                "[options_ws] Static ATM subscription sent — %d tokens",
+                len(atm_tokens),
+            )
+
         await _write_health(redis, connected=True, active_tokens=state.active_token_count)
 
         # AngelOne SmartStream requires an application-level "ping" every
@@ -801,6 +934,19 @@ async def run_options_feed() -> None:
     # racing to login simultaneously we'd otherwise hammer the endpoint.
     logger.info("[options_ws] Startup stagger — waiting 20s to let equity login first.")
     await asyncio.sleep(20)
+
+    # Load ATM registry once at startup — reads options:prev:{symbol} from Redis
+    # Requires morning_seeder Phase B to have run first (8:30 AM)
+    try:
+        _startup_redis = await get_redis()
+        _atm_count = await _load_atm_registry(_startup_redis)
+        if _atm_count == 0:
+            logger.warning(
+                "[options_ws] ATM registry empty — seeder may not have run yet. "
+                "ATM turnover tracking disabled for this session."
+            )
+    except Exception as _atm_exc:
+        logger.warning("[options_ws] ATM registry load failed: %s", _atm_exc)
 
     while True:
         attempt += 1
