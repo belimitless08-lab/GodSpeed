@@ -615,6 +615,12 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
             cum_rvol = 0.0
         else:
             current_vol = closed["volume"]
+            # closed["volume"] = AngelOne cumulative session shares since 9:15 AM.
+            # Per-candle rvol must use INCREMENTAL volume (this candle only),
+            # not the session cumulative — otherwise rvol is meaningless after 9:20 AM.
+            # Track previous candle's session total to compute increment.
+            last_cum_vol = ind.get("last_cum_vol", 0.0)
+            incremental_vol = max(current_vol - last_cum_vol, 0.0)
             # --- Per-candle RVOL via vol_profile:5m lookup ---
             try:
                 from datetime import datetime, timezone, timedelta
@@ -627,11 +633,13 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 if vp_raw:
                     vp = json.loads(vp_raw)
                     avg_slot_vol = float(vp.get(slot_key, 0) or 0)
-                    rvol = round(current_vol / max(avg_slot_vol, 1), 3) if avg_slot_vol > 0 else 0.0
+                    # Use incremental volume vs incremental slot average — apples-to-apples
+                    rvol = round(incremental_vol / max(avg_slot_vol, 1), 3) if avg_slot_vol > 0 else 0.0
                 else:
                     rvol = 0.0
             except Exception:
                 rvol = 0.0
+            indicators.setdefault(symbol, {})["last_cum_vol"] = current_vol
             # --- Cumulative RVOL ---
             try:
                 is_first = False
