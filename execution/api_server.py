@@ -393,54 +393,76 @@ app.add_middleware(
 
 @app.get("/api/volume-leaders")
 async def get_volume_leaders():
-    """Top 10 stocks by cumulative RVOL. Uses pipeline for efficiency."""
+    """
+    Returns top 15 equity volume leaders from brain-computed ranked list.
+    brain._run_volume_ranking() writes volume_leaders:ranked every 5 minutes.
+    Falls back to empty list if not yet computed.
+    """
     try:
         redis = await get_redis()
-        raw = await redis.get("universe:symbols")
+        raw   = await redis.get("volume_leaders:ranked")
         if not raw:
             return {"status": "ok", "leaders": [], "total_scanned": 0}
-        data = json.loads(raw)
-        if isinstance(data, list):
-            symbols = data
-        elif isinstance(data, dict):
-            symbols = list(data.keys())
-        else:
-            return {"status": "ok", "leaders": [], "total_scanned": 0}
-        # Batch all snapshot reads in one pipeline round-trip
-        async with redis.pipeline(transaction=False) as pipe:
-            for sym in symbols:
-                pipe.hmget(
-                    f"snapshot:{sym}",
-                    "cum_rvol", "ltp", "vwap", "prev_close"
-                )
-            results_raw = await pipe.execute()
-        results = []
-        for sym, vals in zip(symbols, results_raw):
-            try:
-                cum_rvol   = float(vals[0]) if vals[0] else 0.0
-                ltp_f      = float(vals[1]) if vals[1] else 0.0
-                vwap_f     = float(vals[2]) if vals[2] else 0.0
-                prev_close = float(vals[3]) if vals[3] else 0.0
-                chg_f      = round((ltp_f - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0.0
-                if cum_rvol < 0.1 or ltp_f == 0:
-                    continue
-                results.append({
-                    "symbol":     sym,
-                    "cum_rvol":   round(cum_rvol, 2),
-                    "ltp":        round(ltp_f, 2),
-                    "change_pct": round(chg_f, 2),
-                    "direction":  "BULL" if ltp_f >= vwap_f else "BEAR",
-                })
-            except Exception:
-                continue
-        results.sort(key=lambda x: x["cum_rvol"], reverse=True)
+        leaders = json.loads(raw)
+        # Decode any bytes values from Redis
+        cleaned = []
+        for item in leaders:
+            cleaned.append({
+                "symbol":          str(item.get("symbol", "")),
+                "cum_rvol":        round(float(item.get("cum_rvol", 0)), 2),
+                "adj_rvol":        round(float(item.get("adj_rvol", 0)), 2),
+                "vol_accel":       round(float(item.get("vol_accel", 0)), 2),
+                "consec_rvol":     int(float(item.get("consec_rvol", 0))),
+                "vol_leader_score":round(float(item.get("vol_leader_score", 0)), 1),
+                "ltp":             round(float(item.get("ltp", 0)), 2),
+                "change_pct":      round(float(item.get("change_pct", 0)), 2),
+                "breakout_dir":    item.get("breakout_dir"),
+                "vol_state":       str(item.get("vol_state", "DRY")).replace("b'","").replace("'",""),
+                "first5m_high":    round(float(item.get("first5m_high", 0)), 2),
+                "first5m_low":     round(float(item.get("first5m_low", 0)), 2),
+            })
         return {
             "status":        "ok",
-            "leaders":       results[:10],
-            "total_scanned": len(symbols),
+            "leaders":       cleaned,
+            "total_scanned": len(cleaned),
         }
     except Exception as e:
         logger.error("[api] volume-leaders error: %s", e)
+        return {"status": "error", "message": str(e), "leaders": []}
+
+
+@app.get("/api/options-leaders")
+async def get_options_leaders():
+    """
+    Returns top 15 options volume leaders ranked by ATM turnover RVOL.
+    brain._run_options_volume_ranking() writes options_leaders:ranked every 5 min.
+    ATM turnover = today's CE+PE premium flow vs yesterday's baseline.
+    """
+    try:
+        redis = await get_redis()
+        raw   = await redis.get("options_leaders:ranked")
+        if not raw:
+            return {"status": "ok", "leaders": [], "total_scanned": 0}
+        leaders = json.loads(raw)
+        cleaned = []
+        for item in leaders:
+            cleaned.append({
+                "symbol":         str(item.get("symbol", "")),
+                "atm_rvol":       round(float(item.get("atm_rvol", 0)), 2),
+                "today_turnover": float(item.get("today_turnover", 0)),
+                "prev_turnover":  float(item.get("prev_turnover", 0)),
+                "atm_strike":     int(item.get("atm_strike", 0)),
+                "ltp":            round(float(item.get("ltp", 0)), 2),
+                "change_pct":     round(float(item.get("change_pct", 0)), 2),
+                "vol_state":      str(item.get("vol_state", "DRY")).replace("b'","").replace("'",""),
+            })
+        return {
+            "status":        "ok",
+            "leaders":       cleaned,
+            "total_scanned": len(cleaned),
+        }
+    except Exception as e:
+        logger.error("[api] options-leaders error: %s", e)
         return {"status": "error", "message": str(e), "leaders": []}
 
 
