@@ -3127,18 +3127,24 @@ async function fetchHealth() {
     dot.style.background = allOk ? 'var(--green)' : 'var(--red)'
     dot.style.animation = allOk ? 'pulse-dot 1.5s infinite' : 'none'
 
+    // Fyers status
     const fyers = data.fyers || {};
-    const fyersDot   = document.getElementById('fyers-status-dot');
-    const fyersTxt   = document.getElementById('fyers-status-text');
+    const fyersDot  = document.getElementById('fyers-status-dot');
+    const fyersTxt  = document.getElementById('fyers-status-text');
     if (fyersDot && fyersTxt) {
       if (fyers.access_token === 'present') {
         fyersDot.style.background = '#22c55e';
         fyersTxt.style.color      = '#22c55e';
-        fyersTxt.textContent = `Fyers ✓ — ${fyers.profiles_seeded}/${fyers.profiles_total} profiles`;
+        const ttl      = fyers.token_ttl_hours || 0;
+        const seeded   = fyers.profiles_seeded || 0;
+        const total    = fyers.profiles_total  || 0;
+        const expiring = ttl < 2 ? ' ⚠ expiring soon' : '';
+        fyersTxt.textContent =
+          `Fyers ✓  ${ttl}h left  ${seeded}/${total} profiles${expiring}`;
       } else {
         fyersDot.style.background = '#ef4444';
         fyersTxt.style.color      = '#ef4444';
-        fyersTxt.textContent = 'Fyers: not connected — click Connect';
+        fyersTxt.textContent      = 'Fyers: not connected — click Connect';
       }
     }
 
