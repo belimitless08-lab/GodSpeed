@@ -1116,6 +1116,19 @@
 
         <div id="health-content">
             <div style="color:var(--muted);font-size:11px;">Loading…</div>
+            <div id="fyers-health" style="display:flex;align-items:center;
+                 gap:8px;margin-top:6px;font-size:11px;">
+              <span id="fyers-status-dot" style="width:8px;height:8px;border-radius:50%;
+                    background:var(--muted);display:inline-block;"></span>
+              <span id="fyers-status-text" style="color:var(--muted);">Fyers: checking...</span>
+              <a href="/api/fyers/connect"
+                 style="font-size:9px;padding:2px 8px;border-radius:3px;
+                        background:var(--border);color:var(--accent);
+                        text-decoration:none;margin-left:4px;"
+                 title="Authenticate Fyers for options data">
+                Connect / Re-auth
+              </a>
+            </div>
         </div>
     </div>
 </div>
@@ -3114,6 +3127,21 @@ async function fetchHealth() {
     dot.style.background = allOk ? 'var(--green)' : 'var(--red)'
     dot.style.animation = allOk ? 'pulse-dot 1.5s infinite' : 'none'
 
+    const fyers = data.fyers || {};
+    const fyersDot   = document.getElementById('fyers-status-dot');
+    const fyersTxt   = document.getElementById('fyers-status-text');
+    if (fyersDot && fyersTxt) {
+      if (fyers.access_token === 'present') {
+        fyersDot.style.background = '#22c55e';
+        fyersTxt.style.color      = '#22c55e';
+        fyersTxt.textContent = `Fyers ✓ — ${fyers.profiles_seeded}/${fyers.profiles_total} profiles`;
+      } else {
+        fyersDot.style.background = '#ef4444';
+        fyersTxt.style.color      = '#ef4444';
+        fyersTxt.textContent = 'Fyers: not connected — click Connect';
+      }
+    }
+
     const sections = [
         { label: 'WebSocket Feeds', key: 'websockets' },
         { label: 'Data Readiness', key: 'data' },
@@ -3977,6 +4005,11 @@ fetchAccount();
 document.addEventListener('DOMContentLoaded', () => {
   renderSignalCards({});
   initHistoryDateInputs();
+  // Show success toast if redirected back from Fyers OAuth
+  if (window.location.search.includes('fyers=connected')) {
+    showToast('Fyers connected successfully ✅ — tokens stored', 'success');
+    window.history.replaceState({}, '', '/');
+  }
 });
 fetchIndices();
 
