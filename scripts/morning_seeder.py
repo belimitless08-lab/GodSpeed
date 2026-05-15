@@ -1255,6 +1255,7 @@ async def _seed_options_symbol(
     from_dt: datetime,
     to_dt: datetime,
     http_client: httpx.AsyncClient,
+    fyers_token: str | None = None,
 ) -> bool:
     try:
         strike_info = find_option_strikes(instruments, symbol, prev_close)
@@ -1735,7 +1736,8 @@ async def run_seeder(force: bool = False) -> None:
         for i, (sym, prev_close) in enumerate(zip(fno_symbols, fno_prev_closes)):
             try:
                 result = await _seed_options_symbol(
-                    sym, prev_close, instruments, session, from_dt, to_dt, http_client
+                    sym, prev_close, instruments, session, from_dt, to_dt, http_client,
+                    fyers_token=fyers_token,
                 )
             except Exception as e:
                 logger.error(f"Phase B failed for {sym}: {e}")
