@@ -1146,41 +1146,75 @@ async def _seed_options_symbol(
         redis = await get_redis()
         await redis.set(f"options:prev:{symbol}", json.dumps(result))
 
-        # --- ATM Turnover Baseline ---
-        # Computes yesterday's ATM CE+PE combined premium turnover.
-        # Uses ce/pe dicts already in scope — zero extra API calls.
-        # ce["volumes"][-1]  = yesterday's CE daily contracts traded (ONE_DAY candle[5])
-        # ce["prev_close"]   = yesterday's CE closing premium (ONE_DAY candle[-1][4])
-        # Turnover = contracts × premium × lot_size = actual ₹ money flow
+        # --- ATM Option Cumulative Volume Profile (5-min slots, previous day) ---
+        # Builds options:atm_profile:cum:{symbol} mirroring equity vol_profile:cum.
+        # At 9:45 AM: atm_rvol = today_turnover / profile["0945"]
+        # Uses FIVE_MINUTE candles for yesterday only — no extra date range needed.
         try:
             lot_raw  = await redis.hget(f"snapshot:{symbol}", "lot_size")
             lot_size = int(float(lot_raw or 1))
 
-            ce_vol_prev = float(ce["volumes"][-1]) if ce["volumes"] else 0.0
-            pe_vol_prev = float(pe["volumes"][-1]) if pe["volumes"] else 0.0
+            # Yesterday's date range (last trading day within from_dt→to_dt)
+            _yest_to   = to_dt.replace(hour=15, minute=30, second=0, microsecond=0)
+            _yest_from = _yest_to.replace(hour=9, minute=15)
 
-            yesterday_turnover = (
-                (ce_vol_prev * ce["prev_close"] * lot_size) +
-                (pe_vol_prev * pe["prev_close"] * lot_size)
+            ce_5m = await fetch_candles(
+                session, "NFO", ce_token, "FIVE_MINUTE", _yest_from, _yest_to, http_client
             )
+            pe_5m = await fetch_candles(
+                session, "NFO", pe_token, "FIVE_MINUTE", _yest_from, _yest_to, http_client
+            )
+
+            # Build cumulative turnover profile by 5-min slot
+            # Candle format: [ts, open, high, low, close, volume, oi]
+            cum_profile: dict[str, float] = {}
+            if ce_5m or pe_5m:
+                # Merge CE and PE by slot
+                slot_map: dict[str, float] = {}
+                for candle in (ce_5m or []):
+                    try:
+                        _dt  = datetime.fromisoformat(str(candle[0])).astimezone(_IST)
+                        _key = f"{_dt.hour:02d}{_dt.minute:02d}"
+                        _tv  = float(candle[5]) * float(candle[4]) * lot_size
+                        slot_map[_key] = slot_map.get(_key, 0.0) + _tv
+                    except Exception:
+                        continue
+                for candle in (pe_5m or []):
+                    try:
+                        _dt  = datetime.fromisoformat(str(candle[0])).astimezone(_IST)
+                        _key = f"{_dt.hour:02d}{_dt.minute:02d}"
+                        _tv  = float(candle[5]) * float(candle[4]) * lot_size
+                        slot_map[_key] = slot_map.get(_key, 0.0) + _tv
+                    except Exception:
+                        continue
+
+                # Build cumulative (slot order: 0915, 0920, ..., 1525)
+                running = 0.0
+                h, m = 9, 15
+                while (h, m) <= (15, 25):
+                    _k = f"{h:02d}{m:02d}"
+                    running += slot_map.get(_k, 0.0)
+                    cum_profile[_k] = round(running, 2)
+                    m += 5
+                    if m >= 60:
+                        m = 0
+                        h += 1
 
             await redis.set(
-                f"options:atm_turnover_prev:{symbol}",
-                str(yesterday_turnover),
+                f"options:atm_profile:cum:{symbol}",
+                json.dumps(cum_profile),
             )
-            # Reset today's running total — angel_ws_atm_tracker increments live
+            # Reset today's running total — angel_ws_options increments live
             await redis.set(f"options:atm_turnover_today:{symbol}", "0")
 
             logger.debug(
-                "[seeder] %s ATM baseline=%.0f "
-                "(ce=%.0f×%.4f + pe=%.0f×%.4f) lot=%d",
-                symbol, yesterday_turnover,
-                ce_vol_prev, ce["prev_close"],
-                pe_vol_prev, pe["prev_close"],
+                "[seeder] %s ATM profile built — slots=%d total=%.0f lot=%d",
+                symbol, len(cum_profile),
+                cum_profile.get("1525", 0.0),
                 lot_size,
             )
         except Exception as _atm_exc:
-            logger.warning("[seeder] %s ATM baseline failed: %s", symbol, _atm_exc)
+            logger.warning("[seeder] %s ATM profile failed: %s", symbol, _atm_exc)
 
         return True
 
