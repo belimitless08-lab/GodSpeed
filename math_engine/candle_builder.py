@@ -726,33 +726,49 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 new_cum_vol = ind.get("cum_volume", 0.0) + current_vol
                 cum_rvol    = 0.0
 
-            # --- vol_accel: current candle vs avg of prior 4 ---
-            recent_vols = list(ind.get("recent_vols") or [])
-            recent_vols.append(incremental_vol)
-            if len(recent_vols) > 5:
-                recent_vols = recent_vols[-5:]
-            if len(recent_vols) >= 5 and sum(recent_vols[-5:-1]) > 0:
-                vol_accel = round(incremental_vol / max(sum(recent_vols[-5:-1]) / 4, 1), 3)
+            # vol_accel, consec_rvol, vol_state: computed on 5m close only.
+            # 1m incremental volume is too noisy for acceleration measurement.
+            # On non-5m candles, carry forward previous values unchanged.
+            try:
+                _min_int     = int(closed["minute"].split(":")[1])
+                _is_5m_close = _min_int in _5M_MINUTES
+            except Exception:
+                _is_5m_close = False
+
+            if _is_5m_close:
+                # Use 5m accumulated volume (tf_accumulator holds this candle's full 5m total)
+                _5m_acc = tf_accumulators.get(symbol, {}).get("5m") or {}
+                _5m_vol = float(_5m_acc.get("volume", incremental_vol))
+
+                recent_vols = list(ind.get("recent_vols") or [])
+                recent_vols.append(_5m_vol)
+                if len(recent_vols) > 5:
+                    recent_vols = recent_vols[-5:]
+                if len(recent_vols) >= 5 and sum(recent_vols[-5:-1]) > 0:
+                    vol_accel = round(_5m_vol / max(sum(recent_vols[-5:-1]) / 4, 1), 3)
+                else:
+                    vol_accel = 0.0
+                indicators.setdefault(symbol, {})["recent_vols"] = recent_vols
+
+                prev_consec = ind.get("consec_rvol", 0)
+                consec_rvol = (prev_consec + 1) if rvol >= 1.3 else 0
+                indicators.setdefault(symbol, {})["consec_rvol"] = consec_rvol
+
+                vol_state = _compute_vol_state(
+                    cum_rvol       = cum_rvol,
+                    vol_accel      = vol_accel,
+                    prev_state     = ind.get("vol_state", "DRY"),
+                    prev_vol_accel = ind.get("prev_vol_accel", 0.0),
+                    prev_cum_rvol  = ind.get("prev_cum_rvol", 0.0),
+                )
+                indicators.setdefault(symbol, {})["prev_vol_accel"] = vol_accel
+                indicators.setdefault(symbol, {})["prev_cum_rvol"]  = cum_rvol
+                indicators.setdefault(symbol, {})["vol_state"]      = vol_state
             else:
-                vol_accel = 0.0
-            indicators.setdefault(symbol, {})["recent_vols"] = recent_vols
-
-            # --- consec_rvol: consecutive candles with rvol >= 1.3 ---
-            prev_consec = ind.get("consec_rvol", 0)
-            consec_rvol = (prev_consec + 1) if rvol >= 1.3 else 0
-            indicators.setdefault(symbol, {})["consec_rvol"] = consec_rvol
-
-            # --- Volume State Machine ---
-            vol_state = _compute_vol_state(
-                cum_rvol       = cum_rvol,
-                vol_accel      = vol_accel,
-                prev_state     = ind.get("vol_state", "DRY"),
-                prev_vol_accel = ind.get("prev_vol_accel", 0.0),
-                prev_cum_rvol  = ind.get("prev_cum_rvol", 0.0),
-            )
-            indicators.setdefault(symbol, {})["prev_vol_accel"] = vol_accel
-            indicators.setdefault(symbol, {})["prev_cum_rvol"]  = cum_rvol
-            indicators.setdefault(symbol, {})["vol_state"]      = vol_state
+                # Non-5m boundary: carry forward previous values unchanged
+                vol_accel   = float(ind.get("vol_accel",   0.0))
+                consec_rvol = int(ind.get("consec_rvol", 0))
+                vol_state   = str(ind.get("vol_state",   "DRY"))
 
         # Assemble updated indicator dict
         updated_ind: dict[str, Any] = {
