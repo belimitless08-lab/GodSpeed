@@ -582,12 +582,12 @@ async def _detect_hourly_breakout(
         prior_4 = candles_5m[-5:-1]
         if direction == "LONG":
             was_tested = any(
-                _safe_float(x.get("high")) >= rolling_1h_high * 0.998
+                _safe_float(x.get("high")) >= rolling_1h_high * 0.995
                 for x in prior_4
             )
         else:
             was_tested = any(
-                _safe_float(x.get("low")) <= rolling_1h_low * 1.002
+                _safe_float(x.get("low")) <= rolling_1h_low * 1.005
                 for x in prior_4
             )
         if not was_tested:
