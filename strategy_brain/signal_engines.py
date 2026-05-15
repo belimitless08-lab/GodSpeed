@@ -203,16 +203,16 @@ def _pa_confluence(
     if abs(c - o) < candle_range * 0.40:
         return False
 
-    # 4. Directional closes — prior 2 candles close in signal direction
-    # Skipped for CHOPPINESS_BREAKOUT (compression = alternating closes by design)
+    # 4. Directional closes — at least 1 of prior 2 candles closes in signal direction
+    # Relaxed from requiring BOTH — good setups often have 1 consolidation candle before the move
     if not skip_directional and len(candles_5m) >= 3:
         p1 = candles_5m[-2]
         p2 = candles_5m[-3]
         c1, o1 = _safe_float(p1.get("close")), _safe_float(p1.get("open"))
         c2, o2 = _safe_float(p2.get("close")), _safe_float(p2.get("open"))
-        if direction == "LONG" and not (c1 > o1 and c2 > o2):
+        if direction == "LONG" and not (c1 > o1 or c2 > o2):
             return False
-        if direction == "SHORT" and not (c1 < o1 and c2 < o2):
+        if direction == "SHORT" and not (c1 < o1 or c2 < o2):
             return False
 
     return True
