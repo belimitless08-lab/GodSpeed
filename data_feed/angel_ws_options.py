@@ -421,10 +421,10 @@ async def _accumulate_atm(redis, token: str, ltp: float, volume: int) -> None:
         return
 
     try:
-        await redis.incrbyfloat(
-            f"options:atm_turnover_today:{sym}",
-            delta_vol * ltp * lot_size,
-        )
+            await redis.incrbyfloat(
+                f"options:atm_turnover_today:{sym}",
+                delta_vol * ltp,
+            )
         _ATM_LAST_VOL[cache_key] = volume
     except Exception as exc:
         logger.debug("[options_ws] ATM incrbyfloat error %s: %s", sym, exc)
@@ -709,6 +709,24 @@ async def _command_listener(state: _FeedState) -> None:
                                 continue
 
                             new_tokens = await state.subscribe(symbol, contracts)
+                            # Register new ATM tokens for turnover tracking
+                            for c in contracts:
+                                _tok = str(c.get("token", ""))
+                                _ctype = str(c.get("type", "")).upper()
+                                if _tok and _ctype in ("CE", "PE"):
+                                    try:
+                                        _lot_raw = await redis.hget(
+                                            f"snapshot:{symbol}", "lot_size"
+                                        )
+                                        _lot_size = int(float(_lot_raw or 1))
+                                        _strike = int(c.get("strike", 0))
+                                        _ATM_REGISTRY[_tok] = (
+                                            symbol, _ctype, _lot_size, _strike
+                                        )
+                                    except Exception:
+                                        pass
+                            # Re-prime so first tick of new ATM is absorbed
+                            _ATM_PRIMING.add(symbol)
 
                             if new_tokens and state.ws is not None:
                                 try:
