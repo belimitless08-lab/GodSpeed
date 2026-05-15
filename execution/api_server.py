@@ -410,10 +410,10 @@ async def get_volume_leaders():
             cleaned.append({
                 "symbol":          str(item.get("symbol", "")),
                 "cum_rvol":        round(float(item.get("cum_rvol", 0)), 2),
-                "adj_rvol":        round(float(item.get("adj_rvol", 0)), 2),
                 "vol_accel":       round(float(item.get("vol_accel", 0)), 2),
                 "consec_rvol":     int(float(item.get("consec_rvol", 0))),
                 "vol_leader_score":round(float(item.get("vol_leader_score", 0)), 1),
+                "strength_pct":    round(float(item.get("strength_pct", 0)), 1),
                 "ltp":             round(float(item.get("ltp", 0)), 2),
                 "change_pct":      round(float(item.get("change_pct", 0)), 2),
                 "breakout_dir":    item.get("breakout_dir"),
