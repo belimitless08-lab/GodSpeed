@@ -1635,28 +1635,20 @@ async def get_health():
                     "profiles_seeded": 0, "profiles_total": 0,
                     "token_ttl_hours": 0}
     try:
-        ft_raw = await redis.get("fyers:access_token")
-        rt_raw = await redis.get("fyers:refresh_token")
-        ft_ttl = await redis.ttl("fyers:access_token")
+        # Batch all token reads in one pipeline — no per-symbol loop
+        async with redis.pipeline(transaction=False) as pipe:
+            pipe.get("fyers:access_token")
+            pipe.get("fyers:refresh_token")
+            pipe.ttl("fyers:access_token")
+            pipe.get("fyers:profiles_seeded_count")  # written by seeder
+            pipe.get("fyers:profiles_total_count")   # written by seeder
+            ft_raw, rt_raw, ft_ttl, seeded_raw, total_raw = await pipe.execute()
 
-        fyers_status["access_token"] = "present" if ft_raw else "missing"
-        fyers_status["refresh_token"] = "present" if rt_raw else "missing"
-        fyers_status["token_ttl_hours"] = round(ft_ttl / 3600, 1) if ft_ttl > 0 else 0
-
-        # Count how many symbols have a seeded options ATM profile
-        symbols = await get_symbols()
-        seeded = 0
-        for sym in symbols:
-            raw = await redis.get(f"options:atm_profile:cum:{sym}")
-            if raw:
-                try:
-                    profile = json.loads(raw)
-                    if any(v > 0 for v in profile.values()):
-                        seeded += 1
-                except Exception:
-                    pass
-        fyers_status["profiles_seeded"] = seeded
-        fyers_status["profiles_total"] = len(symbols)
+        fyers_status["access_token"]    = "present" if ft_raw else "missing"
+        fyers_status["refresh_token"]   = "present" if rt_raw else "missing"
+        fyers_status["token_ttl_hours"] = round(ft_ttl / 3600, 1) if ft_ttl and ft_ttl > 0 else 0
+        fyers_status["profiles_seeded"] = int(seeded_raw) if seeded_raw else 0
+        fyers_status["profiles_total"]  = int(total_raw)  if total_raw  else 0
     except Exception as _fe:
         fyers_status["error"] = str(_fe)
 
