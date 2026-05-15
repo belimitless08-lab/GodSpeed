@@ -1812,6 +1812,23 @@ async def run_seeder(force: bool = False) -> None:
         options_ok, len(symbols), phase_b_seconds,
     )
 
+    # Store profile counts for health endpoint (avoids 209-symbol scan)
+    try:
+        _seeded_count = 0
+        for _s in symbols:
+            _raw = await redis.get(f"options:atm_profile:cum:{_s}")
+            if _raw:
+                try:
+                    if any(v > 0 for v in json.loads(_raw).values()):
+                        _seeded_count += 1
+                except Exception:
+                    pass
+        await redis.set("fyers:profiles_seeded_count", str(_seeded_count), ex=86400)
+        await redis.set("fyers:profiles_total_count",  str(len(symbols)),  ex=86400)
+        logger.info("[seeder] Fyers profile count: %d/%d", _seeded_count, len(symbols))
+    except Exception as _ce:
+        logger.warning("[seeder] Could not write profile counts: %s", _ce)
+
     # -----------------------------------------------------------------------
     # Global Indices seed (Groww CFD data — macro pre-market context)
     # -----------------------------------------------------------------------
