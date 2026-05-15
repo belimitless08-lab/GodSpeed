@@ -19,8 +19,10 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import httpx
+import hashlib
 import numpy as np
 import pandas as pd
 import pyotp
@@ -59,6 +61,10 @@ logger = logging.getLogger("morning_seeder")
 ANGELONE_CANDLE_URL = (
     "https://apiconnect.angelbroking.com/rest/secure/angelbroking/historical/v1/getCandleData"
 )
+
+FYERS_HISTORY_URL   = "https://api-t1.fyers.in/data/history"
+FYERS_REFRESH_URL   = "https://api-t1.fyers.in/api/v3/validate-refresh-token"
+_IST                = timezone(timedelta(hours=5, minutes=30))
 ANGELONE_LOGIN_URL = "https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword"
 
 LOG_EVERY = 20
@@ -149,6 +155,168 @@ def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # AngelOne session
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Fyers helpers — token refresh + 5m historical candle fetch
+# ---------------------------------------------------------------------------
+
+async def refresh_fyers_token(redis) -> Optional[str]:
+    """
+    Refresh Fyers access token using stored refresh_token.
+    Returns new access_token or None on failure.
+    Stores new access_token in Redis with 23h TTL.
+
+    Keys read from Redis:
+        fyers:refresh_token  — valid 15 days, set manually after initial auth
+        fyers:app_id_hash    — SHA256(app_id:app_secret), set manually
+        fyers:pin            — 4-digit Fyers PIN, set manually
+
+    Key written:
+        fyers:access_token   — valid 24h, used for all Fyers API calls
+    """
+    try:
+        refresh_token = await redis.get("fyers:refresh_token")
+        app_id_hash   = await redis.get("fyers:app_id_hash")
+        pin           = await redis.get("fyers:pin")
+
+        if not refresh_token or not app_id_hash or not pin:
+            logger.warning(
+                "[seeder] Fyers token refresh skipped — missing Redis keys "
+                "(fyers:refresh_token / fyers:app_id_hash / fyers:pin). "
+                "Run initial auth script to set them."
+            )
+            return None
+
+        # Decode bytes if needed
+        if isinstance(refresh_token, bytes): refresh_token = refresh_token.decode()
+        if isinstance(app_id_hash,   bytes): app_id_hash   = app_id_hash.decode()
+        if isinstance(pin,           bytes): pin           = pin.decode()
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(FYERS_REFRESH_URL, json={
+                "grant_type":   "refresh_token",
+                "appIdHash":    app_id_hash,
+                "refresh_token": refresh_token,
+                "pin":          pin,
+            })
+        data = resp.json()
+
+        if data.get("s") != "ok" or not data.get("access_token"):
+            logger.error("[seeder] Fyers token refresh failed: %s", data)
+            return None
+
+        new_token = data["access_token"]
+        # Store with 23h TTL so it's always refreshed before expiry
+        await redis.set("fyers:access_token", new_token, ex=82800)
+
+        # Store new refresh_token if rotated
+        if data.get("refresh_token"):
+            await redis.set(
+                "fyers:refresh_token", data["refresh_token"], ex=86400 * 14
+            )
+
+        logger.info("[seeder] Fyers access token refreshed ✅")
+        return new_token
+
+    except Exception as exc:
+        logger.error("[seeder] Fyers token refresh error: %s", exc)
+        return None
+
+
+def _fyers_option_symbol(symbol: str, expiry: str, strike: int, opt_type: str) -> str:
+    """
+    Build Fyers option symbol string.
+    Example: RELIANCE, 2026-05-26, 1370, CE → NSE:RELIANCE26MAY261370CE
+    NIFTY index options use same format: NSE:NIFTY26MAY2624000CE
+    """
+    dt         = datetime.strptime(expiry, "%Y-%m-%d")
+    expiry_str = dt.strftime("%d%b%y").upper()   # "26MAY26"
+    return f"NSE:{symbol}{expiry_str}{strike}{opt_type.upper()}"
+
+
+async def fetch_fyers_5m_candles(
+    access_token: str,
+    fyers_symbol: str,
+    date_ist: datetime,
+    http_client: httpx.AsyncClient,
+) -> list:
+    """
+    Fetch 5-minute OHLCV candles from Fyers for a single option contract.
+    Returns list of [ts, open, high, low, close, volume] for the session.
+    volume from Fyers = number of units (underlying shares), not contracts.
+    Returns [] on any failure — caller must handle gracefully.
+    """
+    try:
+        # Session: 9:15 AM to 3:30 PM IST on date_ist
+        from_ts = int(date_ist.replace(hour=9,  minute=15, second=0, microsecond=0).timestamp())
+        to_ts   = int(date_ist.replace(hour=15, minute=30, second=0, microsecond=0).timestamp())
+
+        resp = await http_client.get(
+            FYERS_HISTORY_URL,
+            params={
+                "symbol":      fyers_symbol,
+                "resolution":  "5",
+                "date_format": "0",      # Unix timestamps
+                "range_from":  str(from_ts),
+                "range_to":    str(to_ts),
+                "cont_flag":   "1",
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        data = resp.json()
+
+        if data.get("s") != "ok":
+            logger.debug("[seeder] Fyers candle miss %s: %s", fyers_symbol, data.get("message"))
+            return []
+
+        return data.get("candles", [])
+
+    except Exception as exc:
+        logger.debug("[seeder] Fyers candle error %s: %s", fyers_symbol, exc)
+        return []
+
+
+def _build_cum_turnover_profile(
+    ce_candles: list,
+    pe_candles: list,
+) -> dict:
+    """
+    Build a cumulative CE+PE turnover profile by 5m slot.
+    Turnover per candle = volume_units × close_price (Fyers volume in shares/units).
+
+    Returns {slot_key: cumulative_turnover} e.g. {"0915": 1234.5, "0920": 2500.0, ...}
+    Returns {} if no valid candles.
+    """
+    slot_turnover: dict[str, float] = {}
+
+    for candles in (ce_candles, pe_candles):
+        for c in candles:
+            if len(c) < 6:
+                continue
+            ts, _, _, _, close, volume = c[0], c[1], c[2], c[3], c[4], c[5]
+            if close <= 0 or volume <= 0:
+                continue
+            try:
+                dt  = datetime.fromtimestamp(ts, tz=_IST)
+                slot = f"{dt.hour:02d}{(dt.minute // 5) * 5:02d}"
+                slot_turnover[slot] = slot_turnover.get(slot, 0.0) + float(volume) * float(close)
+            except Exception:
+                continue
+
+    if not slot_turnover:
+        return {}
+
+    # Build cumulative
+    cumulative   = 0.0
+    cum_profile: dict[str, float] = {}
+    for slot in sorted(slot_turnover.keys()):
+        cumulative += slot_turnover[slot]
+        cum_profile[slot] = round(cumulative, 2)
+
+    return cum_profile
+
 
 async def get_angel_session() -> dict:
     """
@@ -1123,6 +1291,68 @@ async def _seed_options_symbol(
         ce = _parse_opt_candles(ce_candles)
         pe = _parse_opt_candles(pe_candles)
 
+        # ── Fyers 5m Option Profile ──────────────────────────────────────────
+        # Build cumulative CE+PE turnover profile using Fyers historical data.
+        # Stored in options:atm_profile:cum:{symbol} for options RVOL ranking.
+        # Also stores ATM±1 for future context columns.
+        if fyers_token:
+            _yesterday_ist = (today_ist - timedelta(days=1))
+            _strikes_map   = prev.get("strikes", {})
+            _expiry        = prev.get("expiry", "")
+
+            async with httpx.AsyncClient(timeout=20) as _fc:
+                for _label, _strike_key in [
+                    ("atm",    "atm"),
+                    ("plus1",  "atm_plus1"),
+                    ("minus1", "atm_minus1"),
+                ]:
+                    try:
+                        _s_info = _strikes_map.get(_strike_key, {})
+                        _strike = int(_s_info.get("strike", 0))
+                        if not _strike or not _expiry:
+                            continue
+
+                        _ce_sym = _fyers_option_symbol(symbol, _expiry, _strike, "CE")
+                        _pe_sym = _fyers_option_symbol(symbol, _expiry, _strike, "PE")
+
+                        _ce_5m = await fetch_fyers_5m_candles(
+                            fyers_token, _ce_sym, _yesterday_ist, _fc
+                        )
+                        await asyncio.sleep(0.4)  # 150/min rate limit guard
+                        _pe_5m = await fetch_fyers_5m_candles(
+                            fyers_token, _pe_sym, _yesterday_ist, _fc
+                        )
+                        await asyncio.sleep(0.4)
+
+                        _profile = _build_cum_turnover_profile(_ce_5m, _pe_5m)
+                        if not _profile:
+                            logger.debug(
+                                "[seeder] Fyers empty profile %s %s", symbol, _label
+                            )
+                            continue
+
+                        _redis_key = (
+                            f"options:atm_profile:cum:{symbol}"
+                            if _label == "atm"
+                            else f"options:atm_profile:{_label}:{symbol}"
+                        )
+                        await redis.set(_redis_key, json.dumps(_profile), ex=86400 * 3)
+
+                        if _label == "atm":
+                            logger.info(
+                                "[seeder] Fyers ATM profile %s — slots=%d "
+                                "total_turnover=₹%.0fL",
+                                symbol, len(_profile),
+                                list(_profile.values())[-1] / 100_000,
+                            )
+
+                    except Exception as _fe:
+                        logger.debug(
+                            "[seeder] Fyers profile error %s %s: %s",
+                            symbol, _label, _fe
+                        )
+                        continue
+
         ce_vols = ce["volumes"][-5:] if ce["volumes"] else []
         pe_vols = pe["volumes"][-5:] if pe["volumes"] else []
         ce_ois  = ce["ois"][-5:] if ce["ois"] else []
@@ -1258,6 +1488,17 @@ async def run_seeder(force: bool = False) -> None:
     # Step 1: Login
     logger.info("Logging in to AngelOne…")
     session = await get_angel_session()
+
+    # Refresh Fyers access token for options profile seeding
+    fyers_token = await refresh_fyers_token(redis)
+    if not fyers_token:
+        # Try reading existing token (may still be valid from yesterday)
+        raw_ft = await redis.get("fyers:access_token")
+        fyers_token = raw_ft.decode() if isinstance(raw_ft, bytes) else raw_ft
+        if fyers_token:
+            logger.info("[seeder] Using existing Fyers access token (refresh failed)")
+        else:
+            logger.warning("[seeder] No Fyers token available — options profiles skipped")
     logger.info("Login successful. Client: %s", session["client_code"])
 
     # Step 2: Build universe (always refresh at 8:30 AM)
