@@ -1,7 +1,7 @@
 """
 math_engine/candle_builder.py
 ==============================
-Real-time 1-minute candle builder for Market Pulse Pro v2.
+Real-time 1-minute candle builder for GodSpeed.
 
 Pipeline
 --------
