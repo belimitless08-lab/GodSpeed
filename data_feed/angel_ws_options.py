@@ -421,10 +421,10 @@ async def _accumulate_atm(redis, token: str, ltp: float, volume: int) -> None:
         return
 
     try:
-            await redis.incrbyfloat(
-                f"options:atm_turnover_today:{sym}",
-                delta_vol * ltp,
-            )
+        await redis.incrbyfloat(
+            f"options:atm_turnover_today:{sym}",
+            delta_vol * ltp,
+        )
         _ATM_LAST_VOL[cache_key] = volume
     except Exception as exc:
         logger.debug("[options_ws] ATM incrbyfloat error %s: %s", sym, exc)
