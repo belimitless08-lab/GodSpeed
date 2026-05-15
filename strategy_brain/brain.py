@@ -692,6 +692,17 @@ async def _run_volume_ranking() -> None:
                         rows.append({
                             "symbol":       sym,
                             "cum_rvol":     cum_rvol,
+                            "prev_high":    _sf(snap, "prev_high"),
+                            "prev_low":     _sf(snap, "prev_low"),
+                            "r1":           _sf(snap, "r1"),
+                            "s1":           _sf(snap, "s1"),
+                            "r2":           _sf(snap, "r2"),
+                            "s2":           _sf(snap, "s2"),
+                            "vwap":         _sf(snap, "vwap"),
+                            "supertrend_dir": str(
+                                snap.get(b"supertrend_dir") or
+                                snap.get("supertrend_dir") or "BEAR"
+                            ).replace("b'","").replace("'",""),
                             "change_pct":   change_pct,
                             "adj_rvol":     round(adj_rvol, 3),
                             "vol_accel":    vol_accel,
@@ -743,17 +754,14 @@ async def _run_volume_ranking() -> None:
                         )
 
                     rows.sort(key=lambda x: x["vol_leader_score"], reverse=True)
-                    top15 = rows[:15]
+                    top50 = rows[:50]
 
-                    await redis.set("volume_leaders:ranked", json.dumps(top15), ex=360)
+                    await redis.set("volume_leaders:ranked", json.dumps(top50), ex=360)
                     logger.info(
-                        "[brain] Vol ranking — leader=%s score=%.1f "
-                        "breakout=%s phase_div=%.2f expiry=%s",
-                        top15[0]["symbol"]           if top15 else "none",
-                        top15[0]["vol_leader_score"] if top15 else 0,
-                        top15[0]["breakout_dir"]     if top15 else "none",
+                        "[brain] Vol ranking — leader=%s score=%.1f phase_div=%.2f",
+                        top50[0]["symbol"] if top50 else "none",
+                        top50[0]["vol_leader_score"] if top50 else 0,
                         rvol_divisor,
-                        is_expiry,
                     )
 
             except Exception as exc:
