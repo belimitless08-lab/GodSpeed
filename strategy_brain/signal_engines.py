@@ -319,9 +319,11 @@ async def _detect_opening_drive(
         if slot_rvol < min_vol_mult:
             return None
     else:
-        # No historical slot data yet — fall back to cumulative RVOL
+        # No historical slot data — fall back to cumulative RVOL.
+        # Block if cum_rvol < 2.0 including when cum_rvol == 0
+        # (zero RVOL means no volume data at all — not a valid signal).
         cr_check = _cum_rvol(snapshot)
-        if cr_check > 0 and cr_check < 2.0:
+        if cr_check < 2.0:
             return None
 
     pdh = _safe_float(snapshot.get("prev_high"))
