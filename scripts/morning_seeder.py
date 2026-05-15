@@ -161,7 +161,7 @@ def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
 # Fyers helpers — token refresh + 5m historical candle fetch
 # ---------------------------------------------------------------------------
 
-async def refresh_fyers_token(redis) -> Optional[str]:
+async def refresh_fyers_token(redis=None) -> Optional[str]:
     """
     Refresh Fyers access token using stored refresh_token.
     Returns new access_token or None on failure.
@@ -176,6 +176,8 @@ async def refresh_fyers_token(redis) -> Optional[str]:
         fyers:access_token   — valid 24h, used for all Fyers API calls
     """
     try:
+        if redis is None:
+            redis = await get_redis()
         refresh_token = await redis.get("fyers:refresh_token")
         app_id_hash   = await redis.get("fyers:app_id_hash")
         pin           = await redis.get("fyers:pin")
