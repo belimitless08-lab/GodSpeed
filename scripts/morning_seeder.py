@@ -303,7 +303,7 @@ def _get_date_range() -> tuple[datetime, datetime]:
     today_ist = ist_now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
     from_dt = (today_ist - timedelta(days=15)).replace(hour=9, minute=15)
-    to_dt   = (today_ist - timedelta(days=1)).replace(hour=23, minute=59)
+    to_dt   = (today_ist - timedelta(days=1)).replace(hour=15, minute=30)
 
     return from_dt, to_dt
 
