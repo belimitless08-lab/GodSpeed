@@ -665,6 +665,8 @@ async def _run_volume_ranking() -> None:
                         cum_volume   = _sf(snap, "cum_volume")
                         avg_vol_5d   = _sf(snap, "avg_volume_5d")
                         ltp          = _sf(snap, "ltp")
+                        prev_close   = _sf(snap, "prev_close")
+                        change_pct   = round((ltp - prev_close) / max(prev_close, 1) * 100, 2) if prev_close > 0 else 0.0
                         first5m_high = _sf(snap, "first5m_high")
                         first5m_low  = _sf(snap, "first5m_low")
 
@@ -689,6 +691,7 @@ async def _run_volume_ranking() -> None:
                         rows.append({
                             "symbol":       sym,
                             "cum_rvol":     cum_rvol,
+                            "change_pct":   change_pct,
                             "adj_rvol":     round(adj_rvol, 3),
                             "vol_accel":    vol_accel,
                             "consec_rvol":  consec_rvol,
@@ -697,7 +700,7 @@ async def _run_volume_ranking() -> None:
                             "first5m_high": first5m_high,
                             "first5m_low":  first5m_low,
                             "breakout_dir": breakout_dir,
-                            "vol_state":    (snap.get("vol_state") or b"DRY"),
+                            "vol_state":    (snap.get("vol_state") or b"DRY").decode() if isinstance(snap.get("vol_state"), bytes) else (snap.get("vol_state") or "DRY"),
                         })
                     except Exception as sym_exc:
                         logger.debug("[brain] vol rank skip %s: %s", sym, sym_exc)
@@ -824,7 +827,7 @@ async def _run_options_volume_ranking() -> None:
                             "atm_strike":     atm_strike,
                             "ltp":            _ltp,
                             "change_pct": round((_ltp - _prev) / max(_prev, 1) * 100, 2) if _prev > 0 else 0.0,
-                            "vol_state":      (snap.get("vol_state") or b"DRY"),
+                            "vol_state":      (snap.get("vol_state") or b"DRY").decode() if isinstance(snap.get("vol_state"), bytes) else (snap.get("vol_state") or "DRY"),
                         })
 
                     except Exception as sym_exc:
