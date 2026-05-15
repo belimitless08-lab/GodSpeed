@@ -391,7 +391,9 @@ async def _load_atm_registry(redis) -> int:
 async def _accumulate_atm(redis, token: str, ltp: float, volume: int) -> None:
     """
     Accumulate ATM option turnover for Options Volume Leaders.
-    Turnover formula: delta_volume × ltp × lot_size (₹ premium flow).
+    Turnover formula: delta_volume × ltp (₹ turnover).
+    volume_traded_today is in underlying SHARES (units), not contracts.
+    No lot_size multiplication — that would overcount by 250×.
     volume_traded_today in AngelOne packets is cumulative session volume.
     Priming mechanism prevents double-count on reconnect.
     """
