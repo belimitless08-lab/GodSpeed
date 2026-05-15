@@ -27,6 +27,7 @@ Run
 from __future__ import annotations
 
 import asyncio
+import hashlib, os
 import json
 import logging
 import time
@@ -36,6 +37,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse, HTMLResponse
 from pydantic import BaseModel
 
 import os as _os
@@ -2130,6 +2132,102 @@ async def serve_root():
     if os.path.exists(index):
         return FileResponse(index)
     return {'status': 'Market Pulse Pro v2 API'}
+
+# ---------------------------------------------------------------------------
+# Fyers OAuth — token setup via browser (no local scripts needed)
+# ---------------------------------------------------------------------------
+
+def _fyers_app_id_hash() -> str:
+    """SHA256(FYERS_APP_ID:FYERS_APP_SECRET) — computed from env vars."""
+    app_id  = os.environ.get("FYERS_APP_ID", "")
+    secret  = os.environ.get("FYERS_APP_SECRET", "")
+    return hashlib.sha256(f"{app_id}:{secret}".encode()).hexdigest()
+
+
+@app.get("/api/fyers/connect")
+async def fyers_connect():
+    """
+    Step 1 of Fyers OAuth — redirect browser to Fyers login page.
+    Click 'Connect Fyers' in GodSpeed dashboard to trigger this.
+    After login, Fyers redirects back to /api/fyers/callback automatically.
+    """
+    app_id       = os.environ.get("FYERS_APP_ID", "")
+    redirect_uri = os.environ.get(
+        "FYERS_REDIRECT_URI",
+        "https://godspeedv1.up.railway.app/api/fyers/callback",
+    )
+    if not app_id:
+        return HTMLResponse(
+            "<h3>FYERS_APP_ID not set in Railway environment variables.</h3>"
+            "<p>Add FYERS_APP_ID, FYERS_APP_SECRET, FYERS_PIN to Railway → "
+            "web service → Variables.</p>",
+            status_code=400,
+        )
+
+    fyers_auth_url = (
+        f"https://api-t1.fyers.in/api/v3/generate-authcode"
+        f"?client_id={app_id}"
+        f"&redirect_uri={redirect_uri}"
+        f"&response_type=code"
+        f"&state=godspeed"
+    )
+    return RedirectResponse(url=fyers_auth_url)
+
+
+@app.get("/api/fyers/callback")
+async def fyers_callback(auth_code: str = "", state: str = ""):
+    """
+    Step 2 of Fyers OAuth — receives auth_code from Fyers redirect.
+    Exchanges for access_token + refresh_token, stores in Redis.
+    Redirects back to GodSpeed dashboard on success.
+    """
+    if not auth_code:
+        return HTMLResponse(
+            "<h3>No auth_code received from Fyers.</h3>"
+            "<p>Try connecting again from the GodSpeed dashboard.</p>",
+            status_code=400,
+        )
+
+    try:
+        import httpx as _httpx
+        app_id_hash = _fyers_app_id_hash()
+
+        async with _httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://api-t1.fyers.in/api/v3/validate-authcode",
+                json={
+                    "grant_type": "authorization_code",
+                    "appIdHash":  app_id_hash,
+                    "code":       auth_code,
+                },
+            )
+        data = resp.json()
+
+        if data.get("s") != "ok" or not data.get("access_token"):
+            return HTMLResponse(
+                f"<h3>Fyers token exchange failed.</h3><pre>{data}</pre>",
+                status_code=400,
+            )
+
+        redis = await get_redis()
+        pin   = os.environ.get("FYERS_PIN", "")
+
+        await redis.set("fyers:access_token",  data["access_token"],  ex=82800)
+        await redis.set("fyers:refresh_token", data["refresh_token"], ex=86400 * 14)
+        await redis.set("fyers:app_id_hash",   app_id_hash)
+        await redis.set("fyers:pin",           pin)
+
+        logger.info("[api] Fyers OAuth complete — tokens stored in Redis ✅")
+
+        # Redirect back to dashboard with success flag
+        return RedirectResponse(url="/?fyers=connected")
+
+    except Exception as exc:
+        logger.error("[api] Fyers callback error: %s", exc)
+        return HTMLResponse(
+            f"<h3>Error during Fyers auth.</h3><pre>{exc}</pre>",
+            status_code=500,
+        )
 
 @app.get('/index.html')
 async def serve_index():
