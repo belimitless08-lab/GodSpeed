@@ -433,6 +433,53 @@ async def get_volume_leaders():
         return {"status": "error", "message": str(e), "leaders": []}
 
 
+@app.get("/api/market/levels")
+async def get_market_levels():
+    """
+    Returns price levels for all symbols for client-side filtering.
+    Fields: prev_high, prev_low, r1, s1, r2, s2, vwap, supertrend_dir
+    Cached snapshot reads — fast.
+    """
+    try:
+        redis   = await get_redis()
+        symbols = await get_symbols()
+        result  = {}
+
+        # Pipeline all reads in one round trip
+        async with redis.pipeline(transaction=False) as pipe:
+            for sym in symbols:
+                pipe.hmget(
+                    f"snapshot:{sym}",
+                    "prev_high", "prev_low", "r1", "s1",
+                    "r2", "s2", "vwap", "supertrend_dir", "ltp"
+                )
+            all_rows = await pipe.execute()
+
+        def _f(v):
+            try: return round(float(v), 2) if v else 0.0
+            except: return 0.0
+
+        for sym, row in zip(symbols, all_rows):
+            ph, pl, r1, s1, r2, s2, vw, st, ltp = row
+            result[sym] = {
+                "prev_high":      _f(ph),
+                "prev_low":       _f(pl),
+                "r1":             _f(r1),
+                "s1":             _f(s1),
+                "r2":             _f(r2),
+                "s2":             _f(s2),
+                "vwap":           _f(vw),
+                "ltp":            _f(ltp),
+                "supertrend_dir": str(st or b"BEAR").replace("b'","").replace("'",""),
+            }
+
+        return {"status": "ok", "levels": result, "count": len(result)}
+
+    except Exception as exc:
+        logger.error("[api] market levels error: %s", exc)
+        return {"status": "error", "levels": {}}
+
+
 @app.get("/api/options-leaders")
 async def get_options_leaders():
     """
