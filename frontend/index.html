@@ -963,6 +963,34 @@
 ══════════════════════════════════════════ -->
 <div style="padding: 0 12px;">
   <div class="section-label">Live Signals</div>
+<div id="filter-bar" style="
+  display:flex; gap:6px; flex-wrap:wrap; padding:8px 12px 4px;
+  border-bottom:1px solid var(--border); background:var(--card);
+  position:sticky; top:0; z-index:50;">
+  <span style="font-size:10px;color:var(--muted);align-self:center;
+               margin-right:4px;letter-spacing:0.05em;">FILTER</span>
+  ${[
+    ['pdh',      'Above PDH'],
+    ['pdl',      'Below PDL'],
+    ['r1',       'Above R1'],
+    ['s1',       'Below S1'],
+    ['vwap_b',   'VWAP Bull'],
+    ['vwap_s',   'VWAP Bear'],
+  ].map(([key, label]) => `
+    <button id="filter-${key}" onclick="_setFilter('${key}')"
+      style="font-size:9px;padding:3px 10px;border-radius:3px;border:none;
+             cursor:pointer;background:var(--border);color:var(--muted);
+             transition:background 0.15s;">
+      ${label}
+    </button>`).join('')}
+  <button onclick="_setFilter(null)"
+    style="font-size:9px;padding:3px 10px;border-radius:3px;border:none;
+           cursor:pointer;background:transparent;color:var(--muted);
+           text-decoration:underline;">
+    Clear
+  </button>
+</div>
+
   <div id="signals-grid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
     <!-- Signal cards rendered by JS — volume leaders card preserved below -->
     <div class="card" id="volume-leaders-card">
@@ -1764,6 +1792,8 @@ const SIGNAL_TYPES = [
 ];
 
 let signalData = {};
+let _marketLevels = {};   // {symbol: {prev_high, prev_low, r1, s1, ...}}
+let _activeFilter = null; // current active filter key
 let _signalSort = 'score';  // 'score' | 'change'
 window._symbolIciMap = {};  // symbol → best ici_score across all active signals
 
@@ -1824,8 +1854,12 @@ function renderSignalRow(sig) {
     : '';
   const cleanType = getSignalLabel(sig);
 
+  const _filterStyle = (sig._filtered === false && _activeFilter)
+    ? 'opacity:0.45;'
+    : (sig._filtered === true ? 'border-left:2px solid var(--accent);' : '');
+
   return `
-  <div class="sig-row">
+  <div class="sig-row" style="${_filterStyle}">
     <div class="sig-t1">
       <div class="sig-t1-left">
         <span class="sig-sym" onclick="window.open('stock.html?symbol=${sig.symbol}','_blank')">${sig.symbol}</span>
@@ -1876,12 +1910,57 @@ function _setSort(mode) {
   renderSignalCards(signalData);
 }
 
+
+function _setFilter(key) {
+  _activeFilter = key;
+  // Update button styles
+  ['pdh','pdl','r1','s1','vwap_b','vwap_s'].forEach(k => {
+    const btn = document.getElementById('filter-' + k);
+    if (btn) {
+      btn.style.background = (k === key) ? 'var(--accent)' : 'var(--border)';
+      btn.style.color      = (k === key) ? '#000' : 'var(--muted)';
+    }
+  });
+  renderSignalCards(signalData);
+}
+
+function _passesFilter(symbol, ltp) {
+  if (!_activeFilter) return { passes: true, matched: false };
+  const lvl = _marketLevels[symbol] || {};
+  const p = lvl.prev_high, pd = lvl.prev_low;
+  const r1 = lvl.r1, s1 = lvl.s1;
+  const vwap = lvl.vwap;
+  const price = ltp || lvl.ltp || 0;
+  switch (_activeFilter) {
+    case 'pdh':   return { passes: price > p && p > 0,    matched: true };
+    case 'pdl':   return { passes: price < pd && pd > 0,  matched: true };
+    case 'r1':    return { passes: price > r1 && r1 > 0,  matched: true };
+    case 's1':    return { passes: price < s1 && s1 > 0,  matched: true };
+    case 'vwap_b':return { passes: price > vwap && vwap > 0, matched: true };
+    case 'vwap_s':return { passes: price < vwap && vwap > 0, matched: true };
+    default:      return { passes: true, matched: false };
+  }
+}
+
 function renderSignalCards(data) {
   const grid = document.getElementById('signals-grid');
   const vlCard = document.getElementById('volume-leaders-card');
   grid.innerHTML = SIGNAL_TYPES.map(({key, label}) => {
     const sigs = (data && data[key]) || [];
-    const sorted = [...sigs].sort((a, b) => {
+    let cards = [...sigs];
+
+    // Apply active filter: matched rows first (green border),
+    // then unfiltered filler rows (dimmed), always show 15 total
+    if (_activeFilter) {
+      const matched   = cards.filter(c => _passesFilter(c.symbol, c.ltp).passes);
+      const unmatched = cards.filter(c => !_passesFilter(c.symbol, c.ltp).passes);
+      cards = [
+        ...matched.map(c => ({...c, _filtered: true})),
+        ...unmatched.map(c => ({...c, _filtered: false})),
+      ].slice(0, 15);
+    }
+
+    const sorted = [...cards].sort((a, b) => {
       if (_signalSort === 'change') {
         return Math.abs(b.change_pct || 0) - Math.abs(a.change_pct || 0);
       }
@@ -3114,6 +3193,12 @@ function toggleHealthModal() {
     if (!visible) m.onclick = e => { if (e.target === m) toggleHealthModal() }
 }
 
+
+async function fetchMarketLevels() {
+  const d = await apiFetch('/api/market/levels');
+  if (d && d.levels) _marketLevels = d.levels;
+}
+
 async function fetchHealth() {
     const data = await apiFetch('/api/health')
     const el = document.getElementById('health-content')
@@ -4008,6 +4093,8 @@ Object.entries(pollers).forEach(([key, p]) => {
 
 // Initial account fetch always
 fetchAccount();
+fetchMarketLevels();
+setInterval(fetchMarketLevels, 300000);  // refresh every 5 min
 document.addEventListener('DOMContentLoaded', () => {
   renderSignalCards({});
   initHistoryDateInputs();
