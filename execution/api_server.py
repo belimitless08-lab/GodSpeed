@@ -1628,6 +1628,36 @@ async def get_health():
     seeder_ok = seeder.get("status") == "complete"
     overall = "OK" if (ws_ok and seeder_ok) else "DEGRADED"
 
+    # ── Fyers token health ────────────────────────────────────────────────
+    fyers_status = {"access_token": "missing", "refresh_token": "missing",
+                    "profiles_seeded": 0, "profiles_total": 0,
+                    "token_ttl_hours": 0}
+    try:
+        ft_raw = await redis.get("fyers:access_token")
+        rt_raw = await redis.get("fyers:refresh_token")
+        ft_ttl = await redis.ttl("fyers:access_token")
+
+        fyers_status["access_token"] = "present" if ft_raw else "missing"
+        fyers_status["refresh_token"] = "present" if rt_raw else "missing"
+        fyers_status["token_ttl_hours"] = round(ft_ttl / 3600, 1) if ft_ttl > 0 else 0
+
+        # Count how many symbols have a seeded options ATM profile
+        symbols = await get_symbols()
+        seeded = 0
+        for sym in symbols:
+            raw = await redis.get(f"options:atm_profile:cum:{sym}")
+            if raw:
+                try:
+                    profile = json.loads(raw)
+                    if any(v > 0 for v in profile.values()):
+                        seeded += 1
+                except Exception:
+                    pass
+        fyers_status["profiles_seeded"] = seeded
+        fyers_status["profiles_total"] = len(symbols)
+    except Exception as _fe:
+        fyers_status["error"] = str(_fe)
+
     return {
         "overall_status": overall,
         "websockets": {
@@ -1657,6 +1687,7 @@ async def get_health():
             "connected":   True,
             "aof_enabled": True,
         },
+        "fyers": fyers_status,
         "market": {
             "status":       feed_health.get("market_status", "UNKNOWN"),
             "last_updated": feed_health.get("updated_at", "—"),
@@ -1693,6 +1724,35 @@ async def manual_run_seeder(force: bool = False):
         return {"status": "started", "pid": proc.pid, "message": "Seeder worker running as isolated subprocess"}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@app.post("/api/fyers/refresh-token")
+async def fyers_refresh_token_endpoint():
+    """
+    Manually trigger Fyers access token refresh using stored refresh_token.
+    Use this any time — does not require waiting for 15-day expiry.
+    Useful for: after initial auth setup, after refresh_token rotation,
+    or any time /api/health shows access_token as missing.
+    """
+    try:
+        redis = await get_redis()
+        from scripts.morning_seeder import refresh_fyers_token
+        new_token = await refresh_fyers_token(redis)
+        if new_token:
+            ttl = await redis.ttl("fyers:access_token")
+            return {
+                "status": "ok",
+                "message": "Fyers access token refreshed successfully",
+                "expires_in_hours": round(ttl / 3600, 1),
+            }
+        return {
+            "status": "error",
+            "message": "Refresh failed — check fyers:refresh_token, "
+                       "fyers:app_id_hash and fyers:pin are set in Redis",
+        }
+    except Exception as exc:
+        logger.error("[api] fyers refresh error: %s", exc)
+        return {"status": "error", "message": str(exc)}
 
 
 @app.get("/api/debug/run-seeder")
