@@ -674,8 +674,9 @@ async def _run_volume_ranking() -> None:
                         if 0 < avg_vol_5d < 200_000 and cum_rvol < 2.5:
                             continue
 
-                        # Phase + expiry normalised RVOL
-                        adj_rvol = cum_rvol / max(rvol_divisor, 0.1)
+                        # cum_rvol is already time-normalised (vs same-slot
+                        # historical average). No phase divisor needed.
+                        adj_rvol = cum_rvol
 
                         # First 5m candle breakout filter
                         if first5m_high > 0 and first5m_low > 0:
@@ -707,18 +708,39 @@ async def _run_volume_ranking() -> None:
                         continue
 
                 if rows:
-                    max_cr  = max(r["adj_rvol"]    for r in rows) or 1.0
-                    max_va  = max(r["vol_accel"]   for r in rows) or 1.0
-                    max_con = max(r["consec_rvol"] for r in rows) or 1.0
-                    max_vol = max(r["cum_volume"]  for r in rows) or 1.0
+                    _STATE_PTS = {
+                        "BURST": 8, "CLIMAX": 6, "BUILDING": 4,
+                        "FADE": 1,  "DRY": 0,
+                    }
 
                     for r in rows:
-                        r["vol_leader_score"] = round((
-                            0.40 * (r["adj_rvol"]    / max_cr)  +
-                            0.25 * (r["vol_accel"]   / max_va)  +
-                            0.15 * (r["consec_rvol"] / max_con) +
-                            0.20 * (r["cum_volume"]  / max_vol)
-                        ) * 100, 1)
+                        cr  = r["cum_rvol"]
+                        va  = r["vol_accel"]
+                        con = r["consec_rvol"]
+                        st  = r.get("vol_state", "DRY")
+
+                        # Smooth base (0–60): linear, 60 pts at 4.0x RVOL
+                        base    = min(cr * 15.0, 60.0)
+                        # Acceleration bonus (0–20): 20 pts at 4.0x
+                        accel   = min(va * 5.0, 20.0)
+                        # Persistence bonus (0–12): 2.4 pts per elevated candle
+                        persist = min(con * 2.4, 12.0)
+                        # Discrete state bonus (0–8)
+                        state_b = _STATE_PTS.get(st, 0)
+
+                        r["vol_leader_score"] = round(
+                            min(base + accel + persist + state_b, 100.0), 1
+                        )
+
+                    # Strength percentile — where does this stock rank
+                    # among ALL 209 stocks by volume quality today?
+                    _all_scores = [r["vol_leader_score"] for r in rows]
+                    _n          = len(_all_scores)
+                    for r in rows:
+                        r["strength_pct"] = round(
+                            sum(1 for s in _all_scores
+                                if s < r["vol_leader_score"]) / _n * 100, 1
+                        )
 
                     rows.sort(key=lambda x: x["vol_leader_score"], reverse=True)
                     top15 = rows[:15]
