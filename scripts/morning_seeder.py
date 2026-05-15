@@ -1492,14 +1492,18 @@ async def run_seeder(force: bool = False) -> None:
     session = await get_angel_session()
 
     # Refresh Fyers access token for options profile seeding
-    fyers_token = await refresh_fyers_token(redis)
+    fyers_token = await refresh_fyers_token()   # gets its own Redis connection
     if not fyers_token:
         # Try reading existing token (may still be valid from yesterday)
-        raw_ft = await redis.get("fyers:access_token")
-        fyers_token = raw_ft.decode() if isinstance(raw_ft, bytes) else raw_ft
-        if fyers_token:
-            logger.info("[seeder] Using existing Fyers access token (refresh failed)")
-        else:
+        try:
+            _ft_redis = await get_redis()
+            raw_ft    = await _ft_redis.get("fyers:access_token")
+            fyers_token = raw_ft.decode() if isinstance(raw_ft, bytes) else raw_ft
+            if fyers_token:
+                logger.info("[seeder] Using existing Fyers access token (refresh failed)")
+            else:
+                logger.warning("[seeder] No Fyers token available — options profiles skipped")
+        except Exception:
             logger.warning("[seeder] No Fyers token available — options profiles skipped")
     logger.info("Login successful. Client: %s", session["client_code"])
 
