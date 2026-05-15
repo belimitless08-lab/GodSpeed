@@ -760,25 +760,36 @@ async def _run_options_volume_ranking() -> None:
 
                 for sym in symbols:
                     try:
-                        today_raw = await redis.get(f"options:atm_turnover_today:{sym}")
-                        prev_raw = await redis.get(f"options:atm_turnover_prev:{sym}")
+                        today_raw   = await redis.get(f"options:atm_turnover_today:{sym}")
+                        profile_raw = await redis.get(f"options:atm_profile:cum:{sym}")
 
-                        if not today_raw or not prev_raw:
+                        if not today_raw or not profile_raw:
                             continue
 
                         today = float(today_raw)
-                        prev = float(prev_raw)
 
-                        # Skip symbols with no baseline (seeder didn't run yet
-                        # or Phase B failed for this symbol)
-                        if prev <= 0:
+                        # Slot-based comparison — same approach as equity cum_rvol
+                        # At 9:45 AM: compare today's flow vs yesterday's flow by 9:45 AM
+                        _now     = _now_ist()
+                        _slot_m  = (_now.minute // 5) * 5
+                        _slot    = f"{_now.hour:02d}{_slot_m:02d}"
+                        profile  = json.loads(profile_raw)
+
+                        # Walk back to find nearest available slot
+                        _ref = profile.get(_slot, 0.0)
+                        if _ref <= 0:
+                            # Try prior slot
+                            _pm = _slot_m - 5
+                            _ph = _now.hour
+                            if _pm < 0:
+                                _pm = 55
+                                _ph -= 1
+                            _ref = profile.get(f"{_ph:02d}{_pm:02d}", 0.0)
+
+                        if _ref <= 0:
                             continue
 
-                        atm_rvol = round(today / prev, 3)
-
-                        # Minimum activity filter — ignore noise
-                        if today < 1_000_000:   # ₹10L minimum today's turnover
-                            continue
+                        atm_rvol = round(today / _ref, 3)
 
                         # Display fields from equity snapshot
                         snap = await redis.hgetall(f"snapshot:{sym}")
@@ -809,7 +820,7 @@ async def _run_options_volume_ranking() -> None:
                             "symbol":         sym,
                             "atm_rvol":       atm_rvol,
                             "today_turnover": round(today),
-                            "prev_turnover":  round(prev),
+                            "prev_turnover":  round(_ref),
                             "atm_strike":     atm_strike,
                             "ltp":            _ltp,
                             "change_pct": round((_ltp - _prev) / max(_prev, 1) * 100, 2) if _prev > 0 else 0.0,
