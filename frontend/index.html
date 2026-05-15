@@ -963,31 +963,68 @@
 ══════════════════════════════════════════ -->
 <div style="padding: 0 12px;">
   <div class="section-label">Live Signals</div>
-<div id="filter-bar" style="
-  display:flex; gap:6px; flex-wrap:wrap; padding:8px 12px 4px;
-  border-bottom:1px solid var(--border); background:var(--card);
-  position:sticky; top:0; z-index:50;">
-  <span style="font-size:10px;color:var(--muted);align-self:center;
-               margin-right:4px;letter-spacing:0.05em;">FILTER</span>
-  ${[
-    ['pdh',      'Above PDH'],
-    ['pdl',      'Below PDL'],
-    ['r1',       'Above R1'],
-    ['s1',       'Below S1'],
-    ['vwap_b',   'VWAP Bull'],
-    ['vwap_s',   'VWAP Bear'],
-  ].map(([key, label]) => `
-    <button id="filter-${key}" onclick="_setFilter('${key}')"
-      style="font-size:9px;padding:3px 10px;border-radius:3px;border:none;
-             cursor:pointer;background:var(--border);color:var(--muted);
-             transition:background 0.15s;">
-      ${label}
-    </button>`).join('')}
+<div id="filter-bar" style="display:flex;align-items:center;gap:6px;
+  padding:8px 14px 8px;border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border);background:var(--bg);
+  position:sticky;top:48px;z-index:50;flex-wrap:wrap;">
+
+  <span style="font-size:9px;color:var(--muted);letter-spacing:0.08em;
+    font-weight:700;margin-right:2px;">FILTER</span>
+
+  <button id="filter-pdh" onclick="_setFilter('pdh')"
+    style="font-size:9px;padding:3px 9px;border-radius:3px;border:1px solid var(--border);
+           cursor:pointer;background:var(--card-bg, #1e293b);color:var(--muted);
+           white-space:nowrap;transition:all 0.15s;">
+    Above PDH
+  </button>
+  <button id="filter-pdl" onclick="_setFilter('pdl')"
+    style="font-size:9px;padding:3px 9px;border-radius:3px;border:1px solid var(--border);
+           cursor:pointer;background:var(--card-bg, #1e293b);color:var(--muted);
+           white-space:nowrap;transition:all 0.15s;">
+    Below PDL
+  </button>
+  <button id="filter-r1" onclick="_setFilter('r1')"
+    style="font-size:9px;padding:3px 9px;border-radius:3px;border:1px solid var(--border);
+           cursor:pointer;background:var(--card-bg, #1e293b);color:var(--muted);
+           white-space:nowrap;transition:all 0.15s;">
+    Above R1
+  </button>
+  <button id="filter-s1" onclick="_setFilter('s1')"
+    style="font-size:9px;padding:3px 9px;border-radius:3px;border:1px solid var(--border);
+           cursor:pointer;background:var(--card-bg, #1e293b);color:var(--muted);
+           white-space:nowrap;transition:all 0.15s;">
+    Below S1
+  </button>
+  <button id="filter-vwap_b" onclick="_setFilter('vwap_b')"
+    style="font-size:9px;padding:3px 9px;border-radius:3px;border:1px solid var(--border);
+           cursor:pointer;background:var(--card-bg, #1e293b);color:var(--muted);
+           white-space:nowrap;transition:all 0.15s;">
+    VWAP Bull
+  </button>
+  <button id="filter-vwap_s" onclick="_setFilter('vwap_s')"
+    style="font-size:9px;padding:3px 9px;border-radius:3px;border:1px solid var(--border);
+           cursor:pointer;background:var(--card-bg, #1e293b);color:var(--muted);
+           white-space:nowrap;transition:all 0.15s;">
+    VWAP Bear
+  </button>
+  <button id="filter-bull" onclick="_setFilter('bull')"
+    style="font-size:9px;padding:3px 9px;border-radius:3px;border:1px solid var(--border);
+           cursor:pointer;background:var(--card-bg, #1e293b);color:var(--muted);
+           white-space:nowrap;transition:all 0.15s;">
+    ST Bull
+  </button>
+  <button id="filter-bear" onclick="_setFilter('bear')"
+    style="font-size:9px;padding:3px 9px;border-radius:3px;border:1px solid var(--border);
+           cursor:pointer;background:var(--card-bg, #1e293b);color:var(--muted);
+           white-space:nowrap;transition:all 0.15s;">
+    ST Bear
+  </button>
+
+  <span style="flex:1"></span>
   <button onclick="_setFilter(null)"
-    style="font-size:9px;padding:3px 10px;border-radius:3px;border:none;
-           cursor:pointer;background:transparent;color:var(--muted);
-           text-decoration:underline;">
-    Clear
+    style="font-size:9px;padding:3px 9px;border-radius:3px;border:1px solid var(--border);
+           cursor:pointer;background:transparent;color:var(--muted);">
+    ✕ Clear
   </button>
 </div>
 
@@ -1914,7 +1951,7 @@ function _setSort(mode) {
 function _setFilter(key) {
   _activeFilter = key;
   // Update button styles
-  ['pdh','pdl','r1','s1','vwap_b','vwap_s'].forEach(k => {
+  ['pdh','pdl','r1','s1','vwap_b','vwap_s','bull','bear'].forEach(k => {
     const btn = document.getElementById('filter-' + k);
     if (btn) {
       btn.style.background = (k === key) ? 'var(--accent)' : 'var(--border)';
@@ -1938,6 +1975,8 @@ function _passesFilter(symbol, ltp) {
     case 's1':    return { passes: price < s1 && s1 > 0,  matched: true };
     case 'vwap_b':return { passes: price > vwap && vwap > 0, matched: true };
     case 'vwap_s':return { passes: price < vwap && vwap > 0, matched: true };
+    case 'bull':  return { passes: (lvl.supertrend_dir || '').includes('BULL'), matched: true };
+    case 'bear':  return { passes: (lvl.supertrend_dir || '').includes('BEAR'), matched: true };
     default:      return { passes: true, matched: false };
   }
 }
