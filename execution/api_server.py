@@ -2147,23 +2147,17 @@ def _fyers_app_id_hash() -> str:
 @app.get("/api/fyers/connect")
 async def fyers_connect():
     """
-    Step 1 of Fyers OAuth — redirect browser to Fyers login page.
-    Click 'Connect Fyers' in GodSpeed dashboard to trigger this.
-    After login, Fyers redirects back to /api/fyers/callback automatically.
+    Shows Fyers auth URL + input form to paste auth_code.
+    Redirect URI is https://127.0.0.1 — register this in Fyers API dashboard.
     """
-    app_id       = os.environ.get("FYERS_APP_ID", "")
-    redirect_uri = os.environ.get(
-        "FYERS_REDIRECT_URI",
-        "https://godspeedv1.up.railway.app/api/fyers/callback",
-    )
+    app_id = os.environ.get("FYERS_APP_ID", "")
     if not app_id:
         return HTMLResponse(
-            "<h3>FYERS_APP_ID not set in Railway environment variables.</h3>"
-            "<p>Add FYERS_APP_ID, FYERS_APP_SECRET, FYERS_PIN to Railway → "
-            "web service → Variables.</p>",
+            "<h2>FYERS_APP_ID not set in Railway environment variables.</h2>",
             status_code=400,
         )
 
+    redirect_uri = "https://127.0.0.1"
     fyers_auth_url = (
         f"https://api-t1.fyers.in/api/v3/generate-authcode"
         f"?client_id={app_id}"
@@ -2171,26 +2165,87 @@ async def fyers_connect():
         f"&response_type=code"
         f"&state=godspeed"
     )
-    return RedirectResponse(url=fyers_auth_url)
 
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Connect Fyers — GodSpeed</title>
+      <style>
+        body {{ font-family: monospace; background: #0f172a; color: #e2e8f0;
+               display: flex; flex-direction: column; align-items: center;
+               justify-content: center; height: 100vh; margin: 0; gap: 20px; }}
+        h2   {{ color: #38bdf8; margin: 0; }}
+        p    {{ color: #94a3b8; margin: 0; text-align: center; max-width: 500px; }}
+        a    {{ color: #38bdf8; font-size: 18px; padding: 12px 24px;
+               background: #1e3a5f; border-radius: 8px; text-decoration: none; }}
+        a:hover {{ background: #1e4a8f; }}
+        input  {{ padding: 10px 16px; font-size: 15px; border-radius: 6px;
+                 border: 1px solid #334155; background: #1e293b;
+                 color: #e2e8f0; width: 420px; }}
+        button {{ padding: 10px 28px; font-size: 15px; border-radius: 6px;
+                 border: none; background: #22c55e; color: #000;
+                 cursor: pointer; font-weight: 700; }}
+        .step  {{ color: #64748b; font-size: 12px; }}
+        .box   {{ display: flex; gap: 8px; }}
+      </style>
+    </head>
+    <body>
+      <h2>Connect Fyers to GodSpeed</h2>
 
-@app.get("/api/fyers/callback")
-async def fyers_callback(auth_code: str = "", state: str = ""):
+      <p class="step">Step 1 — Click the button below. Log in on Fyers.</p>
+      <a href="{fyers_auth_url}" target="_blank">Open Fyers Login →</a>
+
+      <p class="step">
+        Step 2 — After login, browser shows "site can't be reached".<br>
+        Copy the <b>auth_code</b> value from the URL bar.<br>
+        Example URL: <code>https://127.0.0.1/?auth_code=<b>eyJ0...copy this...</b>&state=godspeed</code>
+      </p>
+
+      <div class="box">
+        <input type="text" id="code" placeholder="Paste auth_code here" />
+        <button onclick="submit()">Submit</button>
+      </div>
+
+      <p id="msg" style="color:#ef4444;"></p>
+
+      <script>
+        async function submit() {{
+          const code = document.getElementById('code').value.trim();
+          if (!code) {{ document.getElementById('msg').textContent = 'Paste the auth_code first.'; return; }}
+          document.getElementById('msg').style.color = '#94a3b8';
+          document.getElementById('msg').textContent = 'Exchanging tokens...';
+          const r = await fetch('/api/fyers/exchange?auth_code=' + encodeURIComponent(code));
+          const d = await r.json();
+          if (d.status === 'ok') {{
+            document.getElementById('msg').style.color = '#22c55e';
+            document.getElementById('msg').textContent = '✅ Connected! Redirecting...';
+            setTimeout(() => window.location.href = '/?fyers=connected', 1500);
+          }} else {{
+            document.getElementById('msg').style.color = '#ef4444';
+            document.getElementById('msg').textContent = 'Error: ' + d.message;
+          }}
+        }}
+      </script>
+    </body>
+    </html>
     """
-    Step 2 of Fyers OAuth — receives auth_code from Fyers redirect.
-    Exchanges for access_token + refresh_token, stores in Redis.
-    Redirects back to GodSpeed dashboard on success.
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/fyers/exchange")
+async def fyers_exchange(auth_code: str = ""):
+    """
+    Exchanges Fyers auth_code for access_token + refresh_token.
+    Called by /api/fyers/connect page after AK pastes the code.
     """
     if not auth_code:
-        return HTMLResponse(
-            "<h3>No auth_code received from Fyers.</h3>"
-            "<p>Try connecting again from the GodSpeed dashboard.</p>",
-            status_code=400,
-        )
+        return {"status": "error", "message": "auth_code is required"}
 
     try:
         import httpx as _httpx
         app_id_hash = _fyers_app_id_hash()
+        pin         = os.environ.get("FYERS_PIN", "")
 
         async with _httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
@@ -2204,30 +2259,20 @@ async def fyers_callback(auth_code: str = "", state: str = ""):
         data = resp.json()
 
         if data.get("s") != "ok" or not data.get("access_token"):
-            return HTMLResponse(
-                f"<h3>Fyers token exchange failed.</h3><pre>{data}</pre>",
-                status_code=400,
-            )
+            return {"status": "error", "message": str(data)}
 
         redis = await get_redis()
-        pin   = os.environ.get("FYERS_PIN", "")
-
         await redis.set("fyers:access_token",  data["access_token"],  ex=82800)
         await redis.set("fyers:refresh_token", data["refresh_token"], ex=86400 * 14)
         await redis.set("fyers:app_id_hash",   app_id_hash)
         await redis.set("fyers:pin",           pin)
 
-        logger.info("[api] Fyers OAuth complete — tokens stored in Redis ✅")
-
-        # Redirect back to dashboard with success flag
-        return RedirectResponse(url="/?fyers=connected")
+        logger.info("[api] Fyers tokens stored in Redis ✅")
+        return {"status": "ok", "message": "Fyers connected successfully"}
 
     except Exception as exc:
-        logger.error("[api] Fyers callback error: %s", exc)
-        return HTMLResponse(
-            f"<h3>Error during Fyers auth.</h3><pre>{exc}</pre>",
-            status_code=500,
-        )
+        logger.error("[api] Fyers exchange error: %s", exc)
+        return {"status": "error", "message": str(exc)}
 
 @app.get('/index.html')
 async def serve_index():
