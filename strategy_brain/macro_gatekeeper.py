@@ -11,6 +11,9 @@ Gate 2: EMA9 Extension — LTP > 3% away from EMA9 (both directions)
 Gate 3: ORB Range Hold — Active after 9:30 AM only.
                          Blocks if LTP is inside 9:15–9:30 opening range.
                          Stock still consolidating — no edge to trade.
+Gate 4: DRCG           — Dynamic Rolling Consolidation. Active all day.
+                         Blocks if last 8×5m candles show tight coiling.
+                         Range < 1.2%, coil ≥ 5 candles.
 
 Public API (backward compatible with brain.py):
     passed, failed_gates = await check_macro_gates(symbol, direction)
@@ -107,7 +110,7 @@ async def check_macro_gates(
     signal_direction: str,
 ) -> tuple[bool, list[str]]:
     """
-    Run all 3 macro gates for symbol / direction.
+    Run all 4 macro gates for symbol / direction.
     Returns (passed: bool, failed_gates: list[str])
     passed is True only when all gates clear.
     """
