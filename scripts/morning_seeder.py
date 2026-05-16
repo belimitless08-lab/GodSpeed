@@ -288,45 +288,57 @@ async def fyers_auto_login(redis=None) -> Optional[str]:
 
 async def _load_fyers_symbol_map(http_client) -> dict:
     """
-    Downloads Fyers NSE_FO instrument master and builds a lookup map:
-      (underlying, expiry_date_str, strike_int, opt_type) → fyers_symbol
-    expiry_date_str format: "2026-05-29"  (YYYY-MM-DD)
-    opt_type: "CE" or "PE"
+    Downloads Fyers NSE_FO instrument master (headerless CSV — positional).
+    Builds lookup: (underlying, expiry_iso, strike_int, opt_type) → fyers_symbol
+
+    Column layout (0-based, verified from live feed):
+      0  token            1  description       2  segment
+      3  lot_size         4  tick_size         5  isin
+      6  trading_session  7  last_update       8  expiry_epoch
+      9  symbol_ticker    10 exchange          11 instrument_type
+      12 symbol_token     13 underlying_symbol 14 underlying_fycode
+      15 strike_price     16 option_type       17 fy_token
+      18 reserved         19 reserved2         20 reserved3
     """
+    FIELDNAMES = [
+        "token", "description", "segment", "lot_size", "tick_size",
+        "isin", "trading_session", "last_update", "expiry_epoch",
+        "symbol_ticker", "exchange", "instrument_type", "symbol_token",
+        "underlying_symbol", "underlying_fycode", "strike_price",
+        "option_type", "fy_token", "reserved", "reserved2", "reserved3",
+    ]
     url = "https://public.fyers.in/sym_details/NSE_FO.csv"
     try:
         resp = await http_client.get(url, timeout=30)
         resp.raise_for_status()
-        lines = resp.text.splitlines()
-        reader = csv.DictReader(lines)
-        logger.info("[fyers] CSV headers: %s", reader.fieldnames)
+        import csv as _csv, io as _io
+        reader  = _csv.DictReader(_io.StringIO(resp.text), fieldnames=FIELDNAMES)
         sym_map = {}
+        skipped = 0
         for row in reader:
-            ticker     = row.get("symbol_ticker", "").strip()
-            underlying = row.get("underlying_fycode", "").strip()
-            opt_type   = row.get("option_type", "").strip().upper()
-            expiry_raw = row.get("expiry_date", "").strip()
-            strike_raw = row.get("strike_price", "").strip()
-            if not ticker or not underlying or opt_type not in ("CE", "PE"):
+            opt_type = row["option_type"].strip().upper()
+            if opt_type not in ("CE", "PE"):
+                continue                    # skip FUT / XX rows
+            ticker     = row["symbol_ticker"].strip()
+            underlying = row["underlying_symbol"].strip()
+            strike_raw = row["strike_price"].strip()
+            expiry_raw = row["expiry_epoch"].strip()
+            if not ticker or not underlying or not strike_raw or not expiry_raw:
+                skipped += 1
                 continue
             try:
                 strike_int = int(float(strike_raw))
-                # underlying may be like "NSE:CROMPTON" — strip exchange prefix
-                und_name = underlying.split(":")[-1]
-                # expiry_raw may be "2026-05-29" or "29-May-2026" — normalise to YYYY-MM-DD
-                for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d/%m/%Y"):
-                    try:
-                        exp_dt = datetime.strptime(expiry_raw, fmt)
-                        expiry_str = exp_dt.strftime("%Y-%m-%d")
-                        break
-                    except ValueError:
-                        continue
-                else:
-                    continue
-                sym_map[(und_name, expiry_str, strike_int, opt_type)] = ticker
-            except (ValueError, TypeError):
+                expiry_iso = datetime.utcfromtimestamp(
+                    int(expiry_raw)
+                ).strftime("%Y-%m-%d")
+            except (ValueError, TypeError, OSError):
+                skipped += 1
                 continue
-        logger.info("[fyers] Instrument master loaded — %d option symbols", len(sym_map))
+            sym_map[(underlying, expiry_iso, strike_int, opt_type)] = ticker
+        logger.info(
+            "[fyers] Instrument master loaded — %d option symbols (%d skipped)",
+            len(sym_map), skipped,
+        )
         return sym_map
     except Exception as exc:
         logger.error("[fyers] Failed to load instrument master: %s", exc)
