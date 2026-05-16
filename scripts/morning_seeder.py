@@ -157,6 +157,20 @@ def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
     return mapping
 
 
+def _last_trading_day(ref_dt: datetime) -> datetime:
+    """
+    Return the most recent weekday (Mon–Fri) strictly before ref_dt.
+      Saturday/Sunday run → returns Friday
+      Monday run          → returns Friday
+      Weekday run         → returns previous weekday
+    Does not account for exchange holidays (NSE calendar).
+    """
+    d = ref_dt - timedelta(days=1)
+    while d.weekday() >= 5:   # 5=Saturday, 6=Sunday
+        d -= timedelta(days=1)
+    return d
+
+
 # ---------------------------------------------------------------------------
 # AngelOne session
 # ---------------------------------------------------------------------------
@@ -1451,7 +1465,11 @@ async def _seed_options_symbol(
         # Also stores ATM±1 for future context columns.
         if fyers_token:
             _IST_TZ        = timezone(timedelta(hours=5, minutes=30))
-            _yesterday_ist = datetime.now(_IST_TZ) - timedelta(days=1)
+            _yesterday_ist = _last_trading_day(datetime.now(_IST_TZ))
+            logger.info(
+                "[fyers] Using trading day: %s",
+                _yesterday_ist.date(),
+            )
             _strikes_map   = strike_info.get("strikes", {})
             _expiry        = strike_info.get("expiry", "")
 
