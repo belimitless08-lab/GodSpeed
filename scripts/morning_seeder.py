@@ -223,9 +223,10 @@ async def fyers_auto_login(redis=None) -> Optional[str]:
             r3 = await client.post(
                 FYERS_VAGATOR_PIN_URL,
                 json={
-                    "request_key":   request_key2,
-                    "identity_type": "pin",
-                    "identifier":    pin,
+                    "request_key":    request_key2,
+                    "identity_type":  "pin",
+                    "identifier":     hashlib.sha256(pin.encode()).hexdigest(),
+                    "recaptcha_token": "",
                 },
             )
             d3 = r3.json()
