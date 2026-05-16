@@ -1463,6 +1463,11 @@ async def _seed_options_symbol(
         # Build cumulative CE+PE turnover profile using Fyers historical data.
         # Stored in options:atm_profile:cum:{symbol} for options RVOL ranking.
         # Also stores ATM±1 for future context columns.
+        logger.info(
+            "[fyers] %s — reached Fyers block (token=%s, ce=%s, pe=%s)",
+            symbol, bool(fyers_token), bool(ce_token), bool(pe_token),
+        )
+
         if fyers_token:
             _IST_TZ        = timezone(timedelta(hours=5, minutes=30))
             _yesterday_ist = _last_trading_day(datetime.now(_IST_TZ))
@@ -1906,6 +1911,11 @@ async def run_seeder(force: bool = False) -> None:
                 continue
             fno_symbols.append(sym)
             fno_prev_closes.append(prev_close)
+
+        logger.info(
+            "Phase B: %d/%d symbols have snapshots → entering gather",
+            len(fno_symbols), len(symbols),
+        )
 
         _sem = asyncio.Semaphore(8)
 
