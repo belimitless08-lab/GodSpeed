@@ -195,9 +195,11 @@ async def fyers_auto_login(redis=None) -> Optional[str]:
         async with httpx.AsyncClient(timeout=20) as client:
 
             # Step 1 — send login OTP request
+            import base64 as _b64
+            fy_id_b64 = _b64.b64encode(user_id.encode()).decode()
             r1 = await client.post(
                 FYERS_VAGATOR_OTP_URL,
-                json={"fy_id": user_id, "app_id": "2"},
+                json={"fy_id": fy_id_b64, "app_id": "2"},
             )
             d1 = r1.json()
             request_key = d1.get("request_key", "")
