@@ -323,7 +323,7 @@ async def fetch_fyers_5m_candles(
                 "range_to":    str(to_ts),
                 "cont_flag":   "1",
             },
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={"Authorization": f"{_os.environ.get('FYERS_APP_ID', '')}:{access_token}"},
             timeout=15,
         )
         data = resp.json()
