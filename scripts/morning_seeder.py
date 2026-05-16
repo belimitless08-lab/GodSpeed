@@ -299,6 +299,7 @@ async def _load_fyers_symbol_map(http_client) -> dict:
         resp.raise_for_status()
         lines = resp.text.splitlines()
         reader = csv.DictReader(lines)
+        logger.info("[fyers] CSV headers: %s", reader.fieldnames)
         sym_map = {}
         for row in reader:
             ticker     = row.get("symbol_ticker", "").strip()
