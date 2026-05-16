@@ -63,7 +63,11 @@ ANGELONE_CANDLE_URL = (
 )
 
 FYERS_HISTORY_URL   = "https://api-t1.fyers.in/data/history"
-FYERS_REFRESH_URL   = "https://api-t1.fyers.in/api/v3/validate-refresh-token"
+FYERS_VAGATOR_OTP_URL  = "https://api-t2.fyers.in/vagator/v2/send_login_otp_v2"
+FYERS_VAGATOR_VOTP_URL = "https://api-t2.fyers.in/vagator/v2/verify_otp"
+FYERS_VAGATOR_PIN_URL  = "https://api-t2.fyers.in/vagator/v2/verify_pin_v2"
+FYERS_TOKEN_URL        = "https://api-t1.fyers.in/api/v3/token"
+FYERS_AUTHCODE_URL     = "https://api-t1.fyers.in/api/v3/validate-authcode"
 _IST                = timezone(timedelta(hours=5, minutes=30))
 ANGELONE_LOGIN_URL = "https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword"
 
@@ -161,70 +165,124 @@ def _snapshot_to_hash_mapping(snapshot: dict) -> dict[str, str]:
 # Fyers helpers — token refresh + 5m historical candle fetch
 # ---------------------------------------------------------------------------
 
-async def refresh_fyers_token(redis=None) -> Optional[str]:
+async def fyers_auto_login(redis=None) -> Optional[str]:
     """
-    Refresh Fyers access token using stored refresh_token.
-    Returns new access_token or None on failure.
-    Stores new access_token in Redis with 23h TTL.
-
-    Keys read from Redis:
-        fyers:refresh_token  — valid 15 days, set manually after initial auth
-        fyers:app_id_hash    — SHA256(app_id:app_secret), set manually
-        fyers:pin            — 4-digit Fyers PIN, set manually
-
-    Key written:
-        fyers:access_token   — valid 24h, used for all Fyers API calls
+    Fully automated Fyers login using TOTP — no refresh token needed.
+    Reads from env vars: FYERS_APP_ID, FYERS_APP_SECRET,
+                         FYERS_USER_ID, FYERS_PIN, FYERS_TOTP_SECRET
+    Stores result in Redis: fyers:access_token (TTL 23h)
+    Returns access_token string or None on failure.
     """
     try:
+        import os as _os
+        app_id      = _os.environ.get("FYERS_APP_ID", "")
+        app_secret  = _os.environ.get("FYERS_APP_SECRET", "")
+        user_id     = _os.environ.get("FYERS_USER_ID", "")
+        pin         = _os.environ.get("FYERS_PIN", "")
+        totp_secret = _os.environ.get("FYERS_TOTP_SECRET", "")
+
+        if not all([app_id, app_secret, user_id, pin, totp_secret]):
+            logger.error(
+                "[fyers_login] Missing env vars — need FYERS_APP_ID, "
+                "FYERS_APP_SECRET, FYERS_USER_ID, FYERS_PIN, FYERS_TOTP_SECRET"
+            )
+            return None
+
+        totp_code   = pyotp.TOTP(totp_secret).now()
+        pin_hash    = hashlib.sha256(pin.encode()).hexdigest()
+        app_id_hash = hashlib.sha256(f"{app_id}:{app_secret}".encode()).hexdigest()
+
+        async with httpx.AsyncClient(timeout=20) as client:
+
+            # Step 1 — send login OTP request
+            r1 = await client.post(
+                FYERS_VAGATOR_OTP_URL,
+                json={"fy_id": user_id, "app_id": "2"},
+            )
+            d1 = r1.json()
+            request_key = d1.get("request_key", "")
+            if not request_key:
+                logger.error("[fyers_login] Step 1 failed: %s", d1)
+                return None
+            logger.info("[fyers_login] Step 1 OK — request_key obtained")
+
+            # Step 2 — verify TOTP
+            r2 = await client.post(
+                FYERS_VAGATOR_VOTP_URL,
+                json={"request_key": request_key, "otp": totp_code},
+            )
+            d2 = r2.json()
+            request_key2 = d2.get("request_key", "")
+            if not request_key2:
+                logger.error("[fyers_login] Step 2 (TOTP verify) failed: %s", d2)
+                return None
+            logger.info("[fyers_login] Step 2 OK — TOTP verified")
+
+            # Step 3 — verify PIN
+            r3 = await client.post(
+                FYERS_VAGATOR_PIN_URL,
+                json={
+                    "request_key":   request_key2,
+                    "identity_type": "pin",
+                    "identifier":    pin_hash,
+                },
+            )
+            d3 = r3.json()
+            temp_token = (d3.get("data") or {}).get("access_token", "")
+            if not temp_token:
+                logger.error("[fyers_login] Step 3 (PIN verify) failed: %s", d3)
+                return None
+            logger.info("[fyers_login] Step 3 OK — PIN verified")
+
+            # Step 4 — get auth code
+            r4 = await client.post(
+                FYERS_TOKEN_URL,
+                headers={"Authorization": f"Bearer {temp_token}"},
+                json={
+                    "fyers_id":      user_id,
+                    "app_id":        app_id[:-4],   # strip "-100" suffix
+                    "redirect_uri":  "https://127.0.0.1",
+                    "appType":       "100",
+                    "code_challenge": "",
+                    "state":         "godspeed",
+                    "scope":         "",
+                    "nonce":         "",
+                    "response_type": "code",
+                    "create_cookie": True,
+                },
+            )
+            d4 = r4.json()
+            auth_url = d4.get("Url", "")
+            if not auth_url or "auth_code=" not in auth_url:
+                logger.error("[fyers_login] Step 4 (get auth_code) failed: %s", d4)
+                return None
+            auth_code = auth_url.split("auth_code=")[1].split("&")[0]
+            logger.info("[fyers_login] Step 4 OK — auth_code obtained")
+
+            # Step 5 — exchange auth code for access token
+            r5 = await client.post(
+                FYERS_AUTHCODE_URL,
+                json={
+                    "grant_type": "authorization_code",
+                    "appIdHash":  app_id_hash,
+                    "code":       auth_code,
+                },
+            )
+            d5 = r5.json()
+            access_token = d5.get("access_token", "")
+            if not access_token:
+                logger.error("[fyers_login] Step 5 (validate-authcode) failed: %s", d5)
+                return None
+
         if redis is None:
             redis = await get_redis()
-        refresh_token = await redis.get("fyers:refresh_token")
-        app_id_hash   = await redis.get("fyers:app_id_hash")
-        pin           = await redis.get("fyers:pin")
-
-        if not refresh_token or not app_id_hash or not pin:
-            logger.warning(
-                "[seeder] Fyers token refresh skipped — missing Redis keys "
-                "(fyers:refresh_token / fyers:app_id_hash / fyers:pin). "
-                "Run initial auth script to set them."
-            )
-            return None
-
-        # Decode bytes if needed
-        if isinstance(refresh_token, bytes): refresh_token = refresh_token.decode()
-        if isinstance(app_id_hash,   bytes): app_id_hash   = app_id_hash.decode()
-        if isinstance(pin,           bytes): pin           = pin.decode()
-
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(FYERS_REFRESH_URL, json={
-                "grant_type":   "refresh_token",
-                "appIdHash":    app_id_hash,
-                "refresh_token": refresh_token,
-                "pin":          pin,
-            })
-        data = resp.json()
-
-        if data.get("s") != "ok" or not data.get("access_token"):
-            logger.error("[seeder] Fyers token refresh failed: %s", data)
-            return None
-
-        new_token = data["access_token"]
-        # Store with 23h TTL so it's always refreshed before expiry
-        await redis.set("fyers:access_token", new_token, ex=82800)
-
-        # Store new refresh_token if rotated
-        if data.get("refresh_token"):
-            await redis.set(
-                "fyers:refresh_token", data["refresh_token"], ex=86400 * 14
-            )
-
-        logger.info("[seeder] Fyers access token refreshed ✅")
-        return new_token
+        await redis.set("fyers:access_token", access_token, ex=82800)
+        logger.info("[fyers_login] ✅ Fyers auto-login complete — token stored (23h TTL)")
+        return access_token
 
     except Exception as exc:
-        logger.error("[seeder] Fyers token refresh error: %s", exc)
+        logger.error("[fyers_login] Unexpected error: %s", exc)
         return None
-
 
 def _fyers_option_symbol(symbol: str, expiry: str, strike: int, opt_type: str) -> str:
     """
@@ -1437,7 +1495,7 @@ async def run_seeder(force: bool = False) -> None:
     session = await get_angel_session()
 
     # Refresh Fyers access token for options profile seeding
-    fyers_token = await refresh_fyers_token()   # gets its own Redis connection
+    fyers_token = await fyers_auto_login()   # full TOTP login, no refresh token
     if not fyers_token:
         # Try reading existing token (may still be valid from yesterday)
         try:
