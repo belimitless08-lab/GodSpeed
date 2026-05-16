@@ -646,7 +646,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 high   = h,
                 low    = l,
                 close  = c,
-                volume = closed["volume"],
+                volume = incremental_vol,   # incremental, not cumulative session total
             )
 
             # vwap_history: rolling list of last 5 VWAP values (oldest first)
