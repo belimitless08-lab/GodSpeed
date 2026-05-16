@@ -1307,8 +1307,8 @@ async def _seed_options_symbol(
         if fyers_token:
             _IST_TZ        = timezone(timedelta(hours=5, minutes=30))
             _yesterday_ist = datetime.now(_IST_TZ) - timedelta(days=1)
-            _strikes_map   = prev.get("strikes", {})
-            _expiry        = prev.get("expiry", "")
+            _strikes_map   = strike_info.get("strikes", {})
+            _expiry        = strike_info.get("expiry", "")
 
             async with httpx.AsyncClient(timeout=20) as _fc:
                 for _label, _strike_key in [
