@@ -320,7 +320,7 @@ async def _load_fyers_symbol_map(http_client) -> dict:
             if opt_type not in ("CE", "PE"):
                 continue                    # skip FUT / XX rows
             ticker     = row["symbol_ticker"].strip()
-            underlying = row["underlying_symbol"].strip()
+            underlying = row["underlying_symbol"].strip().replace("-EQ", "")
             strike_raw = row["strike_price"].strip()
             expiry_raw = row["expiry_epoch"].strip()
             if not ticker or not underlying or not strike_raw or not expiry_raw:
@@ -328,8 +328,10 @@ async def _load_fyers_symbol_map(http_client) -> dict:
                 continue
             try:
                 strike_int = int(float(strike_raw))
-                expiry_iso = datetime.utcfromtimestamp(
-                    int(expiry_raw)
+                import pytz as _pytz
+                _IST = _pytz.timezone("Asia/Kolkata")
+                expiry_iso = datetime.fromtimestamp(
+                    int(expiry_raw), tz=_IST
                 ).strftime("%Y-%m-%d")
             except (ValueError, TypeError, OSError):
                 skipped += 1
