@@ -189,7 +189,6 @@ async def fyers_auto_login(redis=None) -> Optional[str]:
             return None
 
         totp_code   = pyotp.TOTP(totp_secret).now()
-        pin_hash    = hashlib.sha256(pin.encode()).hexdigest()
         app_id_hash = hashlib.sha256(f"{app_id}:{app_secret}".encode()).hexdigest()
 
         async with httpx.AsyncClient(timeout=20) as client:
@@ -226,7 +225,7 @@ async def fyers_auto_login(redis=None) -> Optional[str]:
                 json={
                     "request_key":   request_key2,
                     "identity_type": "pin",
-                    "identifier":    pin_hash,
+                    "identifier":    pin,
                 },
             )
             d3 = r3.json()
