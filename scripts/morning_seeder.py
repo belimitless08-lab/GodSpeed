@@ -15,6 +15,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import logging
 import time
@@ -285,14 +286,73 @@ async def fyers_auto_login(redis=None) -> Optional[str]:
         logger.error("[fyers_login] Unexpected error: %s", exc)
         return None
 
-def _fyers_option_symbol(symbol: str, expiry: str, strike: int, opt_type: str) -> str:
+async def _load_fyers_symbol_map(http_client) -> dict:
     """
-    Build Fyers option symbol string.
-    Example: RELIANCE, 2026-05-26, 1370, CE → NSE:RELIANCE26MAY261370CE
-    NIFTY index options use same format: NSE:NIFTY26MAY2624000CE
+    Downloads Fyers NSE_FO instrument master and builds a lookup map:
+      (underlying, expiry_date_str, strike_int, opt_type) → fyers_symbol
+    expiry_date_str format: "2026-05-29"  (YYYY-MM-DD)
+    opt_type: "CE" or "PE"
     """
+    url = "https://public.fyers.in/sym_details/NSE_FO.csv"
+    try:
+        resp = await http_client.get(url, timeout=30)
+        resp.raise_for_status()
+        lines = resp.text.splitlines()
+        reader = csv.DictReader(lines)
+        sym_map = {}
+        for row in reader:
+            ticker     = row.get("symbol_ticker", "").strip()
+            underlying = row.get("underlying_fycode", "").strip()
+            opt_type   = row.get("option_type", "").strip().upper()
+            expiry_raw = row.get("expiry_date", "").strip()
+            strike_raw = row.get("strike_price", "").strip()
+            if not ticker or not underlying or opt_type not in ("CE", "PE"):
+                continue
+            try:
+                strike_int = int(float(strike_raw))
+                # underlying may be like "NSE:CROMPTON" — strip exchange prefix
+                und_name = underlying.split(":")[-1]
+                # expiry_raw may be "2026-05-29" or "29-May-2026" — normalise to YYYY-MM-DD
+                for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d/%m/%Y"):
+                    try:
+                        exp_dt = datetime.strptime(expiry_raw, fmt)
+                        expiry_str = exp_dt.strftime("%Y-%m-%d")
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    continue
+                sym_map[(und_name, expiry_str, strike_int, opt_type)] = ticker
+            except (ValueError, TypeError):
+                continue
+        logger.info("[fyers] Instrument master loaded — %d option symbols", len(sym_map))
+        return sym_map
+    except Exception as exc:
+        logger.error("[fyers] Failed to load instrument master: %s", exc)
+        return {}
+
+
+def _fyers_option_symbol(
+    symbol: str,
+    expiry: str,
+    strike: int,
+    opt_type: str,
+    sym_map: dict | None = None,
+) -> str:
+    """
+    Returns Fyers option symbol string.
+    Uses instrument master lookup (sym_map) when available,
+    falls back to format construction.
+    """
+    if sym_map:
+        key = (symbol, expiry, strike, opt_type.upper())
+        result = sym_map.get(key)
+        if result:
+            return result
+        logger.debug("[fyers] sym_map miss: %s", key)
+    # Fallback: construct manually (monthly format)
     dt         = datetime.strptime(expiry, "%Y-%m-%d")
-    expiry_str = dt.strftime("%d%b%y").upper()   # "26MAY26"
+    expiry_str = dt.strftime("%y%b").upper()   # "26MAY"
     return f"NSE:{symbol}{expiry_str}{strike}{opt_type.upper()}"
 
 
@@ -1321,6 +1381,7 @@ async def _seed_options_symbol(
     to_dt: datetime,
     http_client: httpx.AsyncClient,
     fyers_token: str | None = None,
+    fyers_sym_map: dict | None = None,
 ) -> bool:
     try:
         strike_info = find_option_strikes(instruments, symbol, prev_close)
@@ -1381,8 +1442,8 @@ async def _seed_options_symbol(
                         if not _strike or not _expiry:
                             continue
 
-                        _ce_sym = _fyers_option_symbol(symbol, _expiry, _strike, "CE")
-                        _pe_sym = _fyers_option_symbol(symbol, _expiry, _strike, "PE")
+                        _ce_sym = _fyers_option_symbol(symbol, _expiry, _strike, "CE", fyers_sym_map)
+                        _pe_sym = _fyers_option_symbol(symbol, _expiry, _strike, "PE", fyers_sym_map)
 
                         _ce_5m = await fetch_fyers_5m_candles(
                             fyers_token, _ce_sym, _yesterday_ist, _fc
@@ -1497,6 +1558,9 @@ async def run_seeder(force: bool = False) -> None:
 
     # Refresh Fyers access token for options profile seeding
     fyers_token = await fyers_auto_login()   # full TOTP login, no refresh token
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        _fyers_sym_map = await _load_fyers_symbol_map(http_client)
+    logger.info("[fyers] Symbol map ready — %d entries", len(_fyers_sym_map))
     if not fyers_token:
         # Try reading existing token (may still be valid from yesterday)
         try:
@@ -1805,6 +1869,7 @@ async def run_seeder(force: bool = False) -> None:
                 result = await _seed_options_symbol(
                     sym, prev_close, instruments, session, from_dt, to_dt, http_client,
                     fyers_token=fyers_token,
+                    fyers_sym_map=_fyers_sym_map,
                 )
             except Exception as e:
                 logger.error(f"Phase B failed for {sym}: {e}")
