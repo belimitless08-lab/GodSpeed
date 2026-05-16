@@ -269,11 +269,17 @@ async def fetch_fyers_5m_candles(
         )
         data = resp.json()
 
+        candles = data.get("candles", [])
+        logger.warning(
+            "[seeder] Fyers response %s — s=%s candles=%d raw=%s",
+            fyers_symbol, data.get("s"), len(candles),
+            str(data)[:200],  # first 200 chars of response
+        )
+
         if data.get("s") != "ok":
-            logger.debug("[seeder] Fyers candle miss %s: %s", fyers_symbol, data.get("message"))
             return []
 
-        return data.get("candles", [])
+        return candles
 
     except Exception as exc:
         logger.debug("[seeder] Fyers candle error %s: %s", fyers_symbol, exc)
