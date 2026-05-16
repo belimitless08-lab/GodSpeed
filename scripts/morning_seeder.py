@@ -1437,11 +1437,13 @@ async def run_seeder(force: bool = False) -> None:
         try:
             _ft_redis = await get_redis()
             raw_ft    = await _ft_redis.get("fyers:access_token")
+            _ft_ttl   = await _ft_redis.ttl("fyers:access_token")
             fyers_token = raw_ft.decode() if isinstance(raw_ft, bytes) else raw_ft
-            if fyers_token:
+            if raw_ft and _ft_ttl > 3600:   # > 1 hour remaining = usable token
                 logger.info("[seeder] Using existing Fyers access token (refresh failed)")
             else:
-                logger.warning("[seeder] No Fyers token available — options profiles skipped")
+                fyers_token = None
+                logger.warning("[seeder] No usable Fyers token available — options profiles skipped")
         except Exception:
             logger.warning("[seeder] No Fyers token available — options profiles skipped")
     logger.info("Login successful. Client: %s", session["client_code"])
