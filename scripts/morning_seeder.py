@@ -404,11 +404,16 @@ async def fetch_fyers_5m_candles(
         data = resp.json()
 
         candles = data.get("candles", [])
-        logger.warning(
-            "[seeder] Fyers response %s — s=%s candles=%d raw=%s",
-            fyers_symbol, data.get("s"), len(candles),
-            str(data)[:200],  # first 200 chars of response
-        )
+        if data.get("s") != "ok":
+            logger.warning(
+                "[seeder] Fyers FAIL %s — s=%s raw=%s",
+                fyers_symbol, data.get("s"), str(data)[:120],
+            )
+        else:
+            logger.debug(
+                "[seeder] Fyers OK %s — candles=%d",
+                fyers_symbol, len(candles),
+            )
 
         if data.get("s") != "ok":
             return []
@@ -1006,11 +1011,17 @@ def find_option_strikes(
         return None
 
     # Derive strike gap: most common difference between consecutive strikes
-    diffs = [strikes_available[i + 1] - strikes_available[i] for i in range(len(strikes_available) - 1)]
-    strike_gap = int(sorted(diffs, key=diffs.count, reverse=True)[0])
+    if len(strikes_available) >= 2:
+        diffs = [strikes_available[i+1] - strikes_available[i]
+                 for i in range(len(strikes_available) - 1)]
+        strike_gap = int(sorted(diffs, key=diffs.count, reverse=True)[0])
+    else:
+        strike_gap = 0
 
-    # ATM = round prev_close to nearest strike_gap
-    atm_strike = int(round(prev_close / strike_gap) * strike_gap)
+    atm_strike = min(strikes_available, key=lambda s: abs(s - prev_close))
+    atm_idx    = strikes_available.index(atm_strike)
+    atm_m1     = strikes_available[atm_idx - 1] if atm_idx > 0 else None
+    atm_p1     = strikes_available[atm_idx + 1] if atm_idx < len(strikes_available) - 1 else None
 
     # Build CE/PE token maps: strike → token
     ce_map: dict[int, str] = {}
@@ -1026,13 +1037,11 @@ def find_option_strikes(
         elif ot == "PE":
             pe_map[strike_val] = tok
 
-    atm_m1 = atm_strike - strike_gap
-    atm_p1 = atm_strike + strike_gap
-
     # All three strikes must have both CE and PE tokens
-    for s in [atm_m1, atm_strike, atm_p1]:
+    for s in [s for s in [atm_m1, atm_strike, atm_p1] if s is not None]:
         if s not in ce_map or s not in pe_map:
-            logger.warning("%s: Missing CE/PE token for strike %d (expiry %s)", symbol, s, nearest_expiry_str)
+            logger.warning("%s: Missing CE/PE token for strike %d (expiry %s)",
+                           symbol, s, nearest_expiry_str)
 
     expiry_formatted = nearest_expiry_dt.strftime("%Y-%m-%d") if nearest_expiry_dt != datetime.max else nearest_expiry_str
 
@@ -1041,19 +1050,19 @@ def find_option_strikes(
         "expiry": expiry_formatted,
         "strikes": {
             "atm_minus1": {
-                "strike": atm_m1,
-                "ce_token": ce_map.get(atm_m1, ""),
-                "pe_token": pe_map.get(atm_m1, ""),
+                "strike":   atm_m1,
+                "ce_token": ce_map.get(atm_m1, "") if atm_m1 is not None else "",
+                "pe_token": pe_map.get(atm_m1, "") if atm_m1 is not None else "",
             },
             "atm": {
-                "strike": atm_strike,
+                "strike":   atm_strike,
                 "ce_token": ce_map.get(atm_strike, ""),
                 "pe_token": pe_map.get(atm_strike, ""),
             },
             "atm_plus1": {
-                "strike": atm_p1,
-                "ce_token": ce_map.get(atm_p1, ""),
-                "pe_token": pe_map.get(atm_p1, ""),
+                "strike":   atm_p1,
+                "ce_token": ce_map.get(atm_p1, "") if atm_p1 is not None else "",
+                "pe_token": pe_map.get(atm_p1, "") if atm_p1 is not None else "",
             },
         },
     }
@@ -1399,6 +1408,7 @@ async def _seed_options_symbol(
     fyers_sym_map: dict | None = None,
 ) -> bool:
     try:
+        redis = await get_redis()
         strike_info = find_option_strikes(instruments, symbol, prev_close)
         if not strike_info:
             logger.warning("Phase B: %s — no option strikes found, skipping.", symbol)
@@ -1879,23 +1889,34 @@ async def run_seeder(force: bool = False) -> None:
             fno_symbols.append(sym)
             fno_prev_closes.append(prev_close)
 
-        for i, (sym, prev_close) in enumerate(zip(fno_symbols, fno_prev_closes)):
-            try:
-                result = await _seed_options_symbol(
-                    sym, prev_close, instruments, session, from_dt, to_dt, http_client,
-                    fyers_token=fyers_token,
-                    fyers_sym_map=_fyers_sym_map,
-                )
-            except Exception as e:
-                logger.error(f"Phase B failed for {sym}: {e}")
-                result = False
-            options_results.append(result)
-            if (i + 1) % LOG_EVERY == 0:
-                ok = sum(r for r in options_results if r)
-                logger.info("Phase B progress: %d/%d symbols processed (%d OK)", i + 1, len(fno_symbols), ok)
-            await asyncio.sleep(0.35)  # Phase B makes 6 calls per symbol
-                                       # but each is sequential inside the function
-                                       # so outer 0.35s is sufficient
+        _sem = asyncio.Semaphore(8)
+
+        async def _seed_one(sym, prev_close):
+            async with _sem:
+                try:
+                    return await _seed_options_symbol(
+                        sym, prev_close, instruments, session, from_dt, to_dt, http_client,
+                        fyers_token=fyers_token,
+                        fyers_sym_map=_fyers_sym_map,
+                    )
+                except Exception as e:
+                    logger.error("Phase B failed for %s: %s", sym, e)
+                    return False
+
+        BATCH = 25
+        for batch_start in range(0, len(fno_symbols), BATCH):
+            batch_syms   = fno_symbols[batch_start:batch_start + BATCH]
+            batch_closes = fno_prev_closes[batch_start:batch_start + BATCH]
+            batch_results = await asyncio.gather(
+                *[_seed_one(s, p) for s, p in zip(batch_syms, batch_closes)]
+            )
+            options_results.extend(batch_results)
+            ok = sum(r for r in options_results if r)
+            logger.info(
+                "Phase B batch %d/%d done — %d OK so far",
+                min(batch_start + BATCH, len(fno_symbols)),
+                len(fno_symbols), ok,
+            )
 
     t_b_end = time.monotonic()
     phase_b_seconds = round(t_b_end - t_b_start, 2)
