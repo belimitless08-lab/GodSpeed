@@ -225,7 +225,7 @@ async def fyers_auto_login(redis=None) -> Optional[str]:
                 json={
                     "request_key":    request_key2,
                     "identity_type":  "pin",
-                    "identifier":     hashlib.sha256(pin.encode()).hexdigest(),
+                    "identifier":     pin,
                     "recaptcha_token": "",
                 },
             )
