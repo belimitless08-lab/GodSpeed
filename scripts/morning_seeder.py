@@ -223,10 +223,9 @@ async def fyers_auto_login(redis=None) -> Optional[str]:
             r3 = await client.post(
                 FYERS_VAGATOR_PIN_URL,
                 json={
-                    "request_key":    request_key2,
-                    "identity_type":  "pin",
-                    "identifier":     pin,
-                    "recaptcha_token": "",
+                    "request_key":   request_key2,
+                    "identity_type": "pin",
+                    "identifier":    _b64.b64encode(str(pin).encode("ascii")).decode("ascii"),
                 },
             )
             d3 = r3.json()
@@ -242,7 +241,7 @@ async def fyers_auto_login(redis=None) -> Optional[str]:
                 headers={"Authorization": f"Bearer {temp_token}"},
                 json={
                     "fyers_id":      user_id,
-                    "app_id":        app_id[:-4],   # strip "-100" suffix
+                    "app_id":        app_id.split("-")[0],
                     "redirect_uri":  "https://127.0.0.1",
                     "appType":       "100",
                     "code_challenge": "",
