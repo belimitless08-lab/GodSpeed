@@ -1913,13 +1913,14 @@ async def run_seeder(force: bool = False) -> None:
             fno_prev_closes.append(prev_close)
 
         logger.info(
-            "Phase B: %d/%d symbols have snapshots → entering gather",
+            "Phase B: fno_symbols=%d out of symbols=%d total",
             len(fno_symbols), len(symbols),
         )
 
         _sem = asyncio.Semaphore(8)
 
         async def _seed_one(sym, prev_close):
+            logger.info("[PhaseB] start sym=%s", sym)
             async with _sem:
                 try:
                     return await _seed_options_symbol(
