@@ -1436,28 +1436,8 @@ async def _seed_options_symbol(
             logger.warning("Phase B: %s — missing ATM CE/PE token, skipping.", symbol)
             return False
 
-        # Fetch 5-day daily candles for ATM CE and PE
-        ce_candles = await fetch_candles(
-            session, "NFO", ce_token, "ONE_DAY", from_dt, to_dt, http_client
-        )
-        pe_candles = await fetch_candles(
-            session, "NFO", pe_token, "ONE_DAY", from_dt, to_dt, http_client
-        )
-
-        def _parse_opt_candles(candles: list[list]) -> dict:
-            if not candles:
-                return {"volumes": [], "ois": [], "prev_close": 0.0, "prev_oi": 0}
-            vols = [c[5] for c in candles]
-            ois  = [c[6] if len(c) > 6 else 0 for c in candles]
-            return {
-                "volumes":    vols,
-                "ois":        ois,
-                "prev_close": float(candles[-1][4]),
-                "prev_oi":    int(candles[-1][6]) if len(candles[-1]) > 6 else 0,
-            }
-
-        ce = _parse_opt_candles(ce_candles)
-        pe = _parse_opt_candles(pe_candles)
+        ce = {"volumes": [], "ois": [], "prev_close": 0.0, "prev_oi": 0}
+        pe = {"volumes": [], "ois": [], "prev_close": 0.0, "prev_oi": 0}
 
         # ── Fyers 5m Option Profile ──────────────────────────────────────────
         # Build cumulative CE+PE turnover profile using Fyers historical data.
@@ -1561,22 +1541,13 @@ async def _seed_options_symbol(
                         )
                         continue
 
-        ce_vols = ce["volumes"][-5:] if ce["volumes"] else []
-        pe_vols = pe["volumes"][-5:] if pe["volumes"] else []
-        ce_ois  = ce["ois"][-5:] if ce["ois"] else []
-        pe_ois  = pe["ois"][-5:] if pe["ois"] else []
-
         result = {
             "atm_strike":      strike_info["atm_strike"],
             "expiry":          strike_info["expiry"],
-            "ce_avg_volume_5d": round(float(np.mean(ce_vols)) if ce_vols else 0.0, 2),
-            "pe_avg_volume_5d": round(float(np.mean(pe_vols)) if pe_vols else 0.0, 2),
-            "ce_avg_oi_5d":    round(float(np.mean(ce_ois)) if ce_ois else 0.0, 2),
-            "pe_avg_oi_5d":    round(float(np.mean(pe_ois)) if pe_ois else 0.0, 2),
-            "ce_prev_close":   round(ce["prev_close"], 4),
-            "pe_prev_close":   round(pe["prev_close"], 4),
-            "ce_prev_oi":      ce["prev_oi"],
-            "pe_prev_oi":      pe["prev_oi"],
+            "ce_prev_close": 0.0,
+            "pe_prev_close": 0.0,
+            "ce_prev_oi":    0,
+            "pe_prev_oi":    0,
             "strikes":         strike_info["strikes"],
             "seeded_at":       datetime.now(timezone.utc).isoformat(),
         }
