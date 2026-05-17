@@ -773,114 +773,215 @@ async def _run_volume_ranking() -> None:
 async def _run_options_volume_ranking() -> None:
     """
     Rank all F&O symbols by ATM option turnover RVOL every 5 minutes.
+    Writes options_leaders:ranked (top 20, JSON, TTL 360s).
 
-    Completely separate from equity Volume Leaders (_run_volume_ranking).
-    Options flow is a distinct signal — measures institutional premium
-    money flow, not equity share volume.
-
-    Source data written by:
-      - morning_seeder.py Phase B → options:atm_turnover_prev:{symbol}
-      - angel_ws_options.py      → options:atm_turnover_today:{symbol}
-
-    Top 15 written to Redis: options_leaders:ranked (JSON, TTL 360s).
+    Flow direction: BULL if ce_today > pe_today*1.5,
+                    BEAR if pe_today > ce_today*1.5, else FLAT.
+    FLAT dominant side: whichever of CE/PE has higher turnover.
+    RVOL states: <0.7 CALM / 0.7-1.4 ACTIVE / 1.4-2.2 HOT / >2.2 EXTREME
+    atm_strike stored as float to handle fractional strikes (e.g. 222.5).
     """
     while True:
         if _within_market_hours():
             try:
-                redis = await get_redis()
+                redis   = await get_redis()
                 symbols = await get_symbols()
-                rows = []
+                rows    = []
 
                 for sym in symbols:
                     try:
                         today_raw   = await redis.get(f"options:atm_turnover_today:{sym}")
                         profile_raw = await redis.get(f"options:atm_profile:cum:{sym}")
-
                         if not today_raw or not profile_raw:
                             continue
 
-                        today = float(today_raw)
+                        today   = float(today_raw)
+                        profile = json.loads(profile_raw)
 
-                        # Slot-based comparison — same approach as equity cum_rvol
-                        # At 9:45 AM: compare today's flow vs yesterday's flow by 9:45 AM
-                        _now     = _now_ist()
-                        _slot_m  = (_now.minute // 5) * 5
-                        _slot    = f"{_now.hour:02d}{_slot_m:02d}"
-                        profile  = json.loads(profile_raw)
-
-                        # Walk back to find nearest available slot
-                        _ref = profile.get(_slot, 0.0)
+                        # Slot-based RVOL
+                        _now    = _now_ist()
+                        _slot_m = (_now.minute // 5) * 5
+                        _slot   = f"{_now.hour:02d}{_slot_m:02d}"
+                        _ref    = profile.get(_slot, 0.0)
                         if _ref <= 0:
-                            # Try prior slot
                             _pm = _slot_m - 5
                             _ph = _now.hour
                             if _pm < 0:
                                 _pm = 55
                                 _ph -= 1
                             _ref = profile.get(f"{_ph:02d}{_pm:02d}", 0.0)
-
                         if _ref <= 0:
                             continue
 
                         atm_rvol = round(today / _ref, 3)
 
-                        # Display fields from equity snapshot
-                        snap = await redis.hgetall(f"snapshot:{sym}")
-                        if not snap:
-                            continue
+                        # CE / PE separate turnover
+                        ce_today = float(
+                            await redis.get(f"options:atm_ce_turnover_today:{sym}") or 0
+                        )
+                        pe_today = float(
+                            await redis.get(f"options:atm_pe_turnover_today:{sym}") or 0
+                        )
 
+                        # Flow direction — simple ratio only, no dead scoring variables
+                        if ce_today > pe_today * 1.5:
+                            flow_dir = "BULL"
+                        elif pe_today > ce_today * 1.5:
+                            flow_dir = "BEAR"
+                        else:
+                            flow_dir = "FLAT"
+
+                        # Dominant side: BULL→CE, BEAR→PE, FLAT→higher turnover side
+                        dom_side = (
+                            "CE" if flow_dir == "BULL"
+                            else "PE" if flow_dir == "BEAR"
+                            else ("CE" if ce_today >= pe_today else "PE")
+                        )
+
+                        # Options vol state
+                        if atm_rvol < 0.7:
+                            opt_vol_state = "CALM"
+                        elif atm_rvol < 1.4:
+                            opt_vol_state = "ACTIVE"
+                        elif atm_rvol < 2.2:
+                            opt_vol_state = "HOT"
+                        else:
+                            opt_vol_state = "EXTREME"
+
+                        # ATM strike — kept as float for fractional strikes (e.g. 222.5)
+                        atm_strike = 0.0
+                        try:
+                            prev_raw = await redis.get(f"options:prev:{sym}")
+                            if prev_raw:
+                                atm_strike = float(
+                                    json.loads(prev_raw).get("atm_strike") or 0
+                                )
+                        except Exception:
+                            pass
+
+                        # Live CE / PE LTP — use float strike for key construction
+                        ce_ltp, pe_ltp = 0.0, 0.0
+                        if atm_strike:
+                            # Strike in key: use int if whole number, else keep decimal
+                            _sk = int(atm_strike) if atm_strike == int(atm_strike) else atm_strike
+                            _ce_tick = await redis.hgetall(f"options:tick:{sym}:{_sk}CE")
+                            _pe_tick = await redis.hgetall(f"options:tick:{sym}:{_sk}PE")
+                            try:
+                                ce_ltp = float(_ce_tick.get("ltp", 0) or 0)
+                            except Exception:
+                                pass
+                            try:
+                                pe_ltp = float(_pe_tick.get("ltp", 0) or 0)
+                            except Exception:
+                                pass
+
+                        # Prev OHLC
+                        ce_close = ce_high = ce_low = 0.0
+                        pe_close = pe_high = pe_low = 0.0
+                        try:
+                            _ohlc_raw = await redis.get(f"options:prev_ohlc:{sym}")
+                            if _ohlc_raw:
+                                _ohlc    = json.loads(_ohlc_raw)
+                                ce_high  = float(_ohlc.get("ce_high",  0))
+                                ce_low   = float(_ohlc.get("ce_low",   0))
+                                ce_close = float(_ohlc.get("ce_close", 0))
+                                pe_high  = float(_ohlc.get("pe_high",  0))
+                                pe_low   = float(_ohlc.get("pe_low",   0))
+                                pe_close = float(_ohlc.get("pe_close", 0))
+                        except Exception:
+                            pass
+
+                        # Change % from prev day close
+                        def _chg(ltp, close):
+                            if close <= 0 or ltp <= 0:
+                                return 0.0
+                            return round((ltp - close) / close * 100, 2)
+
+                        # Option pivot R1/S1
+                        def _pivot_levels(high, low, close):
+                            if high <= 0 or low <= 0 or close <= 0:
+                                return 0.0, 0.0
+                            p  = (high + low + close) / 3
+                            return round(2 * p - low, 2), round(2 * p - high, 2)
+
+                        ce_r1, ce_s1 = _pivot_levels(ce_high, ce_low, ce_close)
+                        pe_r1, pe_s1 = _pivot_levels(pe_high, pe_low, pe_close)
+
+                        # Stock snapshot
+                        snap = await redis.hgetall(f"snapshot:{sym}")
                         def _sf(k, d=0.0):
                             try:
                                 return float(snap.get(k, d) or d)
                             except Exception:
                                 return d
 
-                        _ltp  = _sf("ltp")
-                        _prev = _sf("prev_close")
+                        stock_ltp  = _sf("ltp")
+                        stock_r1   = _sf("r1")
+                        stock_s1   = _sf("s1")
+                        stock_pdh  = _sf("pdh")
+                        stock_pdl  = _sf("pdl")
 
-                        # ATM strike from options:prev (correct source)
-                        atm_strike = 0
-                        try:
-                            prev_data = await redis.get(f"options:prev:{sym}")
-                            if prev_data:
-                                atm_strike = int(
-                                    json.loads(prev_data).get("atm_strike") or 0
-                                )
-                        except Exception:
-                            pass
+                        # Dominant side values — consistent with dom_side
+                        if dom_side == "CE":
+                            dom_ltp        = ce_ltp
+                            dom_change_pct = _chg(ce_ltp, ce_close)
+                            dom_above_pdh  = ce_high  > 0 and ce_ltp > ce_high
+                            dom_below_pdl  = ce_low   > 0 and ce_ltp < ce_low
+                            dom_above_r1   = ce_r1    > 0 and ce_ltp > ce_r1
+                            dom_below_s1   = ce_s1    > 0 and ce_ltp < ce_s1
+                        else:
+                            dom_ltp        = pe_ltp
+                            dom_change_pct = _chg(pe_ltp, pe_close)
+                            dom_above_pdh  = pe_high  > 0 and pe_ltp > pe_high
+                            dom_below_pdl  = pe_low   > 0 and pe_ltp < pe_low
+                            dom_above_r1   = pe_r1    > 0 and pe_ltp > pe_r1
+                            dom_below_s1   = pe_s1    > 0 and pe_ltp < pe_s1
 
                         rows.append({
-                            "symbol":         sym,
-                            "atm_rvol":       atm_rvol,
-                            "today_turnover": round(today),
-                            "prev_turnover":  round(_ref),
-                            "atm_strike":     atm_strike,
-                            "ltp":            _ltp,
-                            "change_pct": round((_ltp - _prev) / max(_prev, 1) * 100, 2) if _prev > 0 else 0.0,
-                            "vol_state":      (snap.get("vol_state") or b"DRY").decode() if isinstance(snap.get("vol_state"), bytes) else (snap.get("vol_state") or "DRY"),
+                            "symbol":          sym,
+                            "atm_rvol":        atm_rvol,
+                            "opt_vol_state":   opt_vol_state,
+                            "flow_dir":        flow_dir,
+                            "dom_side":        dom_side,
+                            "today_turnover":  round(today),
+                            "prev_turnover":   round(_ref),
+                            "ce_today":        round(ce_today),
+                            "pe_today":        round(pe_today),
+                            "atm_strike":      atm_strike,
+                            "ce_ltp":          ce_ltp,
+                            "pe_ltp":          pe_ltp,
+                            "dom_ltp":         dom_ltp,
+                            "dom_change_pct":  dom_change_pct,
+                            "dom_above_pdh":   dom_above_pdh,
+                            "dom_below_pdl":   dom_below_pdl,
+                            "dom_above_r1":    dom_above_r1,
+                            "dom_below_s1":    dom_below_s1,
+                            "stock_above_r1":  stock_r1 > 0 and stock_ltp > stock_r1,
+                            "stock_below_s1":  stock_s1 > 0 and stock_ltp < stock_s1,
+                            "stock_above_pdh": stock_pdh > 0 and stock_ltp > stock_pdh,
+                            "stock_below_pdl": stock_pdl > 0 and stock_ltp < stock_pdl,
                         })
 
                     except Exception as sym_exc:
-                        logger.debug(
-                            "[brain] options rank skip %s: %s", sym, sym_exc
-                        )
+                        logger.debug("[brain] options rank skip %s: %s", sym, sym_exc)
                         continue
 
                 if rows:
                     rows.sort(key=lambda x: x["atm_rvol"], reverse=True)
-                    top15 = rows[:15]
-
+                    top20 = rows[:20]
                     await redis.set(
                         "options_leaders:ranked",
-                        json.dumps(top15),
+                        json.dumps(top20),
                         ex=360,
                     )
                     logger.info(
-                        "[brain] Options ranking updated — leader=%s atm_rvol=%.2f "
-                        "today=₹%.0fL",
-                        top15[0]["symbol"] if top15 else "none",
-                        top15[0]["atm_rvol"] if top15 else 0,
-                        top15[0]["today_turnover"] / 100_000 if top15 else 0,
+                        "[brain] Options ranking — leader=%s rvol=%.2f "
+                        "flow=%s side=%s state=%s",
+                        top20[0]["symbol"],
+                        top20[0]["atm_rvol"],
+                        top20[0]["flow_dir"],
+                        top20[0]["dom_side"],
+                        top20[0]["opt_vol_state"],
                     )
 
             except Exception as exc:
