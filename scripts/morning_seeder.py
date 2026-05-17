@@ -1917,11 +1917,12 @@ async def run_seeder(force: bool = False) -> None:
             len(fno_symbols), len(symbols),
         )
 
-        _sem = asyncio.Semaphore(8)
+        _sem = asyncio.Semaphore(1)
 
         async def _seed_one(sym, prev_close):
             logger.info("[PhaseB] start sym=%s", sym)
             async with _sem:
+                await asyncio.sleep(0.35)
                 try:
                     return await _seed_options_symbol(
                         sym, prev_close, instruments, session, from_dt, to_dt, http_client,
