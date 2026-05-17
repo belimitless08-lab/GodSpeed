@@ -193,6 +193,24 @@
   .badge-conf2 { font-size: 9px; font-weight: 700; color: #fdba74; }
   .badge-neut2 { font-size: 9px; font-weight: 700; color: #94a3b8; }
 
+.opt-filter {
+  font-size:10px;padding:2px 7px;border-radius:10px;
+  border:1px solid var(--border);background:transparent;
+  color:var(--muted);cursor:pointer;white-space:nowrap;transition:all 0.15s;
+}
+.opt-filter.active { background:var(--accent);color:#000;border-color:var(--accent); }
+.opt-sep { width:1px;background:var(--border);margin:0 2px;align-self:stretch; }
+.opt-badge {
+  font-size:8px;padding:1px 4px;border-radius:4px;font-weight:600;letter-spacing:0.3px;
+}
+.opt-badge.green  { background:rgba(0,200,100,0.15);color:var(--green); }
+.opt-badge.red    { background:rgba(255,80,80,0.15); color:var(--red);  }
+.opt-badge.blue   { background:rgba(0,150,255,0.15); color:#4af;        }
+.opt-badge.orange { background:rgba(255,160,0,0.15); color:orange;      }
+.opt-leader-row { padding:6px 10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:3px; }
+.opt-row-top    { display:flex;align-items:center;gap:8px; }
+.opt-row-bot    { display:flex;align-items:center;gap:8px;padding-left:22px; }
+
   /* ── BREADTH / MACRO / AI CONTEXT ── */
   .metric-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid rgba(51,65,85,0.2); }
   .metric-row:last-child { border-bottom: none; }
@@ -929,6 +947,25 @@
           <span style="text-align:right;">LTP</span>
           <span style="text-align:right;">Chg%</span>
         </div>
+        <div id="opt-filter-bar" style="
+  display:flex;flex-wrap:wrap;gap:4px;
+  padding:6px 10px 4px;border-bottom:1px solid var(--border);
+">
+  <button class="opt-filter active" data-filter="all">All</button>
+  <button class="opt-filter" data-filter="bull">▲ Bull</button>
+  <button class="opt-filter" data-filter="bear">▼ Bear</button>
+  <span class="opt-sep"></span>
+  <button class="opt-filter" data-filter="opt_pdh">Opt &gt; PDH</button>
+  <button class="opt-filter" data-filter="opt_pdl">Opt &lt; PDL</button>
+  <button class="opt-filter" data-filter="opt_r1">Opt &gt; R1</button>
+  <button class="opt-filter" data-filter="opt_s1">Opt &lt; S1</button>
+  <span class="opt-sep"></span>
+  <button class="opt-filter" data-filter="stk_r1">Stock &gt; R1</button>
+  <button class="opt-filter" data-filter="stk_s1">Stock &lt; S1</button>
+  <span class="opt-sep"></span>
+  <button class="opt-filter" data-filter="liq50">Liq 50L</button>
+  <button class="opt-filter" data-filter="rvol2">RVOL 2x</button>
+</div>
         <div id="options-leaders-list">
           <div class="empty-state">
             <div class="empty-icon">📈</div>
@@ -4074,41 +4111,106 @@ setInterval(fetchVolumeLeaders, 5 * 60 * 1000);
 /* ══════════════════════════════════════════
    OPTIONS LEADERS
 ══════════════════════════════════════════ */
+let _optFilter  = 'all';
+let _optAllData = [];
+
+document.querySelectorAll('.opt-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.opt-filter').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    _optFilter = btn.dataset.filter;
+    _renderOptLeaders();
+  });
+});
+
+function _optPasses(s) {
+  switch(_optFilter) {
+    case 'bull':    return s.flow_dir === 'BULL';
+    case 'bear':    return s.flow_dir === 'BEAR';
+    case 'opt_pdh': return s.dom_above_pdh  === true;
+    case 'opt_pdl': return s.dom_below_pdl  === true;
+    case 'opt_r1':  return s.dom_above_r1   === true;
+    case 'opt_s1':  return s.dom_below_s1   === true;
+    case 'stk_r1':  return s.stock_above_r1  === true;
+    case 'stk_s1':  return s.stock_below_s1  === true;
+    case 'liq50':   return s.prev_turnover   >= 5_000_000;
+    case 'rvol2':   return s.atm_rvol        >= 2.0;
+    default:        return true;
+  }
+}
+
+function _renderOptLeaders() {
+  const el = document.getElementById('options-leaders-list');
+  if (!el) return;
+  const filtered = _optAllData.filter(_optPasses);
+  const countEl  = document.getElementById('opt-count');
+  if (countEl) countEl.textContent = filtered.length;
+  if (!filtered.length) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">📈</div>No data</div>';
+    return;
+  }
+  const stateColor = { CALM:'var(--muted)',ACTIVE:'var(--accent)',HOT:'orange',EXTREME:'var(--red)' };
+  el.innerHTML = filtered.map((s, i) => {
+    const isBull   = s.flow_dir === 'BULL';
+    const isBear   = s.flow_dir === 'BEAR';
+    const dirIcon  = isBull ? '▲' : isBear ? '▼' : '≈';
+    const dirColor = isBull ? 'var(--green)' : isBear ? 'var(--red)' : 'var(--muted)';
+    const side     = s.dom_side || (isBull ? 'CE' : isBear ? 'PE' : 'CE');
+    const domLtp   = parseFloat(s.dom_ltp  || 0);
+    const domChg   = parseFloat(s.dom_change_pct || 0);
+    const chgPos   = domChg >= 0;
+
+    const badges = [];
+    if (s.dom_above_pdh)   badges.push('<span class="opt-badge green">Opt PDH</span>');
+    if (s.dom_below_pdl)   badges.push('<span class="opt-badge red">Opt PDL</span>');
+    if (s.dom_above_r1)    badges.push('<span class="opt-badge green">Opt R1</span>');
+    if (s.dom_below_s1)    badges.push('<span class="opt-badge red">Opt S1</span>');
+    if (s.stock_above_r1)  badges.push('<span class="opt-badge blue">Stk R1</span>');
+    if (s.stock_below_s1)  badges.push('<span class="opt-badge orange">Stk S1</span>');
+    if (s.stock_above_pdh) badges.push('<span class="opt-badge blue">Stk PDH</span>');
+    if (s.stock_below_pdl) badges.push('<span class="opt-badge orange">Stk PDL</span>');
+
+    return `
+    <div class="opt-leader-row">
+      <div class="opt-row-top">
+        <span style="font-size:9px;color:var(--muted);min-width:16px;">#${i+1}</span>
+        <span style="flex:1;font-size:12px;font-weight:600;">${s.symbol}</span>
+        <span style="color:${dirColor};font-size:10px;font-weight:700;">
+          ${dirIcon} ${side}
+        </span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);">
+          ${parseFloat(s.atm_rvol).toFixed(1)}x
+        </span>
+        <span style="font-size:9px;color:${stateColor[s.opt_vol_state]||'var(--muted)'};">
+          ${s.opt_vol_state}
+        </span>
+        <button onclick="openPopup('${s.symbol}',event)"
+          style="background:none;border:none;cursor:pointer;padding:0;
+                 color:var(--accent);font-size:10px;opacity:0.7;margin-left:2px;">↗</button>
+      </div>
+      <div class="opt-row-bot">
+        <span style="font-size:11px;font-weight:600;">
+          ₹${domLtp.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}
+        </span>
+        <span style="font-size:10px;color:${chgPos?'var(--green)':'var(--red)'};">
+          ${chgPos?'+':''}${domChg.toFixed(2)}%
+        </span>
+        ${badges.join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
 async function fetchOptionsLeaders() {
-    try {
-        const res  = await fetch('/api/options-leaders');
-        const data = await res.json();
-        if (data.status !== 'ok') return;
-        const el = document.getElementById('options-leaders-list');
-        if (!el) return;
-        document.getElementById('opt-count').textContent = data.leaders.length;
-        if (data.leaders.length === 0) {
-            el.innerHTML = '<div class="empty-state"><div class="empty-icon">📈</div>No data yet</div>';
-            return;
-        }
-        el.innerHTML = data.leaders.map((s, i) => {
-            const chgPos  = (s.change_pct || 0) >= 0;
-            const chgStr  = (chgPos ? '+' : '') + parseFloat(s.change_pct || 0).toFixed(2) + '%';
-            const ltpStr  = '₹' + parseFloat(s.ltp).toLocaleString('en-IN',
-                              {minimumFractionDigits:2, maximumFractionDigits:2});
-            const rvolStr = parseFloat(s.atm_rvol).toFixed(1) + 'x';
-            return `
-            <div class="opt-leader-row">
-              <span class="opt-sym">
-                <span style="font-size:9px;color:var(--muted);min-width:16px;">#${i+1}</span>
-                <span>${s.symbol}</span>
-                <button onclick="openPopup('${s.symbol}', event)"
-                  style="background:none;border:none;cursor:pointer;padding:0;
-                         color:var(--accent);font-size:10px;opacity:0.7;flex-shrink:0;">↗</button>
-              </span>
-              <span class="opt-rvol">${rvolStr}</span>
-              <span class="opt-ltp">${ltpStr}</span>
-              <span class="opt-chg" style="color:${chgPos?'var(--green)':'var(--red)'};">${chgStr}</span>
-            </div>`;
-        }).join('');
-    } catch(e) {
-        console.warn('Options leaders fetch failed:', e);
-    }
+  try {
+    const res  = await fetch('/api/options-leaders');
+    const data = await res.json();
+    if (data.status !== 'ok') return;
+    _optAllData = data.leaders || [];
+    _renderOptLeaders();
+  } catch(e) {
+    console.warn('Options leaders fetch failed:', e);
+  }
 }
 fetchOptionsLeaders();
 setInterval(fetchOptionsLeaders, 5 * 60 * 1000);
