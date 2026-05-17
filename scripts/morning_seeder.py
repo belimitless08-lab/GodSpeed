@@ -1501,6 +1501,36 @@ async def _seed_options_symbol(
                             fyers_token, _pe_sym, _yesterday_ist, _fc
                         )
                         await asyncio.sleep(0.4)
+                        _ce_candles = _ce_5m
+                        _pe_candles = _pe_5m
+                        if _label == "atm":
+                            try:
+                                def _ohlc_side(candles):
+                                    if not candles:
+                                        return {"high": 0.0, "low": 0.0, "close": 0.0}
+                                    highs  = [c[2] for c in candles if len(c) > 4]
+                                    lows   = [c[3] for c in candles if len(c) > 4]
+                                    return {
+                                        "high":  max(highs) if highs else 0.0,
+                                        "low":   min(lows)  if lows  else 0.0,
+                                        "close": float(candles[-1][4]),
+                                    }
+                                _ce_o = _ohlc_side(_ce_candles)
+                                _pe_o = _ohlc_side(_pe_candles)
+                                await redis.set(
+                                    f"options:prev_ohlc:{symbol}",
+                                    json.dumps({
+                                        "ce_high":  _ce_o["high"],
+                                        "ce_low":   _ce_o["low"],
+                                        "ce_close": _ce_o["close"],
+                                        "pe_high":  _pe_o["high"],
+                                        "pe_low":   _pe_o["low"],
+                                        "pe_close": _pe_o["close"],
+                                    }),
+                                    ex=86400 * 3,
+                                )
+                            except Exception as _ohlc_exc:
+                                logger.debug("[seeder] prev_ohlc %s: %s", symbol, _ohlc_exc)
 
                         _profile = _build_cum_turnover_profile(_ce_5m, _pe_5m)
                         if not _profile:
