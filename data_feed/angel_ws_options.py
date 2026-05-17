@@ -427,6 +427,18 @@ async def _accumulate_atm(redis, token: str, ltp: float, volume: int) -> None:
             f"options:atm_turnover_today:{sym}",
             delta_vol * ltp,
         )
+
+        if opt_type == "CE":
+            await redis.incrbyfloat(
+                f"options:atm_ce_turnover_today:{sym}",
+                delta_vol * ltp,
+            )
+        elif opt_type == "PE":
+            await redis.incrbyfloat(
+                f"options:atm_pe_turnover_today:{sym}",
+                delta_vol * ltp,
+            )
+        # else: unknown opt_type — skip to avoid corrupting CE/PE keys
         _ATM_LAST_VOL[cache_key] = volume
     except Exception as exc:
         logger.debug("[options_ws] ATM incrbyfloat error %s: %s", sym, exc)
