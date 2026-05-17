@@ -496,19 +496,33 @@ async def get_options_leaders():
         cleaned = []
         for item in leaders:
             cleaned.append({
-                "symbol":         str(item.get("symbol", "")),
-                "atm_rvol":       round(float(item.get("atm_rvol", 0)), 2),
-                "today_turnover": float(item.get("today_turnover", 0)),
-                "prev_turnover":  float(item.get("prev_turnover", 0)),
-                "atm_strike":     int(item.get("atm_strike", 0)),
-                "ltp":            round(float(item.get("ltp", 0)), 2),
-                "change_pct":     round(float(item.get("change_pct", 0)), 2),
-                "vol_state":      str(item.get("vol_state", "DRY")).replace("b'","").replace("'",""),
+                "symbol":          str(item.get("symbol", "")),
+                "atm_rvol":        round(float(item.get("atm_rvol", 0)), 2),
+                "opt_vol_state":   str(item.get("opt_vol_state", "CALM")),
+                "flow_dir":        str(item.get("flow_dir", "FLAT")),
+                "dom_side":        str(item.get("dom_side", "CE")),
+                "today_turnover":  float(item.get("today_turnover", 0)),
+                "prev_turnover":   float(item.get("prev_turnover", 0)),
+                "ce_today":        float(item.get("ce_today", 0)),
+                "pe_today":        float(item.get("pe_today", 0)),
+                "atm_strike":      float(item.get("atm_strike", 0)),
+                "ce_ltp":          round(float(item.get("ce_ltp", 0)), 2),
+                "pe_ltp":          round(float(item.get("pe_ltp", 0)), 2),
+                "dom_ltp":         round(float(item.get("dom_ltp", 0)), 2),
+                "dom_change_pct":  round(float(item.get("dom_change_pct", 0)), 2),
+                "dom_above_pdh":   bool(item.get("dom_above_pdh", False)),
+                "dom_below_pdl":   bool(item.get("dom_below_pdl", False)),
+                "dom_above_r1":    bool(item.get("dom_above_r1", False)),
+                "dom_below_s1":    bool(item.get("dom_below_s1", False)),
+                "stock_above_r1":  bool(item.get("stock_above_r1", False)),
+                "stock_below_s1":  bool(item.get("stock_below_s1", False)),
+                "stock_above_pdh": bool(item.get("stock_above_pdh", False)),
+                "stock_below_pdl": bool(item.get("stock_below_pdl", False)),
             })
         return {
-            "status":        "ok",
-            "leaders":       cleaned,
-            "total_scanned": len(cleaned),
+            "status":         "ok",
+            "leaders":        cleaned,
+            "total_returned": len(cleaned),
         }
     except Exception as e:
         logger.error("[api] options-leaders error: %s", e)
