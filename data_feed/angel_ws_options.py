@@ -367,7 +367,9 @@ async def _load_atm_registry(redis) -> int:
             atm_info   = strikes.get("atm", {})
             ce_token   = str(atm_info.get("ce_token", "")).strip()
             pe_token   = str(atm_info.get("pe_token", "")).strip()
-            atm_strike = int(atm_info.get("strike") or prev.get("atm_strike") or 0)
+            _raw_strike = atm_info.get("strike") or prev.get("atm_strike") or 0
+            _fs = float(_raw_strike)
+            atm_strike = int(_fs) if _fs == int(_fs) else _fs
             if not ce_token or not pe_token or atm_strike <= 0:
                 skipped += 1
                 continue
