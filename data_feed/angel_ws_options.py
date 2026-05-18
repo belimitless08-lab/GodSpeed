@@ -657,6 +657,23 @@ async def _tick_receiver(ws, state: _FeedState, redis) -> None:
             except Exception as exc:
                 logger.debug("[options_ws] ATM accum error %s: %s", token, exc)
 
+            # Write tick hash for ATM tokens so options leaders can read
+            # live LTP. Dynamic brain subscriptions already wrote above.
+            if contract is None:
+                try:
+                    sym, opt_type, lot_size, atm_strike = _ATM_REGISTRY[token]
+                    atm_contract = Contract(
+                        token=token,
+                        symbol=sym,
+                        strike=atm_strike,
+                        type=opt_type,
+                    )
+                    await _write_options_tick(redis, atm_contract, tick)
+                except Exception as exc:
+                    logger.debug(
+                        "[options_ws] ATM tick write error %s: %s", token, exc
+                    )
+
         tick_count    += 1
         health_window += 1
 
