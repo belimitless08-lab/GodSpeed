@@ -863,7 +863,11 @@ async def _run_options_volume_ranking() -> None:
                         ce_ltp, pe_ltp = 0.0, 0.0
                         if atm_strike:
                             # Strike in key: use int if whole number, else keep decimal
-                            _sk = int(atm_strike) if atm_strike == int(atm_strike) else atm_strike
+                            _sk = (
+                                int(atm_strike)
+                                if atm_strike == int(atm_strike)
+                                else atm_strike
+                            )
                             _ce_tick = await redis.hgetall(f"options:tick:{sym}:{_sk}CE")
                             _pe_tick = await redis.hgetall(f"options:tick:{sym}:{_sk}PE")
                             try:
