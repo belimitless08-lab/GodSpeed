@@ -210,6 +210,37 @@
 .opt-leader-row { padding:6px 10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:3px; }
 .opt-row-top    { display:flex;align-items:center;gap:8px; }
 .opt-row-bot    { display:flex;align-items:center;gap:8px;padding-left:22px; }
+#intelligence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  align-items: stretch;
+  margin-top: 4px;
+}
+#intelligence-grid .card {
+  height: 420px;
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#intelligence-grid .signal-card-body,
+#intelligence-grid #options-leaders-list,
+#intelligence-grid #volume-leaders-list {
+  flex: 1;
+  overflow-y: auto;
+}
+#opening-drive-slot {
+  display: flex;
+}
+#opening-drive-slot > .card {
+  width: 100%;
+}
+@media (max-width: 768px) {
+  #intelligence-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
 
   /* ── BREADTH / MACRO / AI CONTEXT ── */
   .metric-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid rgba(51,65,85,0.2); }
@@ -891,14 +922,8 @@
   </div>
 </div>
 
-<!-- ══════════════════════════════════════════
-     WATCHLIST + OPTIONS LEADERS
-══════════════════════════════════════════ -->
-<div style="padding:0 12px;">
-  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:start;">
-
-    <!-- LEFT: Watchlist (unchanged) -->
-    <div>
+<!-- WATCHLIST -->
+<div style="padding:0 12px; margin-bottom:16px;">
       <div class="section-label">Watchlist</div>
       <div class="card">
         <div style="padding:8px 12px;border-bottom:1px solid var(--border);position:relative;">
@@ -925,73 +950,86 @@
             </div>
         </div>
       </div>
-    </div>
-
-    <!-- RIGHT: Options Volume Leaders (new) -->
-    <div>
-      <div class="section-label">🔥 Options Leaders</div>
-      <div class="card" id="options-leaders-card">
-        <div class="card-header">
-          <span class="card-title" style="color:var(--gold);">ATM Turnover Flow</span>
-          <span class="card-count" id="opt-count"
-                style="background:var(--gold);color:#000;">0</span>
-        </div>
-        <!-- Column headers -->
-        <div style="display:grid;grid-template-columns:1fr 48px 68px 58px;
-                    gap:4px;padding:4px 12px 2px;
-                    font-size:9px;letter-spacing:0.08em;
-                    color:var(--muted);text-transform:uppercase;
-                    border-bottom:1px solid var(--border);">
-          <span>Symbol</span>
-          <span style="text-align:right;">Vol</span>
-          <span style="text-align:right;">LTP</span>
-          <span style="text-align:right;">Chg%</span>
-        </div>
-        <div id="opt-filter-bar" style="
-  display:flex;flex-wrap:wrap;gap:4px;
-  padding:6px 10px 4px;border-bottom:1px solid var(--border);
-">
-  <button class="opt-filter active" data-filter="all">All</button>
-  <button class="opt-filter" data-filter="bull">▲ Bull</button>
-  <button class="opt-filter" data-filter="bear">▼ Bear</button>
-  <span class="opt-sep"></span>
-  <button class="opt-filter" data-filter="opt_pdh">Opt &gt; PDH</button>
-  <button class="opt-filter" data-filter="opt_pdl">Opt &lt; PDL</button>
-  <button class="opt-filter" data-filter="opt_r1">Opt &gt; R1</button>
-  <button class="opt-filter" data-filter="opt_s1">Opt &lt; S1</button>
-  <span class="opt-sep"></span>
-  <button class="opt-filter" data-filter="stk_r1">Stock &gt; R1</button>
-  <button class="opt-filter" data-filter="stk_s1">Stock &lt; S1</button>
-  <span class="opt-sep"></span>
-  <button class="opt-filter" data-filter="liq50">Liq 50L</button>
-  <button class="opt-filter" data-filter="rvol2">RVOL 2x</button>
 </div>
-        <div id="options-leaders-list">
-          <div class="empty-state">
-            <div class="empty-icon">📈</div>
-            Updates every 5 min during market hours
-          </div>
+<!-- ══════════════════════════════════════════
+     SECTION: MARKET INTELLIGENCE
+══════════════════════════════════════════ -->
+<div style="padding:0 12px; margin-bottom:10px;">
+  <div class="section-label">Market Intelligence</div>
+  <div id="intelligence-grid">
+
+    <!-- Opening Drive slot — DOM relocated here after renderSignalCards -->
+    <div id="opening-drive-slot">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">🚀 Opening Drive</span>
+        </div>
+        <div class="empty-state">
+          <div class="empty-icon">🚀</div>
+          No active opening drive signals
         </div>
       </div>
     </div>
 
-  </div>
-</div>
+    <!-- Volume Leaders — moved from signals-grid -->
+    <div class="card" id="volume-leaders-card">
+      <div class="card-header">
+        <span class="card-title">🔥 Volume Leaders</span>
+        <span class="card-count" id="vl-count">0</span>
+      </div>
+      <div class="signal-card-body" id="volume-leaders-list">
+        <div class="empty-state">
+          <div class="empty-icon">📊</div>
+          Updates every 5 min during market hours
+        </div>
+      </div>
+    </div>
 
-<!-- ══════════════════════════════════════════
-     SECTION 3: AI STOCK INTELLIGENCE
-══════════════════════════════════════════ -->
-<div style="padding: 0 12px;">
-  <div class="section-label">AI Stock Intelligence</div>
-  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-    <div class="card">
-      <div class="card-header"><span class="card-title" style="color:var(--green);">▲ Top Positive</span><span id="ai-pos-count" class="card-count" style="background:var(--green);">0</span></div>
-      <div id="ai-pos-list"></div>
+    <!-- Options Leaders — moved from Watchlist row -->
+    <div class="card" id="options-leaders-card">
+      <div class="card-header">
+        <span class="card-title" style="color:var(--gold);">ATM Turnover Flow</span>
+        <span class="card-count" id="opt-count"
+              style="background:var(--gold);color:#000;">0</span>
+      </div>
+      <!-- Column headers -->
+      <div style="display:grid;grid-template-columns:1fr 48px 68px 58px;
+                  gap:4px;padding:4px 12px 2px;
+                  font-size:9px;letter-spacing:0.08em;
+                  color:var(--muted);text-transform:uppercase;
+                  border-bottom:1px solid var(--border);">
+        <span>Symbol</span>
+        <span style="text-align:right;">Vol</span>
+        <span style="text-align:right;">LTP</span>
+        <span style="text-align:right;">Chg%</span>
+      </div>
+      <div id="opt-filter-bar" style="
+display:flex;flex-wrap:wrap;gap:4px;
+padding:6px 10px 4px;border-bottom:1px solid var(--border);
+">
+<button class="opt-filter active" data-filter="all">All</button>
+<button class="opt-filter" data-filter="bull">▲ Bull</button>
+<button class="opt-filter" data-filter="bear">▼ Bear</button>
+<span class="opt-sep"></span>
+<button class="opt-filter" data-filter="opt_pdh">Opt &gt; PDH</button>
+<button class="opt-filter" data-filter="opt_pdl">Opt &lt; PDL</button>
+<button class="opt-filter" data-filter="opt_r1">Opt &gt; R1</button>
+<button class="opt-filter" data-filter="opt_s1">Opt &lt; S1</button>
+<span class="opt-sep"></span>
+<button class="opt-filter" data-filter="stk_r1">Stock &gt; R1</button>
+<button class="opt-filter" data-filter="stk_s1">Stock &lt; S1</button>
+<span class="opt-sep"></span>
+<button class="opt-filter" data-filter="liq50">Liq 50L</button>
+<button class="opt-filter" data-filter="rvol2">RVOL 2x</button>
+</div>
+      <div id="options-leaders-list">
+        <div class="empty-state">
+          <div class="empty-icon">📈</div>
+          Updates every 5 min during market hours
+        </div>
+      </div>
     </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title" style="color:var(--red);">▼ Top Negative</span><span id="ai-neg-count" class="card-count" style="background:var(--red);">0</span></div>
-      <div id="ai-neg-list"></div>
-    </div>
+
   </div>
 </div>
 
@@ -1065,19 +1103,24 @@
   </button>
 </div>
 
-  <div id="signals-grid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
-    <!-- Signal cards rendered by JS — volume leaders card preserved below -->
-    <div class="card" id="volume-leaders-card">
-      <div class="card-header">
-        <span class="card-title">🔥 Volume Leaders</span>
-        <span class="card-count" id="vl-count">0</span>
-      </div>
-      <div class="signal-card-body" id="volume-leaders-list">
-        <div class="empty-state">
-          <div class="empty-icon">📊</div>
-          Updates every 5 min during market hours
-        </div>
-      </div>
+  <div id="signals-grid" style="display:grid;
+       grid-template-columns:repeat(2,1fr); gap:10px;">
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SECTION 3: AI STOCK INTELLIGENCE
+══════════════════════════════════════════ -->
+<div style="padding: 0 12px;">
+  <div class="section-label">AI Stock Intelligence</div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+    <div class="card">
+      <div class="card-header"><span class="card-title" style="color:var(--green);">▲ Top Positive</span><span id="ai-pos-count" class="card-count" style="background:var(--green);">0</span></div>
+      <div id="ai-pos-list"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title" style="color:var(--red);">▼ Top Negative</span><span id="ai-neg-count" class="card-count" style="background:var(--red);">0</span></div>
+      <div id="ai-neg-list"></div>
     </div>
   </div>
 </div>
@@ -2020,7 +2063,7 @@ function _passesFilter(symbol, ltp) {
 
 function renderSignalCards(data) {
   const grid = document.getElementById('signals-grid');
-  const vlCard = document.getElementById('volume-leaders-card');
+  const odSlot = document.getElementById('opening-drive-slot');
   grid.innerHTML = SIGNAL_TYPES.map(({key, label}) => {
     const sigs = (data && data[key]) || [];
     let cards = [...sigs];
@@ -2049,7 +2092,7 @@ function renderSignalCards(data) {
     const visible = sorted.slice(0, 10);
     const rows = visible.map(renderSignalRow).filter(Boolean).join('');
     const more = sigs.length > 10 ? `<div class="signal-more">and ${sigs.length - 10} more…</div>` : '';
-    return `<div class="card">
+    return `<div class="card" data-signal-key="${key}">
       <div class="card-header" style="flex-direction:column;gap:4px;">
         <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
           <span class="card-title">${label}</span>
@@ -2083,9 +2126,25 @@ function renderSignalCards(data) {
     </div>`;
   }).join('');
 
-  // Re-append volume leaders card — it lives inside the grid
-  // but must not be wiped by innerHTML replacement above
-  if (vlCard) grid.appendChild(vlCard);
+  // Relocate Opening Drive card into intelligence-grid slot
+  if (odSlot) {
+    const odCard = grid.querySelector('[data-signal-key="opening_drive"]');
+    odSlot.innerHTML = '';
+    if (odCard) {
+      odSlot.appendChild(odCard);
+    } else {
+      odSlot.innerHTML = `
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">🚀 Opening Drive</span>
+          </div>
+          <div class="empty-state">
+            <div class="empty-icon">🚀</div>
+            No active opening drive signals
+          </div>
+        </div>`;
+    }
+  }
 }
 
 
