@@ -2768,7 +2768,13 @@ setInterval(() => {
       } else {
         tick = state.ticks[t.symbol];
       }
-      if (!tick) return;
+      if (!tick) {
+        if (t.ltp && t.ltp > 0) {
+          tick = { ltp: t.ltp };
+        } else {
+          return;
+        }
+      }
       const ltp = tick.ltp;
 
       // Update LTP display
