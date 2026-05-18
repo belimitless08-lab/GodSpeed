@@ -600,13 +600,14 @@ async def _write_options_tick(redis, contract: Contract, tick: dict) -> None:
     })
 
     pub_payload = json.dumps({
-        "symbol": contract.symbol,
-        "strike": contract.strike,
-        "type":   contract.type,
-        "ltp":    ltp,
-        "oi":     oi,
-        "volume": volume,
-        "ts":     ts,
+        "_source": "options",
+        "symbol":  contract.symbol,
+        "strike":  contract.strike,
+        "type":    contract.type,
+        "ltp":     ltp,
+        "oi":      oi,
+        "volume":  volume,
+        "ts":      ts,
     })
     await redis.publish(REDIS_TICKS_CHANNEL, pub_payload)
 
