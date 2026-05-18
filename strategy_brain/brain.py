@@ -929,17 +929,17 @@ async def _run_options_volume_ranking() -> None:
                         if dom_side == "CE":
                             dom_ltp        = ce_ltp
                             dom_change_pct = _chg(ce_ltp, ce_close)
-                            dom_above_pdh  = ce_high  > 0 and ce_ltp > ce_high
-                            dom_below_pdl  = ce_low   > 0 and ce_ltp < ce_low
-                            dom_above_r1   = ce_r1    > 0 and ce_ltp > ce_r1
-                            dom_below_s1   = ce_s1    > 0 and ce_ltp < ce_s1
+                            dom_above_pdh  = ce_ltp > 0 and ce_high > 0 and ce_ltp > ce_high
+                            dom_below_pdl  = ce_ltp > 0 and ce_low  > 0 and ce_ltp < ce_low
+                            dom_above_r1   = ce_ltp > 0 and ce_r1   > 0 and ce_ltp > ce_r1
+                            dom_below_s1   = ce_ltp > 0 and ce_s1   > 0 and ce_ltp < ce_s1
                         else:
                             dom_ltp        = pe_ltp
                             dom_change_pct = _chg(pe_ltp, pe_close)
-                            dom_above_pdh  = pe_high  > 0 and pe_ltp > pe_high
-                            dom_below_pdl  = pe_low   > 0 and pe_ltp < pe_low
-                            dom_above_r1   = pe_r1    > 0 and pe_ltp > pe_r1
-                            dom_below_s1   = pe_s1    > 0 and pe_ltp < pe_s1
+                            dom_above_pdh  = pe_ltp > 0 and pe_high > 0 and pe_ltp > pe_high
+                            dom_below_pdl  = pe_ltp > 0 and pe_low  > 0 and pe_ltp < pe_low
+                            dom_above_r1   = pe_ltp > 0 and pe_r1   > 0 and pe_ltp > pe_r1
+                            dom_below_s1   = pe_ltp > 0 and pe_s1   > 0 and pe_ltp < pe_s1
 
                         rows.append({
                             "symbol":          sym,
