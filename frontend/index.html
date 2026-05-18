@@ -552,14 +552,17 @@
     }
   }
 
+  @media(max-width:768px) {
+    #signals-grid { grid-template-columns:1fr !important; }
+  }
+
   @media(max-width: 768px) {
     #index-tiles {
       overflow-x: auto;
       white-space: nowrap;
       flex-wrap: nowrap;
     }
-    #outlook-grid,
-    #signals-grid { grid-template-columns: 1fr !important; }
+    #outlook-grid { grid-template-columns: 1fr !important; }
     #chart-popup { width: 95vw !important; left: 2.5vw !important; }
     .signal-row { grid-template-columns: 70px 44px 1fr 50px 60px 24px; }
     #action-bar, #action-bar > div {
