@@ -639,6 +639,23 @@ async def _tick_receiver(ws, state: _FeedState, redis) -> None:
         async with state.lock:
             contract = state.active_contracts.get(token)
 
+        if not state.active_contracts.get(token):
+            if not hasattr(state, "_atm_debug_count"):
+                state._atm_debug_count = 0
+            if state._atm_debug_count < 5:
+                state._atm_debug_count += 1
+                logger.warning(
+                    "[options_ws_debug] "
+                    "token=%r registry_size=%s "
+                    "sample_registry=%r "
+                    "is_match=%s active=%s",
+                    token,
+                    len(_ATM_REGISTRY),
+                    next(iter(_ATM_REGISTRY.keys()), "NONE"),
+                    token in _ATM_REGISTRY,
+                    bool(state.active_contracts.get(token)),
+                )
+
         is_atm = token in _ATM_REGISTRY
 
         # Skip completely unknown tokens (not brain-subscribed AND not ATM)
