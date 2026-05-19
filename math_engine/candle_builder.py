@@ -829,7 +829,7 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
         try:
             import time as _time
             _now_ts = _time.time()
-            _ts_raw = closed.get("ts_epoch") or closed.get("ts") or 0
+            _ts_raw  = closed.get("ts_epoch") or closed.get("ts") or 0
             _exp    = float(_ts_raw) + 60 if _ts_raw else 0
             _lag    = _now_ts - _exp if _exp > 0 else 0
             if _lag > 20:
