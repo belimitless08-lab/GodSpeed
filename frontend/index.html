@@ -817,6 +817,16 @@
 
 @media (max-width: 768px) {
 
+  #main-container {
+    min-width: 0 !important;
+  }
+  #ai-section-grid {
+    grid-template-columns: 1fr !important;
+  }
+  #filter-bar {
+    top: 0 !important;
+  }
+
   #index-bar {
     position: relative !important;
     top: auto !important;
@@ -4155,7 +4165,7 @@ function renderWatchlist() {
 
     const header = `
 <div style="overflow-x:auto; width:100%;">
-<div style="min-width:750px;">
+<div style="min-width:750px;" id="main-container">
 <div class="wl-header" style="display:grid;grid-template-columns:${GRID_COLS};gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid rgba(255,255,255,0.07);">
   <span class="wl-hdr-cell" style="text-align:left;">SYMBOL</span>
   <span class="wl-hdr-cell" style="text-align:left;">LTP / CHG</span>
