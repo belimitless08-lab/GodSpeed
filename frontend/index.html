@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Market Pulse Pro v2</title>
 <script src="https://cdn.tailwindcss.com"></script>
+
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@400;600;700;800&display=swap');
@@ -807,6 +808,120 @@
   .leader-row .chg  { font-size: 11px; font-weight: 700; text-align: right; }
   .leader-row .chg.pos { color: var(--green); }
   .leader-row .chg.neg { color: var(--red); }
+
+@media (max-width: 768px) {
+
+  #index-bar {
+    position: relative !important;
+    top: auto !important;
+  }
+
+  .section-label {
+    font-size: 10px !important;
+    margin-bottom: 4px !important;
+  }
+
+  #filter-bar {
+    overflow-x: auto !important;
+    flex-wrap: nowrap !important;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  #filter-bar::-webkit-scrollbar { display: none; }
+
+  #intelligence-grid {
+    grid-template-columns: 1fr !important;
+    height: auto !important;
+  }
+  #intelligence-grid .card {
+    height: auto !important;
+    min-height: 0 !important;
+  }
+
+  #trade-radar-mobile {
+    display: block;
+    margin: 0 12px 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--card);
+  }
+
+  #trade-radar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px 0;
+  }
+  #trade-radar-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    margin-top: 8px;
+  }
+  .tr-tab {
+    flex: 1;
+    padding: 7px 2px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-align: center;
+    cursor: pointer;
+    color: var(--muted);
+    border: none;
+    background: transparent;
+    border-bottom: 2px solid transparent;
+  }
+  .tr-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .tr-panel {
+    display: none;
+    max-height: 380px;
+    overflow-y: auto;
+  }
+  .tr-panel.active { display: block; }
+
+  #vol-intel-tabs {
+    display: flex;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .vol-tab {
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .vol-tab.active {
+    background: var(--accent);
+    color: #000;
+    border-color: var(--accent);
+  }
+
+  .mob-collapsible .card-header {
+    cursor: pointer;
+    user-select: none;
+  }
+  .mob-collapsible .card-header::after {
+    content: ' ▲';
+    font-size: 7px;
+    color: var(--muted);
+  }
+  .mob-collapsible.mob-collapsed .card-header::after {
+    content: ' ▼';
+  }
+  .mob-collapsible.mob-collapsed .signal-card-body {
+    display: none !important;
+  }
+}
+
+#trade-radar-mobile { display: none; }
+
 </style>
 <body>
 
@@ -925,6 +1040,53 @@
   </div>
 </div>
 
+
+<!-- TRADE RADAR — mobile only, hidden on desktop via CSS -->
+<div id="trade-radar-mobile">
+  <div id="trade-radar-header">
+    <span style="font-family:'Syne',sans-serif;font-size:11px;
+                 font-weight:700;letter-spacing:0.08em;
+                 color:var(--accent);">⚡ TRADE RADAR</span>
+    <button onclick="toggleOrderModal()"
+      style="font-size:10px;font-weight:700;padding:4px 12px;
+             border-radius:5px;border:none;
+             background:var(--accent);color:#000;cursor:pointer;">
+      + ORDER
+    </button>
+  </div>
+  <div id="trade-radar-tabs">
+    <button class="tr-tab active"
+            onclick="switchTR('signals',this)">SIGNALS</button>
+    <button class="tr-tab"
+            onclick="switchTR('positions',this)">POSITIONS</button>
+    <button class="tr-tab"
+            onclick="switchTR('orders',this)">ORDERS</button>
+  </div>
+  <div id="tr-panel-signals" class="tr-panel active">
+    <div id="tr-signals-list">
+      <div class="empty-state">
+        <div class="empty-icon">📡</div>No active signals
+      </div>
+    </div>
+  </div>
+  <div id="tr-panel-positions" class="tr-panel">
+    <div class="empty-state" style="padding:24px;">
+      <div class="empty-icon">📋</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;">
+        Positions coming in next update
+      </div>
+    </div>
+  </div>
+  <div id="tr-panel-orders" class="tr-panel">
+    <div class="empty-state" style="padding:24px;">
+      <div class="empty-icon">⏳</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;">
+        Orders &amp; history coming soon
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- WATCHLIST -->
 <div style="padding:0 12px; margin-bottom:16px;">
       <div class="section-label">Watchlist</div>
@@ -979,6 +1141,12 @@
       <div class="card-header">
         <span class="card-title">🔥 Volume Leaders</span>
         <span class="card-count" id="vl-count">0</span>
+      </div>
+      <div id="vol-intel-tabs">
+        <button class="vol-tab active"
+                onclick="switchVolTab('equity',this)">Equity</button>
+        <button class="vol-tab"
+                onclick="switchVolTab('options',this)">Options</button>
       </div>
       <div class="signal-card-body" id="volume-leaders-list">
         <div class="empty-state">
@@ -2148,6 +2316,8 @@ function renderSignalCards(data) {
         </div>`;
     }
   }
+
+  if (window.innerWidth <= 768) renderMobileSignals();
 }
 
 
@@ -4328,6 +4498,112 @@ window.addEventListener('resize', () => {
 });
 
 console.log('Market Pulse Pro v2 — loaded', new Date().toISOString());
+/* ══════════════════════════════════════════
+   MOBILE PHASE 1A
+══════════════════════════════════════════ */
+
+function switchTR(panel, btn) {
+  if (window.innerWidth > 768) return;
+  document.querySelectorAll('.tr-tab')
+    .forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tr-panel')
+    .forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tr-panel-' + panel).classList.add('active');
+}
+
+function switchVolTab(tab, btn) {
+  if (window.innerWidth > 768) return;
+  document.querySelectorAll('.vol-tab')
+    .forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  const vl = document.getElementById('volume-leaders-card');
+  const ol = document.getElementById('options-leaders-card');
+  if (tab === 'equity') {
+    if (vl) vl.style.display = '';
+    if (ol) ol.style.display = 'none';
+  } else {
+    if (vl) vl.style.display = 'none';
+    if (ol) ol.style.display = '';
+  }
+}
+
+function renderMobileSignals() {
+  if (window.innerWidth > 768) return;
+  const el = document.getElementById('tr-signals-list');
+  if (!el || !window.signalData) return;
+  const allSigs = Object.values(window.signalData)
+    .flat()
+    .sort((a, b) => (b.ici_score || 0) - (a.ici_score || 0))
+    .slice(0, 10);
+  if (!allSigs.length) {
+    el.innerHTML = '<div class="empty-state">' +
+      '<div class="empty-icon">📡</div>No active signals</div>';
+    return;
+  }
+  el.innerHTML = allSigs.map(sig => {
+    const chg    = sig.change_pct || 0;
+    const chgCol = chg >= 0 ? 'var(--green)' : 'var(--red)';
+    const chgStr = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
+    const ltp    = (sig.ltp || 0).toLocaleString('en-IN',
+                   {minimumFractionDigits:2, maximumFractionDigits:2});
+
+    /* Build one-line insight badge from available signal fields */
+    const badges = [];
+    if (sig.rvol && sig.rvol > 1.5)
+      badges.push('RVOL ' + sig.rvol.toFixed(1) + 'x');
+    if (sig.supertrend_dir)
+      badges.push('ST ' + sig.supertrend_dir);
+    if (sig.vwap_position)
+      badges.push('VWAP ' + sig.vwap_position);
+    if (sig.ici_score)
+      badges.push('ICI ' + sig.ici_score);
+    const badgeLine = badges.slice(0, 2).join(' • ');
+
+    return `<div style="padding:8px 12px;
+                        border-bottom:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;
+                  align-items:center;">
+        <span style="font-weight:700;font-size:12px;">${sig.symbol}</span>
+        <span style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:11px;font-weight:600;">₹${ltp}</span>
+          <button onclick="openPopup('${sig.symbol}',event)"
+            style="background:none;border:none;cursor:pointer;padding:0;
+                   color:var(--accent);font-size:12px;opacity:0.7;">📈</button>
+        </span>
+      </div>
+      <div style="display:flex;justify-content:space-between;
+                  align-items:center;margin-top:3px;">
+        <span style="font-size:9px;color:var(--muted);">
+          ${badgeLine || (sig.signal_type || '')}
+        </span>
+        <span style="font-size:10px;color:${chgCol};">${chgStr}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.addEventListener('load', function() {
+  if (window.innerWidth > 768) return;
+
+  /* Vol tab: hide options card by default */
+  const olCard = document.getElementById('options-leaders-card');
+  if (olCard) olCard.style.display = 'none';
+
+  /* Collapse AI Stock Intelligence cards by default */
+  ['top-positive-card', 'top-negative-card'].forEach(id => {
+    const card = document.getElementById(id);
+    if (!card) return;
+    card.classList.add('mob-collapsible', 'mob-collapsed');
+    const header = card.querySelector('.card-header');
+    if (header) header.addEventListener('click', () =>
+      card.classList.toggle('mob-collapsed'));
+  });
+
+  renderMobileSignals();
+});
+
+
 </script>
 </body>
 </html>
