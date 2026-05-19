@@ -721,6 +721,23 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
                 if vp_cum:
                     avg_cum_vol  = float(vp_cum.get(slot_key, 0) or 0)
                     cum_rvol     = round(new_cum_vol / max(avg_cum_vol, 1), 3) if avg_cum_vol > 0 else 0.0
+                    if cum_rvol > 10.0 or symbol == "BAJAJHLDNG":
+                        logger.warning(
+                            "[rvol_debug] sym=%s ts=%s slot=%s "
+                            "cum_vol=%s avg_cum_vol=%s "
+                            "slot_vol=%s avg_slot_vol=%s "
+                            "cum_rvol=%s rvol=%s ltp=%s",
+                            symbol,
+                            closed.get("ts"),
+                            slot_key,
+                            new_cum_vol,
+                            avg_cum_vol,
+                            incremental_vol,
+                            locals().get("avg_slot_vol", 0),
+                            cum_rvol,
+                            locals().get("rvol", 0),
+                            closed.get("close", 0),
+                        )
                 else:
                     cum_rvol = 0.0
             except Exception:
@@ -808,6 +825,22 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
         # Higher-TF aggregation
         _update_tf_accumulator(symbol, closed)
         await _maybe_close_tf_candles(symbol, new_minute, redis)
+
+        try:
+            import time as _time
+            _now_ts = _time.time()
+            _ts_raw = candle.get("ts_epoch") or candle.get("ts") or 0
+            _exp    = float(_ts_raw) + 60 if _ts_raw else 0
+            _lag    = _now_ts - _exp if _exp > 0 else 0
+            if _lag > 20:
+                logger.warning(
+                    "[candle_lag] sym=%s lag=%.1fs "
+                    "candle_ts=%s now=%s",
+                    symbol, _lag,
+                    _ts_raw, int(_now_ts),
+                )
+        except Exception:
+            pass
 
         _candles_closed_since_last_log += 1
 

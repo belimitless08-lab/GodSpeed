@@ -714,6 +714,26 @@ async def _run_volume_ranking() -> None:
                             "breakout_dir": breakout_dir,
                             "vol_state":    (snap.get("vol_state") or b"DRY").decode() if isinstance(snap.get("vol_state"), bytes) else (snap.get("vol_state") or "DRY"),
                         })
+
+                        if cum_rvol > 20.0 or sym == "BAJAJHLDNG":
+                            try:
+                                import time as _bt
+                                _now_ts    = int(_bt.time())
+                                _updated   = int(snap.get("updated_at_ts") or 0)
+                                _age_sec   = _now_ts - _updated if _updated else -1
+                            except Exception:
+                                _age_sec = -1
+                            logger.warning(
+                                "[vol_rank_debug] sym=%s "
+                                "cum_rvol=%s avg_vol_5d=%s "
+                                "cum_volume=%s ltp=%s "
+                                "change_pct=%s vol_state=%s "
+                                "snapshot_age=%ss",
+                                sym, cum_rvol, avg_vol_5d,
+                                cum_volume, ltp, change_pct,
+                                snap.get("vol_state", "?"),
+                                _age_sec,
+                            )
                     except Exception as sym_exc:
                         logger.debug("[brain] vol rank skip %s: %s", sym, sym_exc)
                         continue
