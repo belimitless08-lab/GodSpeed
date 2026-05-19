@@ -237,7 +237,6 @@
 #opening-drive-slot > .card {
   width: 100%;
 }
-#trade-radar-mobile { display: none; }
 @media (max-width: 768px) {
   #ai-section-grid {
     grid-template-columns: 1fr !important;
@@ -857,11 +856,15 @@
 
   #trade-radar-mobile {
     display: block !important;
-    margin: 0 12px 10px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-    background: var(--card);
+    position: relative !important;
+    width: auto !important;
+    margin: 10px 12px !important;
+    z-index: 5;
+    overflow: visible !important;
+  }
+
+  #action-bar {
+    display: none !important;
   }
 
   #trade-radar-header {
@@ -937,6 +940,9 @@
   }
 }
 
+@media (min-width: 769px) {
+  #trade-radar-mobile { display: none !important; }
+}
 
 </style>
 <body>
@@ -1016,6 +1022,52 @@
 <!-- TOAST CONTAINER -->
 <div id="toast-container"></div>
 
+<!-- TRADE RADAR — mobile only, hidden on desktop via CSS -->
+<div id="trade-radar-mobile">
+  <div id="trade-radar-header">
+    <span style="font-family:'Syne',sans-serif;font-size:11px;
+                 font-weight:700;letter-spacing:0.08em;
+                 color:var(--accent);">⚡ TRADE RADAR</span>
+    <button onclick="toggleOrderModal()"
+      style="font-size:10px;font-weight:700;padding:4px 12px;
+             border-radius:5px;border:none;
+             background:var(--accent);color:#000;cursor:pointer;">
+      + ORDER
+    </button>
+  </div>
+
+  <div id="trade-radar-tabs">
+    <button class="tr-tab active"
+            onclick="switchTR('signals',this)">SIGNALS</button>
+    <button class="tr-tab"
+            onclick="switchTR('positions',this)">POSITIONS</button>
+    <button class="tr-tab"
+            onclick="switchTR('orders',this)">ORDERS</button>
+  </div>
+  <div id="tr-panel-signals" class="tr-panel active">
+    <div id="tr-signals-list">
+      <div class="empty-state">
+        <div class="empty-icon">📡</div>No active signals
+      </div>
+    </div>
+  </div>
+  <div id="tr-panel-positions" class="tr-panel">
+    <div class="empty-state" style="padding:24px;">
+      <div class="empty-icon">📋</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;">
+        Positions coming in next update
+      </div>
+    </div>
+  </div>
+  <div id="tr-panel-orders" class="tr-panel">
+    <div class="empty-state" style="padding:24px;">
+      <div class="empty-icon">⏳</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;">
+        Orders &amp; history coming soon
+      </div>
+    </div>
+  </div>
+</div>
 <!-- ══════════════════════════════════════════
      SECTION 2: MARKET OUTLOOK
 ══════════════════════════════════════════ -->
@@ -1057,51 +1109,7 @@
 </div>
 
 
-<!-- TRADE RADAR — mobile only, hidden on desktop via CSS -->
-<div id="trade-radar-mobile">
-  <div id="trade-radar-header">
-    <span style="font-family:'Syne',sans-serif;font-size:11px;
-                 font-weight:700;letter-spacing:0.08em;
-                 color:var(--accent);">⚡ TRADE RADAR</span>
-    <button onclick="toggleOrderModal()"
-      style="font-size:10px;font-weight:700;padding:4px 12px;
-             border-radius:5px;border:none;
-             background:var(--accent);color:#000;cursor:pointer;">
-      + ORDER
-    </button>
-  </div>
-  <div id="trade-radar-tabs">
-    <button class="tr-tab active"
-            onclick="switchTR('signals',this)">SIGNALS</button>
-    <button class="tr-tab"
-            onclick="switchTR('positions',this)">POSITIONS</button>
-    <button class="tr-tab"
-            onclick="switchTR('orders',this)">ORDERS</button>
-  </div>
-  <div id="tr-panel-signals" class="tr-panel active">
-    <div id="tr-signals-list">
-      <div class="empty-state">
-        <div class="empty-icon">📡</div>No active signals
-      </div>
-    </div>
-  </div>
-  <div id="tr-panel-positions" class="tr-panel">
-    <div class="empty-state" style="padding:24px;">
-      <div class="empty-icon">📋</div>
-      <div style="font-size:10px;color:var(--muted);margin-top:6px;">
-        Positions coming in next update
-      </div>
-    </div>
-  </div>
-  <div id="tr-panel-orders" class="tr-panel">
-    <div class="empty-state" style="padding:24px;">
-      <div class="empty-icon">⏳</div>
-      <div style="font-size:10px;color:var(--muted);margin-top:6px;">
-        Orders &amp; history coming soon
-      </div>
-    </div>
-  </div>
-</div>
+
 
 <!-- WATCHLIST -->
 <div style="padding:0 12px; margin-bottom:16px;">
