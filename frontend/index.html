@@ -838,7 +838,14 @@
     min-height: 0 !important;
   }
 
-  #trade-radar-mobile { display: block; }
+  #trade-radar-mobile {
+    display: block;
+    margin: 0 12px 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--card);
+  }
 
   #trade-radar-header {
     display: flex;
@@ -4558,7 +4565,12 @@ function renderMobileSignals() {
       <div style="display:flex;justify-content:space-between;
                   align-items:center;">
         <span style="font-weight:700;font-size:12px;">${sig.symbol}</span>
-        <span style="font-size:11px;font-weight:600;">₹${ltp}</span>
+        <span style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:11px;font-weight:600;">₹${ltp}</span>
+          <button onclick="openPopup('${sig.symbol}',event)"
+            style="background:none;border:none;cursor:pointer;padding:0;
+                   color:var(--accent);font-size:12px;opacity:0.7;">📈</button>
+        </span>
       </div>
       <div style="display:flex;justify-content:space-between;
                   align-items:center;margin-top:3px;">
