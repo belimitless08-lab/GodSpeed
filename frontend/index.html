@@ -238,6 +238,12 @@
   width: 100%;
 }
 @media (max-width: 768px) {
+  #ai-section-grid {
+    grid-template-columns: 1fr !important;
+  }
+  #filter-bar {
+    top: 0 !important;
+  }
   #intelligence-grid {
     grid-template-columns: 1fr !important;
   }
@@ -1284,7 +1290,7 @@ padding:6px 10px 4px;border-bottom:1px solid var(--border);
 ══════════════════════════════════════════ -->
 <div style="padding: 0 12px;">
   <div class="section-label">AI Stock Intelligence</div>
-  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+  <div id="ai-section-grid" style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
     <div class="card">
       <div class="card-header"><span class="card-title" style="color:var(--green);">▲ Top Positive</span><span id="ai-pos-count" class="card-count" style="background:var(--green);">0</span></div>
       <div id="ai-pos-list"></div>
@@ -4517,14 +4523,14 @@ function switchVolTab(tab, btn) {
   document.querySelectorAll('.vol-tab')
     .forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
-  const vl = document.getElementById('volume-leaders-card');
-  const ol = document.getElementById('options-leaders-card');
+  const vlList = document.getElementById('volume-leaders-list');
+  const olCard = document.getElementById('options-leaders-card');
   if (tab === 'equity') {
-    if (vl) vl.style.display = '';
-    if (ol) ol.style.display = 'none';
+    if (vlList) vlList.style.display = 'block';
+    if (olCard) olCard.style.display = 'none';
   } else {
-    if (vl) vl.style.display = 'none';
-    if (ol) ol.style.display = '';
+    if (vlList) vlList.style.display = 'none';
+    if (olCard) olCard.style.display = '';
   }
 }
 
