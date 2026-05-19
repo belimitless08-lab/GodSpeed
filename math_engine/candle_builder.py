@@ -1057,7 +1057,7 @@ async def _route_tick(symbol: str, ltp: float, volume: int, ts: str) -> None:
         acc["high"]   = max(acc["high"],   ltp)
         acc["low"]    = min(acc["low"],     ltp)
         acc["close"]  = ltp
-        acc["volume"] += volume
+        acc["volume"] = max(acc["volume"], volume)
         return
 
     # New minute — close current candle, open new one
