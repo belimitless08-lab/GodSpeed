@@ -1328,6 +1328,9 @@ async def _seed_indicators() -> None:
             "postlunch_low":    999999.0,
             "postlunch_locked": False,
         }
+        _seeded_cum = float(raw.get("cum_volume") or 0)
+        if _seeded_cum > 0:
+            indicators[symbol]["last_cum_vol"] = _seeded_cum
 
         try:
             vp5_raw = await redis.get(f"vol_profile:5m:{symbol}")
