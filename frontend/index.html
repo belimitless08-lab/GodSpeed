@@ -858,14 +858,18 @@
     display: block !important;
     position: sticky !important;
     top: 0 !important;
-    z-index: 100 !important;
+    z-index: 80 !important;
     background: var(--bg) !important;
-    border-bottom: 1px solid var(--border);
-    position: relative !important;
-    width: auto !important;
-    margin: 10px 12px !important;
-    z-index: 100 !important;
+    margin: 0 !important;
+    padding: 10px 12px 6px !important;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
     overflow: visible !important;
+    width: auto !important;
+  }
+
+  #trade-radar-tabs {
+    position: relative;
+    background: var(--bg);
   }
 
   #action-bar {
@@ -4044,8 +4048,6 @@ async function fetchHistory() {
 }
 
 function renderHistory(trades) {
-    window._mobileHistoryData = trades;
-    renderMobileHistory();
     const from = document.getElementById('hist-from').value
     const to = document.getElementById('hist-to').value
     const filteredTrades = (trades || []).filter(t => {
@@ -4117,6 +4119,8 @@ function renderHistory(trades) {
             </div>
         </div>`
     }).join('')
+    window._mobileHistoryData = trades || [];
+    renderMobileHistory();
 }
 
 /* ══════════════════════════════════════════
@@ -4683,9 +4687,16 @@ function renderMobilePositions() {
   let html = '';
 
   if (open.length) {
-    html += '<div style="font-size:9px;color:var(--muted);' +
-            'padding:6px 12px 2px;letter-spacing:0.08em;">' +
-            'OPEN (' + open.length + ')</div>';
+    html += '<div style="display:flex;justify-content:space-between;' +
+            'align-items:center;padding:6px 12px 2px;">' +
+      '<span style="font-size:9px;color:var(--muted);letter-spacing:0.08em;">' +
+        'OPEN (' + open.length + ')</span>' +
+      '<button onclick="mobileExitAll()" ' +
+        'style="font-size:9px;font-weight:700;padding:2px 8px;' +
+               'border-radius:4px;border:1px solid var(--red);' +
+               'background:transparent;color:var(--red);cursor:pointer;">' +
+        'EXIT ALL</button>' +
+    '</div>';
     html += open.map(t => {
       const optKey = t.symbol + ':' + (t.atm_strike||t.strike||'') + (t.instrument||'');
       const tick   = state.optionTicks?.[optKey];
@@ -4701,7 +4712,12 @@ function renderMobilePositions() {
         '<div style="display:flex;justify-content:space-between;align-items:center;">' +
           '<span style="font-size:12px;font-weight:700;">' + t.symbol + ' ' +
             (t.atm_strike||t.strike||'') + ' ' + (t.instrument||'') + '</span>' +
-          '<span style="font-size:10px;color:var(--muted);">✏️</span>' +
+          '<span style="display:flex;gap:10px;align-items:center;">' +
+            '<span style="font-size:12px;cursor:pointer;color:var(--muted);" ' +
+              'onclick="openEditTradeModal(\'' + t.id + '\')">✏️</span>' +
+            '<span style="font-size:14px;cursor:pointer;color:var(--red);" ' +
+              'onclick="mobileCloseOne(\'' + t.id + '\')">✕</span>' +
+          '</span>' +
         '</div>' +
         '<div style="display:flex;justify-content:space-between;margin-top:3px;">' +
           '<span style="font-size:12px;font-weight:600;">' + ltpStr + '</span>' +
@@ -4715,17 +4731,29 @@ function renderMobilePositions() {
   }
 
   if (pending.length) {
-    html += '<div style="font-size:9px;color:orange;' +
-            'padding:6px 12px 2px;letter-spacing:0.08em;">' +
-            '⚠ PENDING (' + pending.length + ')</div>';
+    html += '<div style="display:flex;justify-content:space-between;' +
+            'align-items:center;padding:8px 12px 2px;">' +
+      '<span style="font-size:9px;color:orange;letter-spacing:0.08em;">' +
+        '⚠ PENDING (' + pending.length + ')</span>' +
+      '<button onclick="mobileCancelAll()" ' +
+        'style="font-size:9px;font-weight:700;padding:2px 8px;' +
+               'border-radius:4px;border:1px solid orange;' +
+               'background:transparent;color:orange;cursor:pointer;">' +
+        'CANCEL ALL</button>' +
+    '</div>';
     html += pending.map(o =>
       '<div style="padding:8px 12px;border-bottom:1px solid var(--border);' +
            'border-left:3px solid orange;background:rgba(255,165,0,0.05);">' +
-        '<div style="display:flex;justify-content:space-between;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
           '<span style="font-size:12px;font-weight:700;">' + o.symbol + ' ' +
             (o.strike||'') + ' ' + (o.instrument||o.option_type||'') + '</span>' +
-          '<span style="font-size:10px;color:orange;">Trigger ₹' +
-            (o.trigger_price||o.entry_price||0) + '</span>' +
+          '<span style="font-size:14px;cursor:pointer;color:var(--red);" ' +
+            'onclick="mobileCancelOne(\'' + (o.id||o.order_id) + '\')">✕</span>' +
+        '</div>' +
+        '<div style="font-size:10px;color:orange;margin-top:2px;">Trigger ₹' +
+          (o.trigger_price||o.entry_price||0) + '</div>' +
+        '<div style="font-size:10px;color:var(--muted);margin-top:1px;">' +
+          'SL ₹' + (o.stop_loss||0) + '  TG ₹' + (o.take_profit||0) +
         '</div>' +
       '</div>'
     ).join('');
@@ -4768,6 +4796,34 @@ function renderMobileHistory() {
       '</div>' +
     '</div>';
   }).join('');
+}
+
+async function mobileExitAll() {
+  const trades = [...(state.openTrades || [])];
+  if (!trades.length) return;
+  if (!confirm('Exit all ' + trades.length + ' open positions?')) return;
+  for (const t of trades) {
+    try { await closePosition(t.id); }
+    catch(e) { console.error('[mobileExitAll]', e); }
+  }
+}
+
+async function mobileCancelAll() {
+  const orders = [...(state.pendingOrders || [])];
+  if (!orders.length) return;
+  if (!confirm('Cancel all ' + orders.length + ' pending orders?')) return;
+  for (const o of orders) {
+    try { await cancelOrder(o.id || o.order_id); }
+    catch(e) { console.error('[mobileCancelAll]', e); }
+  }
+}
+
+function mobileCloseOne(tradeId) {
+  closePosition(tradeId);
+}
+
+function mobileCancelOne(orderId) {
+  cancelOrder(orderId);
 }
 
 </script>
