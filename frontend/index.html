@@ -1046,8 +1046,8 @@
             onclick="switchTR('signals',this)">SIGNALS</button>
     <button class="tr-tab" id="tr-positions-tab"
             onclick="switchTR('positions',this)">POSITIONS</button>
-    <button class="tr-tab"
-            onclick="switchTR('orders',this)">ORDERS</button>
+    <button class="tr-tab" id="tr-positions-tab-hist"
+            onclick="switchTR('history',this)">HISTORY</button>
   </div>
   <div id="tr-panel-signals" class="tr-panel active">
     <div id="tr-signals-list">
@@ -1064,7 +1064,7 @@
       </div>
     </div>
   </div>
-  <div id="tr-panel-orders" class="tr-panel">
+  <div id="tr-panel-history" class="tr-panel">
     <div class="empty-state" style="padding:24px;">
       <div class="empty-icon">⏳</div>
       <div style="font-size:10px;color:var(--muted);margin-top:6px;">
@@ -3649,6 +3649,8 @@ const state = {
     openTrades: [],
     currentChartLTP: null,
 };
+window.state = window.state || state;
+window.state = state;
 
 let positionsData = [];
 
@@ -3684,19 +3686,13 @@ async function fetchPositions() {
     // Handle both bare array and {trades:[...]} wrapper shapes
     const trades = Array.isArray(data) ? data : (data.trades || []);
     state.openTrades = trades;
-    renderMobilePositions();
-    const _trTab2 = document.getElementById('tr-positions-tab');
-    if (_trTab2) {
-      const _oCount = (window.state?.openTrades?.length || 0);
-      const _total  = _oCount + orders.length;
-      _trTab2.textContent = 'POSITIONS' + (_total ? ' (' + _total + ')' : '');
-    }
     positionsData = trades;
     renderPositions(trades);
     document.getElementById('fab-pos-count').textContent = trades.length;
+    renderMobilePositions();
     const _trTab = document.getElementById('tr-positions-tab');
     if (_trTab) {
-      const _pCount = (window.state?.pendingOrders?.length || 0);
+      const _pCount = (state.pendingOrders?.length || 0);
       const _total  = trades.length + _pCount;
       _trTab.textContent = 'POSITIONS' + (_total ? ' (' + _total + ')' : '');
     }
@@ -3891,9 +3887,14 @@ async function fetchPendingOrders() {
     if (!data) return;
     // Handle both bare array and {orders:[...]} wrapper
     const orders = Array.isArray(data) ? data : (data.orders || data.pending || []);
-    window.state = window.state || {};
-    window.state.pendingOrders = orders;
+    state.pendingOrders = orders;
     renderMobilePositions();
+    const _trTab2 = document.getElementById('tr-positions-tab');
+    if (_trTab2) {
+      const _oCount = (state.openTrades?.length || 0);
+      const _total2 = _oCount + orders.length;
+      _trTab2.textContent = 'POSITIONS' + (_total2 ? ' (' + _total2 + ')' : '');
+    }
     renderPendingOrders(orders);
     document.getElementById('fab-pend-count').textContent = orders.length;
 }
@@ -4551,12 +4552,21 @@ console.log('Market Pulse Pro v2 — loaded', new Date().toISOString());
 
 function switchTR(panel, btn) {
   if (window.innerWidth > 768) return;
+
   document.querySelectorAll('.tr-tab')
     .forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tr-panel')
     .forEach(p => p.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('tr-panel-' + panel).classList.add('active');
+
+  if (!btn) {
+    btn = Array.from(document.querySelectorAll('.tr-tab'))
+      .find(b => b.getAttribute('onclick')?.includes("'" + panel + "'"));
+  }
+
+  if (btn) btn.classList.add('active');
+
+  const panelEl = document.getElementById('tr-panel-' + panel);
+  if (panelEl) panelEl.classList.add('active');
 }
 
 function switchVolTab(tab, btn) {
@@ -4632,30 +4642,53 @@ function renderMobileSignals() {
 
 
 
+window.addEventListener('load', function() {
+  if (window.innerWidth > 768) return;
+
+  /* Vol tab: hide options card by default */
+  const olCard = document.getElementById('options-leaders-card');
+  if (olCard) olCard.style.display = 'none';
+
+  /* Collapse AI Stock Intelligence cards by default */
+  ['top-positive-card', 'top-negative-card'].forEach(id => {
+    const card = document.getElementById(id);
+    if (!card) return;
+    card.classList.add('mob-collapsible', 'mob-collapsed');
+    const header = card.querySelector('.card-header');
+    if (header) header.addEventListener('click', () =>
+      card.classList.toggle('mob-collapsed'));
+  });
+
+  renderMobileSignals();
+});
+
+
+
 function renderMobilePositions() {
   if (window.innerWidth > 768) return;
   const el = document.getElementById('tr-panel-positions');
   if (!el) return;
 
-  const open    = window.state?.openTrades    || [];
-  const pending = window.state?.pendingOrders || [];
+  const open    = state.openTrades    || [];
+  const pending = state.pendingOrders || [];
 
   if (!open.length && !pending.length) {
     el.innerHTML = '<div class="empty-state" style="padding:20px;">' +
       '<div class="empty-icon">📋</div>' +
-      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">No open positions</div>' +
-      '</div>';
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">' +
+      'No open positions</div></div>';
     return;
   }
 
   let html = '';
 
   if (open.length) {
-    html += '<div style="font-size:9px;color:var(--muted);padding:6px 12px 2px;' +
-            'letter-spacing:0.08em;">OPEN (' + open.length + ')</div>';
+    html += '<div style="font-size:9px;color:var(--muted);' +
+            'padding:6px 12px 2px;letter-spacing:0.08em;">' +
+            'OPEN (' + open.length + ')</div>';
     html += open.map(t => {
       const optKey = t.symbol + ':' + (t.atm_strike||t.strike||'') + (t.instrument||'');
-      const tick   = window.state?.optionTicks?.[optKey];
+      const tick   = state.optionTicks?.[optKey];
       const ltp    = tick?.ltp || t.ltp || t.entry_price || 0;
       const mult   = t.direction === 'LONG' ? 1 : -1;
       const pnl    = (ltp - (t.entry_price||0)) * (t.quantity||0) * mult;
@@ -4668,7 +4701,7 @@ function renderMobilePositions() {
         '<div style="display:flex;justify-content:space-between;align-items:center;">' +
           '<span style="font-size:12px;font-weight:700;">' + t.symbol + ' ' +
             (t.atm_strike||t.strike||'') + ' ' + (t.instrument||'') + '</span>' +
-          '<span style="font-size:10px;color:var(--muted);cursor:pointer;">✏️</span>' +
+          '<span style="font-size:10px;color:var(--muted);">✏️</span>' +
         '</div>' +
         '<div style="display:flex;justify-content:space-between;margin-top:3px;">' +
           '<span style="font-size:12px;font-weight:600;">' + ltpStr + '</span>' +
@@ -4682,8 +4715,9 @@ function renderMobilePositions() {
   }
 
   if (pending.length) {
-    html += '<div style="font-size:9px;color:orange;padding:6px 12px 2px;' +
-            'letter-spacing:0.08em;">⚠ PENDING (' + pending.length + ')</div>';
+    html += '<div style="font-size:9px;color:orange;' +
+            'padding:6px 12px 2px;letter-spacing:0.08em;">' +
+            '⚠ PENDING (' + pending.length + ')</div>';
     html += pending.map(o =>
       '<div style="padding:8px 12px;border-bottom:1px solid var(--border);' +
            'border-left:3px solid orange;background:rgba(255,165,0,0.05);">' +
@@ -4708,8 +4742,8 @@ function renderMobileHistory() {
   if (!trades.length) {
     el.innerHTML = '<div class="empty-state" style="padding:20px;">' +
       '<div class="empty-icon">📜</div>' +
-      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">No trade history</div>' +
-      '</div>';
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">' +
+      'No trade history</div></div>';
     return;
   }
   el.innerHTML = trades.slice(0, 20).map(t => {
@@ -4735,27 +4769,6 @@ function renderMobileHistory() {
     '</div>';
   }).join('');
 }
-
-window.addEventListener('load', function() {
-  if (window.innerWidth > 768) return;
-
-  /* Vol tab: hide options card by default */
-  const olCard = document.getElementById('options-leaders-card');
-  if (olCard) olCard.style.display = 'none';
-
-  /* Collapse AI Stock Intelligence cards by default */
-  ['top-positive-card', 'top-negative-card'].forEach(id => {
-    const card = document.getElementById(id);
-    if (!card) return;
-    card.classList.add('mob-collapsible', 'mob-collapsed');
-    const header = card.querySelector('.card-header');
-    if (header) header.addEventListener('click', () =>
-      card.classList.toggle('mob-collapsed'));
-  });
-
-  renderMobileSignals();
-});
-
 
 </script>
 </body>
