@@ -3685,6 +3685,12 @@ async function fetchPositions() {
     const trades = Array.isArray(data) ? data : (data.trades || []);
     state.openTrades = trades;
     renderMobilePositions();
+    const _trTab2 = document.getElementById('tr-positions-tab');
+    if (_trTab2) {
+      const _oCount = (window.state?.openTrades?.length || 0);
+      const _total  = _oCount + orders.length;
+      _trTab2.textContent = 'POSITIONS' + (_total ? ' (' + _total + ')' : '');
+    }
     positionsData = trades;
     renderPositions(trades);
     document.getElementById('fab-pos-count').textContent = trades.length;
@@ -4573,8 +4579,8 @@ function renderMobileSignals() {
   if (window.innerWidth > 768) return;
   const el = document.getElementById('tr-signals-list');
   if (!el || !window.signalData) return;
-  const allSigs = Object.values(window.signalData)
-    .flat()
+  const allSigs = Object.values(window.signalData || {})
+    .flatMap(v => Array.isArray(v) ? v : [])
     .sort((a, b) => (b.ici_score || 0) - (a.ici_score || 0))
     .slice(0, 10);
   if (!allSigs.length) {
