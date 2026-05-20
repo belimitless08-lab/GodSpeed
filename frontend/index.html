@@ -856,10 +856,15 @@
 
   #trade-radar-mobile {
     display: block !important;
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 100 !important;
+    background: var(--bg) !important;
+    border-bottom: 1px solid var(--border);
     position: relative !important;
     width: auto !important;
     margin: 10px 12px !important;
-    z-index: 5;
+    z-index: 100 !important;
     overflow: visible !important;
   }
 
@@ -1039,7 +1044,7 @@
   <div id="trade-radar-tabs">
     <button class="tr-tab active"
             onclick="switchTR('signals',this)">SIGNALS</button>
-    <button class="tr-tab"
+    <button class="tr-tab" id="tr-positions-tab"
             onclick="switchTR('positions',this)">POSITIONS</button>
     <button class="tr-tab"
             onclick="switchTR('orders',this)">ORDERS</button>
@@ -3679,9 +3684,16 @@ async function fetchPositions() {
     // Handle both bare array and {trades:[...]} wrapper shapes
     const trades = Array.isArray(data) ? data : (data.trades || []);
     state.openTrades = trades;
+    renderMobilePositions();
     positionsData = trades;
     renderPositions(trades);
     document.getElementById('fab-pos-count').textContent = trades.length;
+    const _trTab = document.getElementById('tr-positions-tab');
+    if (_trTab) {
+      const _pCount = (window.state?.pendingOrders?.length || 0);
+      const _total  = trades.length + _pCount;
+      _trTab.textContent = 'POSITIONS' + (_total ? ' (' + _total + ')' : '');
+    }
 }
 
 function renderPositions(trades) {
@@ -3873,6 +3885,9 @@ async function fetchPendingOrders() {
     if (!data) return;
     // Handle both bare array and {orders:[...]} wrapper
     const orders = Array.isArray(data) ? data : (data.orders || data.pending || []);
+    window.state = window.state || {};
+    window.state.pendingOrders = orders;
+    renderMobilePositions();
     renderPendingOrders(orders);
     document.getElementById('fab-pend-count').textContent = orders.length;
 }
@@ -4022,6 +4037,8 @@ async function fetchHistory() {
 }
 
 function renderHistory(trades) {
+    window._mobileHistoryData = trades;
+    renderMobileHistory();
     const from = document.getElementById('hist-from').value
     const to = document.getElementById('hist-to').value
     const filteredTrades = (trades || []).filter(t => {
@@ -4604,6 +4621,112 @@ function renderMobileSignals() {
         <span style="font-size:10px;color:${chgCol};">${chgStr}</span>
       </div>
     </div>`;
+  }).join('');
+}
+
+
+
+function renderMobilePositions() {
+  if (window.innerWidth > 768) return;
+  const el = document.getElementById('tr-panel-positions');
+  if (!el) return;
+
+  const open    = window.state?.openTrades    || [];
+  const pending = window.state?.pendingOrders || [];
+
+  if (!open.length && !pending.length) {
+    el.innerHTML = '<div class="empty-state" style="padding:20px;">' +
+      '<div class="empty-icon">📋</div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">No open positions</div>' +
+      '</div>';
+    return;
+  }
+
+  let html = '';
+
+  if (open.length) {
+    html += '<div style="font-size:9px;color:var(--muted);padding:6px 12px 2px;' +
+            'letter-spacing:0.08em;">OPEN (' + open.length + ')</div>';
+    html += open.map(t => {
+      const optKey = t.symbol + ':' + (t.atm_strike||t.strike||'') + (t.instrument||'');
+      const tick   = window.state?.optionTicks?.[optKey];
+      const ltp    = tick?.ltp || t.ltp || t.entry_price || 0;
+      const mult   = t.direction === 'LONG' ? 1 : -1;
+      const pnl    = (ltp - (t.entry_price||0)) * (t.quantity||0) * mult;
+      const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const pnlStr = (pnl >= 0 ? '+' : '') + '₹' +
+                     Math.abs(pnl).toLocaleString('en-IN',{maximumFractionDigits:0});
+      const ltpStr = '₹' + parseFloat(ltp).toLocaleString('en-IN',
+                     {minimumFractionDigits:2,maximumFractionDigits:2});
+      return '<div style="padding:8px 12px;border-bottom:1px solid var(--border);">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+          '<span style="font-size:12px;font-weight:700;">' + t.symbol + ' ' +
+            (t.atm_strike||t.strike||'') + ' ' + (t.instrument||'') + '</span>' +
+          '<span style="font-size:10px;color:var(--muted);cursor:pointer;">✏️</span>' +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;margin-top:3px;">' +
+          '<span style="font-size:12px;font-weight:600;">' + ltpStr + '</span>' +
+          '<span style="font-size:11px;color:' + pnlCol + ';">' + pnlStr + '</span>' +
+        '</div>' +
+        '<div style="font-size:10px;color:var(--muted);margin-top:2px;">' +
+          'SL ₹' + (t.stop_loss||0) + '  TG ₹' + (t.take_profit||0) +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  if (pending.length) {
+    html += '<div style="font-size:9px;color:orange;padding:6px 12px 2px;' +
+            'letter-spacing:0.08em;">⚠ PENDING (' + pending.length + ')</div>';
+    html += pending.map(o =>
+      '<div style="padding:8px 12px;border-bottom:1px solid var(--border);' +
+           'border-left:3px solid orange;background:rgba(255,165,0,0.05);">' +
+        '<div style="display:flex;justify-content:space-between;">' +
+          '<span style="font-size:12px;font-weight:700;">' + o.symbol + ' ' +
+            (o.strike||'') + ' ' + (o.instrument||o.option_type||'') + '</span>' +
+          '<span style="font-size:10px;color:orange;">Trigger ₹' +
+            (o.trigger_price||o.entry_price||0) + '</span>' +
+        '</div>' +
+      '</div>'
+    ).join('');
+  }
+
+  el.innerHTML = html;
+}
+
+function renderMobileHistory() {
+  if (window.innerWidth > 768) return;
+  const el = document.getElementById('tr-panel-history');
+  if (!el) return;
+  const trades = window._mobileHistoryData || [];
+  if (!trades.length) {
+    el.innerHTML = '<div class="empty-state" style="padding:20px;">' +
+      '<div class="empty-icon">📜</div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">No trade history</div>' +
+      '</div>';
+    return;
+  }
+  el.innerHTML = trades.slice(0, 20).map(t => {
+    const pnl    = parseFloat(t.pnl_abs ?? t.pnl ?? t.realized_pnl ?? 0);
+    const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const pnlStr = (pnl >= 0 ? '+' : '') + '₹' +
+                   Math.abs(pnl).toLocaleString('en-IN',{maximumFractionDigits:0});
+    const reason = t.exit_reason || t.reason || '';
+    const icon   = reason.includes('PROFIT') ? '✅' :
+                   reason.includes('LOSS')   ? '❌' : '⏹';
+    return '<div style="padding:8px 12px;border-bottom:1px solid var(--border);">' +
+      '<div style="display:flex;justify-content:space-between;">' +
+        '<span style="font-size:12px;font-weight:700;">' + t.symbol + ' ' +
+          (t.atm_strike||t.strike||'') + ' ' + (t.instrument||'') + '</span>' +
+        '<span style="font-size:11px;font-weight:700;color:' + pnlCol + ';">' +
+          pnlStr + '</span>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:space-between;margin-top:2px;">' +
+        '<span style="font-size:10px;color:var(--muted);">₹' +
+          (t.entry_price||0) + ' → ₹' + (t.exit_price||0) + '</span>' +
+        '<span style="font-size:10px;color:var(--muted);">' + icon + ' ' + reason + '</span>' +
+      '</div>' +
+    '</div>';
   }).join('');
 }
 
