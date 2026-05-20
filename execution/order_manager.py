@@ -172,8 +172,25 @@ async def _get_execution_ltp(
             for _ in range(3):  # max ~150ms wait
                 await asyncio.sleep(0.05)
                 tick = await redis.hgetall(tick_key)
-                ltp = _safe_float(tick.get("ltp"))
-                if ltp > 0:
+                if tick:
+                    try:
+                        import time as _time
+                        _ts = float(tick.get("updated_at_ts") or 0)
+                        if _ts == 0:
+                            _ts_str = tick.get("ts", "")
+                            _ts = datetime.fromisoformat(
+                                _ts_str.replace("Z", "+00:00")
+                            ).timestamp() if _ts_str else 0
+                        _age = _time.time() - _ts if _ts > 0 else 9999
+                        if _age > 120:
+                            tick = None  # stale → fall through to REST
+                    except Exception:
+                        tick = None  # unparseable → treat as stale
+                if tick:
+                    ltp = float(tick.get("ltp", 0))
+                    if ltp <= 0:
+                        tick = None  # zero LTP = unusable → fall through to REST
+                if tick and ltp > 0:
                     ts_raw = tick.get("ts", "")
                     age_sec = (_now_ist() - _parse_ts(ts_raw)).total_seconds() if ts_raw else 999999
                     if age_sec < 10:
