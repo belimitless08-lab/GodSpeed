@@ -857,7 +857,7 @@
   #trade-radar-mobile {
     display: block !important;
     position: sticky !important;
-    top: 0 !important;
+    top: env(safe-area-inset-top, 0) !important;
     z-index: 80 !important;
     background: var(--bg) !important;
     margin: 0 !important;
@@ -4716,7 +4716,7 @@ function renderMobilePositions() {
             '<span style="font-size:12px;cursor:pointer;color:var(--muted);" ' +
               'onclick="openEditTradeModal(\'' + t.id + '\')">✏️</span>' +
             '<span style="font-size:14px;cursor:pointer;color:var(--red);" ' +
-              'onclick="mobileCloseOne(\'' + t.id + '\')">✕</span>' +
+              'onclick="mobileCloseOne(\'' + t.id + '\',\'' + (t.symbol||'') + '\')">✕</span>' +
           '</span>' +
         '</div>' +
         '<div style="display:flex;justify-content:space-between;margin-top:3px;">' +
@@ -4748,7 +4748,7 @@ function renderMobilePositions() {
           '<span style="font-size:12px;font-weight:700;">' + o.symbol + ' ' +
             (o.strike||'') + ' ' + (o.instrument||o.option_type||'') + '</span>' +
           '<span style="font-size:14px;cursor:pointer;color:var(--red);" ' +
-            'onclick="mobileCancelOne(\'' + (o.id||o.order_id) + '\')">✕</span>' +
+            'onclick="mobileCancelOne(\'' + (o.id||o.order_id) + '\',\'' + (o.symbol||'') + '\')">✕</span>' +
         '</div>' +
         '<div style="font-size:10px;color:orange;margin-top:2px;">Trigger ₹' +
           (o.trigger_price||o.entry_price||0) + '</div>' +
@@ -4803,7 +4803,7 @@ async function mobileExitAll() {
   if (!trades.length) return;
   if (!confirm('Exit all ' + trades.length + ' open positions?')) return;
   for (const t of trades) {
-    try { await closePosition(t.id); }
+    try { await closePosition(t.id, t.symbol || ''); }
     catch(e) { console.error('[mobileExitAll]', e); }
   }
 }
@@ -4813,17 +4813,17 @@ async function mobileCancelAll() {
   if (!orders.length) return;
   if (!confirm('Cancel all ' + orders.length + ' pending orders?')) return;
   for (const o of orders) {
-    try { await cancelOrder(o.id || o.order_id); }
+    try { await cancelPendingOrder(o.id || o.order_id, o.symbol || ''); }
     catch(e) { console.error('[mobileCancelAll]', e); }
   }
 }
 
-function mobileCloseOne(tradeId) {
-  closePosition(tradeId);
+function mobileCloseOne(tradeId, symbol) {
+  closePosition(tradeId, symbol || '');
 }
 
-function mobileCancelOne(orderId) {
-  cancelOrder(orderId);
+function mobileCancelOne(orderId, symbol) {
+  cancelPendingOrder(orderId, symbol || '');
 }
 
 </script>
