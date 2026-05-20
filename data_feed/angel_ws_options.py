@@ -424,6 +424,16 @@ async def _accumulate_atm(redis, token: str, ltp: float, volume: int) -> None:
         _ATM_LAST_VOL[cache_key] = volume
         return
 
+    if delta_vol > 500000:
+        logger.warning(
+            "[atm_delta_spike] sym=%s type=%s "
+            "volume=%s last=%s delta=%s "
+            "ltp=%s priming=%s",
+            sym, opt_type,
+            volume, last, delta_vol,
+            ltp, sym in _ATM_PRIMING,
+        )
+
     try:
         await redis.incrbyfloat(
             f"options:atm_turnover_today:{sym}",
@@ -593,10 +603,11 @@ async def _write_options_tick(redis, contract: Contract, tick: dict) -> None:
 
     redis_key = f"options:tick:{contract.symbol}:{contract.strike}{contract.type}"
     await redis.hset(redis_key, mapping={
-        "ltp":    str(ltp),
-        "oi":     str(oi),
-        "volume": str(volume),
-        "ts":     ts,
+        "ltp":           str(ltp),
+        "oi":            str(oi),
+        "volume":        str(volume),
+        "ts":            ts,
+        "updated_at_ts": str(time.time()),
     })
 
     pub_payload = json.dumps({
@@ -679,7 +690,7 @@ async def _tick_receiver(ws, state: _FeedState, redis) -> None:
 
             # Write tick hash for ATM tokens so options leaders can read
             # live LTP. Dynamic brain subscriptions already wrote above.
-            if contract is None:
+            if contract is None or token in _ATM_REGISTRY:
                 try:
                     sym, opt_type, lot_size, atm_strike = _ATM_REGISTRY[token]
                     atm_contract = Contract(
@@ -690,7 +701,7 @@ async def _tick_receiver(ws, state: _FeedState, redis) -> None:
                     )
                     await _write_options_tick(redis, atm_contract, tick)
                 except Exception as exc:
-                    logger.debug(
+                    logger.warning(
                         "[options_ws] ATM tick write error %s: %s", token, exc
                     )
 
