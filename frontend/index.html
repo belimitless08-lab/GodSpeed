@@ -2350,7 +2350,7 @@ function renderSignalCards(data) {
     }
   }
 
-  if (window.innerWidth <= 768) renderMobileSignals();
+  if (window.innerWidth <= 768 && window._currentTRTab === 'signals') renderMobileSignals();
 }
 
 
@@ -3654,7 +3654,6 @@ const state = {
     currentChartLTP: null,
 };
 window.state = window.state || state;
-window.state = state;
 
 let positionsData = [];
 
@@ -3689,6 +3688,12 @@ async function fetchPositions() {
     if (!data) return;
     // Handle both bare array and {trades:[...]} wrapper shapes
     const trades = Array.isArray(data) ? data : (data.trades || []);
+    if (!state.positionLtpCache) state.positionLtpCache = {};
+    trades.forEach(p => {
+      if (p.ltp && p.ltp !== p.entry_price) {
+        state.positionLtpCache[p.id] = p.ltp;
+      }
+    });
     state.openTrades = trades;
     positionsData = trades;
     renderPositions(trades);
@@ -4571,6 +4576,14 @@ function switchTR(panel, btn) {
 
   const panelEl = document.getElementById('tr-panel-' + panel);
   if (panelEl) panelEl.classList.add('active');
+
+  window._currentTRTab = panel;
+  if (panel === 'signals') {
+    renderMobileSignals();
+  }
+  if (panel === 'history') {
+    fetchMobileHistory();
+  }
 }
 
 function switchVolTab(tab, btn) {
@@ -4663,7 +4676,10 @@ window.addEventListener('load', function() {
       card.classList.toggle('mob-collapsed'));
   });
 
-  renderMobileSignals();
+  window._currentTRTab = window._currentTRTab || 'signals';
+  if (window._currentTRTab === 'signals') {
+    renderMobileSignals();
+  }
 });
 
 
@@ -4700,7 +4716,9 @@ function renderMobilePositions() {
     html += open.map(t => {
       const optKey = t.symbol + ':' + (t.atm_strike||t.strike||'') + (t.instrument||'');
       const tick   = state.optionTicks?.[optKey];
-      const ltp    = tick?.ltp || t.ltp || t.entry_price || 0;
+      const ltp = state.optionTicks?.[optKey]
+  || state.positionLtpCache?.[t.id]
+  || t.entry_price;
       const mult   = t.direction === 'LONG' ? 1 : -1;
       const pnl    = (ltp - (t.entry_price||0)) * (t.quantity||0) * mult;
       const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
@@ -4762,6 +4780,18 @@ function renderMobilePositions() {
   el.innerHTML = html;
 }
 
+async function fetchMobileHistory() {
+  try {
+    const res = await fetch('/api/trades/history');
+    const data = await res.json();
+    window._mobileHistoryData = Array.isArray(data) ? data : (data.trades || []);
+    renderMobileHistory();
+  } catch(e) {
+    document.getElementById('tr-panel-history').innerHTML =
+      '<div style="padding:16px;color:var(--muted)">Failed to load history</div>';
+  }
+}
+
 function renderMobileHistory() {
   if (window.innerWidth > 768) return;
   const el = document.getElementById('tr-panel-history');
@@ -4803,9 +4833,12 @@ async function mobileExitAll() {
   if (!trades.length) return;
   if (!confirm('Exit all ' + trades.length + ' open positions?')) return;
   for (const t of trades) {
-    try { await closePosition(t.id, t.symbol || ''); }
-    catch(e) { console.error('[mobileExitAll]', e); }
+    try {
+      await fetch(BASE + `/api/trades/${t.id}/close`, { method: 'POST' });
+    } catch(e) { console.error('[mobileExitAll]', e); }
   }
+  fetchPositions();
+  updateFABCounts();
 }
 
 async function mobileCancelAll() {
@@ -4818,8 +4851,19 @@ async function mobileCancelAll() {
   }
 }
 
-function mobileCloseOne(tradeId, symbol) {
-  closePosition(tradeId, symbol || '');
+async function mobileCloseOne(tradeId, symbol) {
+  try {
+    const r = await fetch(BASE + `/api/trades/${tradeId}/close`, { method: 'POST' });
+    if (r.ok) {
+      showToast(`Position closed — ${symbol || tradeId}`, 'success');
+      fetchPositions();
+      updateFABCounts();
+    } else {
+      showToast('Close failed', 'error');
+    }
+  } catch(e) {
+    showToast('Network error', 'error');
+  }
 }
 
 function mobileCancelOne(orderId, symbol) {
