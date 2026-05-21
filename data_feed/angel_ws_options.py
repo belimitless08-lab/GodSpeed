@@ -923,8 +923,10 @@ async def _run_ws_session(session: dict, state: _FeedState) -> None:
         else:
             logger.info("[options_ws] No prior subscriptions to restore.")
 
-        # Re-prime on every reconnect (prevents double-count)
-        _ATM_LAST_VOL.clear()
+        # NOTE: Do NOT clear _ATM_LAST_VOL on reconnect.
+        # Clearing resets the baseline causing first tick after
+        # reconnect to treat full session volume as delta → 5000x spike.
+        # _ATM_PRIMING handles first-tick baseline for new sessions only.
         for sym in list(_ATM_PRIMING):
             pass  # already in priming set from initial load
         # Re-add all ATM symbols to priming
