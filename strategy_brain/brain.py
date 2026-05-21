@@ -880,24 +880,44 @@ async def _run_options_volume_ranking() -> None:
                             pass
 
                         # Live CE / PE LTP — use float strike for key construction
-                        ce_ltp, pe_ltp = 0.0, 0.0
-                        if atm_strike:
-                            # Strike in key: use int if whole number, else keep decimal
-                            _sk = (
-                                int(atm_strike)
-                                if atm_strike == int(atm_strike)
-                                else atm_strike
-                            )
-                            _ce_tick = await redis.hgetall(f"options:tick:{sym}:{_sk}CE")
-                            _pe_tick = await redis.hgetall(f"options:tick:{sym}:{_sk}PE")
+                        async def _find_live_ltp(sym, atm_strike, opt_type):
+                            # Try seeded ATM strike first
                             try:
-                                ce_ltp = float(_ce_tick.get("ltp", 0) or 0)
+                                _sk = int(atm_strike) if atm_strike == int(atm_strike) else atm_strike
+                                _tick = await redis.hgetall(
+                                    f"options:tick:{sym}:{_sk}{opt_type}"
+                                )
+                                _ltp = float(_tick.get("ltp", 0) or 0)
+                                if _ltp > 0:
+                                    return _ltp
                             except Exception:
                                 pass
+
+                            # Fallback: scan all live tick keys, pick nearest strike
                             try:
-                                pe_ltp = float(_pe_tick.get("ltp", 0) or 0)
+                                _keys = await redis.keys(
+                                    f"options:tick:{sym}:*{opt_type}"
+                                )
+                                best_ltp = 0.0
+                                best_dist = float("inf")
+                                for k in _keys:
+                                    try:
+                                        strike_part = k.split(":")[-1].replace(opt_type, "")
+                                        s = float(strike_part)
+                                        dist = abs(s - float(atm_strike))
+                                        _tick = await redis.hgetall(k)
+                                        _ltp = float(_tick.get("ltp", 0) or 0)
+                                        if _ltp > 0 and dist < best_dist:
+                                            best_dist = dist
+                                            best_ltp = _ltp
+                                    except Exception:
+                                        pass
+                                return best_ltp
                             except Exception:
-                                pass
+                                return 0.0
+
+                        ce_ltp = await _find_live_ltp(sym, atm_strike, "CE")
+                        pe_ltp = await _find_live_ltp(sym, atm_strike, "PE")
 
                         # Prev OHLC
                         ce_close = ce_high = ce_low = 0.0
