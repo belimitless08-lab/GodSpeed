@@ -1376,6 +1376,56 @@ async def close_trade_endpoint(trade_id: str, exit_price: Optional[float] = None
     return result
 
 
+@app.get("/api/trades/{trade_id}/ltp")
+async def get_trade_ltp(trade_id: str):
+    """
+    Returns current live LTP + source for an open trade.
+
+    Used by frontend to display real-time position LTP and
+    diagnose whether execution is using LIVE ticks or fallback pricing.
+    """
+    from execution.order_manager import _get_execution_ltp
+
+    redis = await get_redis()
+
+    raw = await redis.get(f"paper:trade:{trade_id}")
+    if not raw:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Trade '{trade_id}' not found"
+        )
+
+    trade_data = json.loads(raw)
+
+    symbol     = trade_data.get("symbol", "")
+    instrument = trade_data.get("instrument", "EQ")
+    atm_strike = trade_data.get("atm_strike")
+    expiry     = trade_data.get("expiry_date")
+
+    try:
+        ltp, source = await _get_execution_ltp(
+            symbol=symbol,
+            instrument=instrument,
+            atm_strike=atm_strike,
+            expiry=expiry,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[api] trade ltp fetch failed trade_id=%s symbol=%s: %s",
+            trade_id,
+            symbol,
+            exc,
+        )
+        ltp, source = 0.0, "ERROR"
+
+    return {
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "ltp": round(float(ltp or 0), 2),
+        "ltp_source": source,
+    }
+
+
 def _parse_trade(t: dict) -> TradeRecord:
     # atm_strike is stored as int but may come back as float/string from Redis
     atm_val = t.get("atm_strike")
