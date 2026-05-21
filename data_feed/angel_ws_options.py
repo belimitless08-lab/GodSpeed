@@ -929,9 +929,27 @@ async def _run_ws_session(session: dict, state: _FeedState) -> None:
         # _ATM_PRIMING handles first-tick baseline for new sessions only.
         for sym in list(_ATM_PRIMING):
             pass  # already in priming set from initial load
-        # Re-add all ATM symbols to priming
+        # Re-add all ATM symbols to priming and clear stale baselines.
+        # Without clearing, CE first tick finds PE's pre-reconnect baseline
+        # already in _ATM_LAST_VOL → priming exits immediately → next PE tick
+        # computes delta against stale baseline → hours of accumulated volume
+        # fires in one shot → massive false RVOL spike after reconnect.
+        _syms_reprimed: set = set()
+
         for tok, entry in _ATM_REGISTRY.items():
-            _ATM_PRIMING.add(entry[0])
+            sym = entry[0]
+            _ATM_PRIMING.add(sym)
+
+            # Clear stale reconnect baselines so both CE/PE re-prime cleanly.
+            _ATM_LAST_VOL.pop(f"{sym}:CE", None)
+            _ATM_LAST_VOL.pop(f"{sym}:PE", None)
+
+            _syms_reprimed.add(sym)
+
+        logger.info(
+            "[options_ws] ATM priming reset — symbols=%d baselines_cleared",
+            len(_syms_reprimed),
+        )
 
         # Subscribe all static ATM tokens (separate from brain subscriptions)
         if _ATM_REGISTRY:

@@ -71,6 +71,9 @@ _TICK_MAX_AGE_S: int = 60
 _SL_MONITOR_INTERVAL_S:  int = 1
 _UNRL_UPDATE_INTERVAL_S: int = 10
 
+_sl_dwell_counts: dict = {}
+_tp_dwell_counts: dict = {}
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -868,16 +871,42 @@ async def monitor_stop_losses() -> None:
                 sl = _safe_float(trade.get("stop_loss"))
                 direction = trade.get("direction", "LONG")
 
-                sl_hit = (
-                    (direction == "LONG"  and ltp <= sl) or
-                    (direction == "SHORT" and ltp >= sl)
-                )
-
                 tp = _safe_float(trade.get("take_profit"))
-                tp_hit = tp > 0 and (
-                    (direction == "LONG"  and ltp >= tp) or
-                    (direction == "SHORT" and ltp <= tp)
-                )
+                _id = trade.get("trade_id", trade.get("id", ""))
+
+                # Dwell filter — avoid single-tick wick exits.
+                if direction == "LONG":
+                    if ltp <= sl:
+                        _sl_dwell_counts[_id] = (
+                            _sl_dwell_counts.get(_id, 0) + 1
+                        )
+                    else:
+                        _sl_dwell_counts[_id] = 0
+
+                    if tp > 0 and ltp >= tp:
+                        _tp_dwell_counts[_id] = (
+                            _tp_dwell_counts.get(_id, 0) + 1
+                        )
+                    else:
+                        _tp_dwell_counts[_id] = 0
+
+                else:
+                    if ltp >= sl:
+                        _sl_dwell_counts[_id] = (
+                            _sl_dwell_counts.get(_id, 0) + 1
+                        )
+                    else:
+                        _sl_dwell_counts[_id] = 0
+
+                    if tp > 0 and ltp <= tp:
+                        _tp_dwell_counts[_id] = (
+                            _tp_dwell_counts.get(_id, 0) + 1
+                        )
+                    else:
+                        _tp_dwell_counts[_id] = 0
+
+                sl_hit = _sl_dwell_counts.get(_id, 0) >= 3
+                tp_hit = tp > 0 and _tp_dwell_counts.get(_id, 0) >= 2
 
                 if sl_hit:
                     logger.info(
@@ -958,14 +987,41 @@ async def monitor_stop_losses_event_driven() -> None:
                         tp = _safe_float(trade.get("take_profit"))
                         direction = trade.get("direction", "LONG")
 
-                        sl_hit = (
-                            (direction == "LONG"  and tick_ltp <= sl) or
-                            (direction == "SHORT" and tick_ltp >= sl)
-                        )
-                        tp_hit = tp > 0 and (
-                            (direction == "LONG"  and tick_ltp >= tp) or
-                            (direction == "SHORT" and tick_ltp <= tp)
-                        )
+                        _id = trade.get("trade_id", trade.get("id", ""))
+
+                        # Dwell filter — avoid single-tick wick exits.
+                        if direction == "LONG":
+                            if tick_ltp <= sl:
+                                _sl_dwell_counts[_id] = (
+                                    _sl_dwell_counts.get(_id, 0) + 1
+                                )
+                            else:
+                                _sl_dwell_counts[_id] = 0
+
+                            if tp > 0 and tick_ltp >= tp:
+                                _tp_dwell_counts[_id] = (
+                                    _tp_dwell_counts.get(_id, 0) + 1
+                                )
+                            else:
+                                _tp_dwell_counts[_id] = 0
+
+                        else:
+                            if tick_ltp >= sl:
+                                _sl_dwell_counts[_id] = (
+                                    _sl_dwell_counts.get(_id, 0) + 1
+                                )
+                            else:
+                                _sl_dwell_counts[_id] = 0
+
+                            if tp > 0 and tick_ltp <= tp:
+                                _tp_dwell_counts[_id] = (
+                                    _tp_dwell_counts.get(_id, 0) + 1
+                                )
+                            else:
+                                _tp_dwell_counts[_id] = 0
+
+                        sl_hit = _sl_dwell_counts.get(_id, 0) >= 3
+                        tp_hit = tp > 0 and _tp_dwell_counts.get(_id, 0) >= 2
 
                         if sl_hit:
                             logger.info(
