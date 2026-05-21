@@ -345,8 +345,13 @@ async def _flush_candle_to_redis(
         snapshot_mapping["is_index"] = "1"
 
     # Save previous supertrend direction for flip detection
-    prev_dir  = await redis.hget(f"snapshot:{symbol}", "supertrend_dir")
-    prev_band = await redis.hget(f"snapshot:{symbol}", "supertrend_band")
+    _prev_vals = await redis.hmget(
+        f"snapshot:{symbol}",
+        "supertrend_dir",
+        "supertrend_band"
+    )
+    prev_dir  = _prev_vals[0]
+    prev_band = _prev_vals[1]
     if prev_dir:
         await redis.set(
             f"snapshot_prev:{symbol}",
@@ -553,6 +558,9 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
     5. Merge into TF accumulators, check TF closes
     """
     global _candles_closed_since_last_log
+
+    import time as _time
+    _t0 = _time.perf_counter()
 
     try:
         redis = await get_redis()
@@ -988,6 +996,14 @@ async def _on_candle_close(symbol: str, closed: dict[str, Any], new_minute: str)
         })
     except Exception as e:
         logger.exception("[candle_builder] _on_candle_close failed for %s: %s", symbol, e)
+    finally:
+        _elapsed = (_time.perf_counter() - _t0) * 1000
+        if _elapsed > 250:
+            logger.warning(
+                "[slow_candle_close] sym=%s took=%.1fms",
+                symbol,
+                _elapsed,
+            )
 
 
 # ---------------------------------------------------------------------------
