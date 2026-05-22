@@ -3007,8 +3007,8 @@ function handleTickUpdate(data) {
   // Route option ticks separately from equity ticks
   if (data._source === "options" && data.symbol && data.strike && data.type) {
     const key = `${data.symbol}:${data.strike}${data.type}`;
-    state.optionTicks[key] = data;
-    return;  // option ticks don't participate in equity state / chart / tiles
+    state.optionTicks[key] = { ...data, _ts: Date.now() };
+    return;
   }
 
   // Equity / index tick (existing behavior preserved)
@@ -3019,6 +3019,61 @@ function handleTickUpdate(data) {
   // Update index tiles
   const tile = document.querySelector(`[data-sym="${data.symbol}"]`);
   if (tile) { /* update inline */ }
+}
+
+/* ── Shared open-position LTP recovery poller (Web + Mobile) ──
+   Purpose:
+   If websocket ticks are missing/stale for an option token,
+   poll backend execution LTP and inject into shared state.optionTicks
+   so BOTH web + mobile UIs recover automatically.
+*/
+if (!window._sharedLtpPollerActive) {
+  window._sharedLtpPollerActive = true;
+  window._sharedLtpPollerInFlight = false;
+
+  setInterval(async () => {
+    if (window._sharedLtpPollerInFlight) return;
+    if (!state.openTrades || state.openTrades.length === 0) return;
+
+    window._sharedLtpPollerInFlight = true;
+
+    try {
+      for (const t of state.openTrades) {
+        if (t.instrument !== 'CE' && t.instrument !== 'PE') continue;
+
+        const strikeVal = t.atm_strike || t.strike;
+        if (!strikeVal) continue;
+
+        const key = `${t.symbol}:${strikeVal}${t.instrument}`;
+
+        // If websocket tick is already healthy (<10s), skip REST poll.
+        const existingTick = state.optionTicks?.[key];
+        const tickAgeMs = existingTick?._ts
+          ? (Date.now() - existingTick._ts)
+          : Infinity;
+
+        if (tickAgeMs < 10000) continue;
+
+        try {
+          const res = await fetch(`/api/trades/${t.id}/ltp`);
+          if (!res.ok) continue;
+          const data = await res.json();
+          if (!data?.ltp || data.ltp <= 0) continue;
+
+          if (!state.optionTicks) state.optionTicks = {};
+          state.optionTicks[key] = {
+            ltp: data.ltp,
+            _source: data.ltp_source,
+            _ts: Date.now(),
+          };
+        } catch (err) {
+          console.warn('[ltp_poller]', t.symbol, err);
+        }
+      }
+    } finally {
+      window._sharedLtpPollerInFlight = false;
+    }
+  }, 3000);
 }
 
 /* ── 100ms render loop: live LTP + PnL in positions drawer ── */
