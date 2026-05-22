@@ -160,12 +160,28 @@ async def _get_execution_ltp(
     ts_raw = tick.get("ts", "")
 
     if ltp > 0:
-        age_sec = (_now_ist() - _parse_ts(ts_raw)).total_seconds() if ts_raw else 999999
+        age_sec = (
+            (_now_ist() - _parse_ts(ts_raw)).total_seconds()
+            if ts_raw else 999999
+        )
+
         # Tier 1: Live fresh tick (age < 10s)
         if age_sec < 10:
             return ltp, "LIVE_WS"
-        # Tier 2: Stale but usable
-        return ltp, "LAST_CLOSE"
+
+        # Tier 2: Stale but recent — usable (10s–120s)
+        if age_sec < 120:
+            return ltp, "LAST_CLOSE"
+
+        # Tier 2.5: Too old (>120s) — reject and fall through to REST.
+        # A multi-hour/day old Redis key is not a valid price source.
+        logger.warning(
+            "[order_manager] Stale tick rejected — key=%s "
+            "age=%.0fs ltp=%.2f falling through to REST",
+            tick_key,
+            age_sec,
+            ltp,
+        )
 
     # ── Tier 1.5: Short bounded wait for fresh WS tick on CE/PE ─────────
     # TEMPORARY: this bounded fallback keeps execution latency predictable.
