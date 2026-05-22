@@ -609,6 +609,7 @@ async def _write_options_tick(redis, contract: Contract, tick: dict) -> None:
         "ts":            ts,
         "updated_at_ts": str(time.time()),
     })
+    await redis.expire(redis_key, 43200)  # 12h — expires well before next session
 
     pub_payload = json.dumps({
         "_source": "options",

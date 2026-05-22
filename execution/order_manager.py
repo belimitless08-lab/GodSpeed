@@ -169,15 +169,15 @@ async def _get_execution_ltp(
         if age_sec < 10:
             return ltp, "LIVE_WS"
 
-        # Tier 2: Stale but recent — usable (10s–120s)
+        # Tier 2: Stale but recent (10s–120s) — usable
         if age_sec < 120:
             return ltp, "LAST_CLOSE"
 
-        # Tier 2.5: Too old (>120s) — reject and fall through to REST.
-        # A multi-hour/day old Redis key is not a valid price source.
+        # Tier 2.5: Too old (>120s) — reject, fall through to REST
+        # Prevents 42-hour-old Redis keys from being used as execution price.
         logger.warning(
-            "[order_manager] Stale tick rejected — key=%s "
-            "age=%.0fs ltp=%.2f falling through to REST",
+            "[order_manager] Stale tick rejected — key=%s age=%.0fs "
+            "ltp=%.2f falling through to REST",
             tick_key,
             age_sec,
             ltp,
