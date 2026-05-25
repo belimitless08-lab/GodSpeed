@@ -1281,7 +1281,7 @@ def _parse_signal(raw: dict) -> SignalData:
         stop_loss=_sf(raw, "stop_loss"),
         choppiness_class=raw.get("choppiness_class", "NEUTRAL"),
         supertrend_dir=raw.get("supertrend_dir", "BULL"),
-        detected_at=raw.get("detected_at", ""),
+        detected_at=raw.get("detected_at", "") or raw.get("published_at", ""),
     )
 
 
