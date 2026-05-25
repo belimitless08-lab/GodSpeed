@@ -2191,12 +2191,6 @@ function renderSignalRow(sig) {
         <span class="sig-chg" style="color:${chgColor};">${displayChg}</span>
       </div>
     </div>
-    <div class="sig-time" style="font-size:9px;color:var(--muted);
-         text-align:right;padding:1px 8px 2px;letter-spacing:0.03em;">
-      ${sig.detected_at
-          ? sig.detected_at.substring(11,16)
-          : ''}
-    </div>
     <div class="sig-t2">
       ${sig.ici_score != null ? `<span class="sig-badge" style="color:${gradeColor};border-color:${gradeColor};">${sig.ici_grade === 'EXECUTE' ? '✅ EXEC' : sig.ici_grade === 'WATCHLIST' ? '👁 WATCH' : sig.ici_grade} ${Math.round(sig.ici_score)}</span>` : ''}
       <span class="sig-badge" style="color:${dirColor};border-color:${dirColor};">${dirArrow} ${sig.direction}</span>
@@ -2387,6 +2381,7 @@ function normalizeRealtimeSignal(payload) {
     pe_tradability:   opts.pe_tradability || badge.pe_tradability || payload.pe_tradability || 'NONE',
     entry_price:      sig.trigger  || payload.entry_price  || 0,
     published_at:     payload.published_at || '',
+    detected_at:      payload.published_at || payload.detected_at || '',
     ltp:              payload.ltp        ?? null,
     change_pct:       payload.change_pct ?? null,
     vwap:             payload.vwap       ?? null,
