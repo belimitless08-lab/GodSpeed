@@ -2113,6 +2113,7 @@ const SIGNAL_TYPES = [
 ];
 
 let signalData = {};
+window.signalData = signalData;
 let _marketLevels = {};   // {symbol: {prev_high, prev_low, r1, s1, ...}}
 let _activeFilter = null; // current active filter key
 let _signalSort = 'score';  // 'score' | 'change'
@@ -2402,9 +2403,11 @@ function injectSignal(payload) {
 
   if (!signalData[key]) signalData[key] = [];
   signalData[key].unshift(signal);
+  window.signalData = signalData;
 
   if (signalData[key].length > 50) {
     signalData[key] = signalData[key].slice(0, 15);
+    window.signalData = signalData;
   }
 
   if (signal.ici_score != null &&
@@ -2500,6 +2503,7 @@ async function fetchSignals() {
     // Only overwrite realtime WebSocket signals if API returned something
     if (Object.keys(grouped).length > 0) {
       signalData = grouped;
+      window.signalData = signalData;
       window._symbolIciMap = iciMap;
       renderSignalCards(grouped);
     }
@@ -4835,9 +4839,11 @@ function renderMobilePositions() {
 
 async function fetchMobileHistory() {
   try {
-    const res = await fetch('/api/trades/history');
-    const data = await res.json();
-    window._mobileHistoryData = Array.isArray(data) ? data : (data.trades || []);
+    const data = await apiFetch('/api/trades/closed?limit=50');
+
+    window._mobileHistoryData = Array.isArray(data)
+      ? data
+      : (data.trades || data.closed || []);
     renderMobileHistory();
   } catch(e) {
     document.getElementById('tr-panel-history').innerHTML =
