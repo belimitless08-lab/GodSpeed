@@ -823,13 +823,19 @@
   #ai-section-grid {
     grid-template-columns: 1fr !important;
   }
-  #filter-bar {
-    top: 0 !important;
-  }
-
   #index-bar {
     position: relative !important;
     top: auto !important;
+  }
+
+  .mob-page-section {
+    display: none !important;
+  }
+
+  #account-bar,
+  #history-drawer,
+  .side-drawer {
+    display: none !important;
   }
 
   .section-label {
@@ -906,8 +912,9 @@
   }
   .tr-panel {
     display: none;
-    max-height: 380px;
+    max-height: calc(100vh - 140px);
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
   .tr-panel.active { display: block; }
 
@@ -1054,6 +1061,11 @@
             onclick="switchTR('history',this)">HISTORY</button>
   </div>
   <div id="tr-panel-signals" class="tr-panel active">
+    <div id="tr-signal-filters" style="display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch;">
+      <button class="tr-sig-filter active" data-filter="ALL" onclick="setMobSigFilter('ALL',this)" style="font-size:9px;font-weight:700;padding:3px 12px;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:#000;cursor:pointer;white-space:nowrap;">ALL</button>
+      <button class="tr-sig-filter" data-filter="LONG" onclick="setMobSigFilter('LONG',this)" style="font-size:9px;font-weight:700;padding:3px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;white-space:nowrap;">LONG</button>
+      <button class="tr-sig-filter" data-filter="SHORT" onclick="setMobSigFilter('SHORT',this)" style="font-size:9px;font-weight:700;padding:3px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;white-space:nowrap;">SHORT</button>
+    </div>
     <div id="tr-signals-list">
       <div class="empty-state">
         <div class="empty-icon">📡</div>No active signals
@@ -1080,7 +1092,7 @@
 <!-- ══════════════════════════════════════════
      SECTION 2: MARKET OUTLOOK
 ══════════════════════════════════════════ -->
-<div style="padding: 0 12px;">
+<div class="mob-page-section" style="padding: 0 12px;">
   <div class="section-label">Market Outlook</div>
   <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;" id="outlook-grid">
     <!-- Breadth -->
@@ -1121,7 +1133,7 @@
 
 
 <!-- WATCHLIST -->
-<div style="padding:0 12px; margin-bottom:16px;">
+<div class="mob-page-section" style="padding:0 12px; margin-bottom:16px;">
       <div class="section-label">Watchlist</div>
       <div class="card">
         <div style="padding:8px 12px;border-bottom:1px solid var(--border);position:relative;">
@@ -1152,7 +1164,7 @@
 <!-- ══════════════════════════════════════════
      SECTION: MARKET INTELLIGENCE
 ══════════════════════════════════════════ -->
-<div style="padding:0 12px; margin-bottom:10px;">
+<div class="mob-page-section" style="padding:0 12px; margin-bottom:10px;">
   <div class="section-label">Market Intelligence</div>
   <div id="intelligence-grid">
 
@@ -1240,9 +1252,9 @@ padding:6px 10px 4px;border-bottom:1px solid var(--border);
 <!-- ══════════════════════════════════════════
      SECTION 4: SIGNAL CARDS
 ══════════════════════════════════════════ -->
-<div style="padding: 0 12px;">
+<div class="mob-page-section" style="padding: 0 12px;">
   <div class="section-label">Live Signals</div>
-<div id="filter-bar" style="display:flex;align-items:center;gap:6px;
+<div id="filter-bar" class="mob-page-section" style="display:flex;align-items:center;gap:6px;
   padding:8px 14px 8px;border-top:1px solid var(--border);
   border-bottom:1px solid var(--border);background:var(--bg);
   position:sticky;top:48px;z-index:50;flex-wrap:wrap;">
@@ -1315,7 +1327,7 @@ padding:6px 10px 4px;border-bottom:1px solid var(--border);
 <!-- ══════════════════════════════════════════
      SECTION 3: AI STOCK INTELLIGENCE
 ══════════════════════════════════════════ -->
-<div style="padding: 0 12px;">
+<div class="mob-page-section" style="padding: 0 12px;">
   <div class="section-label">AI Stock Intelligence</div>
   <div id="ai-section-grid" style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
     <div class="card">
@@ -4700,6 +4712,15 @@ function renderMobileSignals() {
     items: Array.isArray(window.signalData[key]) ? window.signalData[key] : []
   }));
 
+  // Apply direction filter
+  if (window._mobSigFilter && window._mobSigFilter !== 'ALL') {
+    groups.forEach(g => {
+      g.items = g.items.filter(s =>
+        (s.direction || s.side || '').toUpperCase() === window._mobSigFilter
+      );
+    });
+  }
+
   const total = groups.reduce((n, g) => n + g.items.length, 0);
   if (!total) {
     el.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div>No active signals</div>';
@@ -4722,42 +4743,79 @@ function renderMobileSignals() {
     maximumFractionDigits: 2
   });
 
-  const html = groups.map(g => {
+  el.innerHTML = groups.map(g => {
     const arr = [...g.items].sort((a, b) => {
       const ta = new Date(a.published_at || a.detected_at || 0).getTime() || 0;
       const tb = new Date(b.published_at || b.detected_at || 0).getTime() || 0;
       return tb - ta;
     });
 
-    const icon = groupMeta[g.key]?.icon || '📈';
+    const icon  = groupMeta[g.key]?.icon  || '📈';
     const label = groupMeta[g.key]?.label || g.key;
 
-    return '<div style="margin-bottom:8px;">' +
-      '<div style="padding:6px 12px 4px;font-size:10px;letter-spacing:0.08em;color:var(--muted);">' +
-        icon + ' ' + label.toUpperCase() + ' (' + arr.length + ')' +
-      '</div>' +
-      (arr.length ? arr.map(sig => {
-        const chg = parseFloat(sig.change_pct || 0);
-        const chgCol = chg >= 0 ? 'var(--green)' : 'var(--red)';
-        const chgStr = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
-        const dir = (sig.direction || sig.side || '--').toString().toUpperCase();
-        const timeStr = fmtTime(sig.published_at || sig.detected_at);
+    if (!arr.length) {
+      return '<div style="margin-bottom:6px;border:1px solid var(--border);border-radius:8px;overflow:hidden;">' +
+        '<div style="padding:7px 12px;background:rgba(255,255,255,0.03);display:flex;justify-content:space-between;align-items:center;">' +
+          '<span style="font-size:10px;font-weight:700;letter-spacing:0.06em;">' + icon + ' ' + label.toUpperCase() + '</span>' +
+          '<span style="font-size:9px;color:var(--muted);background:var(--border);border-radius:8px;padding:1px 7px;">0</span>' +
+        '</div>' +
+        '<div style="padding:8px 12px;font-size:10px;color:var(--muted);">No signals</div>' +
+      '</div>';
+    }
 
-        return '<div style="padding:8px 12px;border-bottom:1px solid var(--border);">' +
-          '<div style="display:grid;grid-template-columns:64px 1fr auto auto auto auto;gap:6px;align-items:center;">' +
-            '<span style="font-size:10px;color:var(--muted);">' + timeStr + '</span>' +
-            '<span style="font-size:12px;font-weight:700;">' + (sig.symbol || '--') + '</span>' +
-            '<span style="font-size:10px;color:var(--text);">' + dir + '</span>' +
-            '<span style="font-size:11px;font-weight:600;">' + fmtLtp(sig.ltp) + '</span>' +
-            '<span style="font-size:10px;color:' + chgCol + ';">' + chgStr + '</span>' +
-            '<button onclick="openPopup(\'' + (sig.symbol || '') + '\',event)" style="background:none;border:none;cursor:pointer;padding:0;color:var(--accent);font-size:12px;">📈</button>' +
-          '</div>' +
-        '</div>';
-      }).join('') : '<div style="padding:4px 12px 8px;font-size:10px;color:var(--muted);">No signals</div>') +
+    const visible = arr.slice(0, 10);
+    const rows = visible.map(sig => {
+      const chg    = parseFloat(sig.change_pct || 0);
+      const chgCol = chg >= 0 ? 'var(--green)' : 'var(--red)';
+      const chgStr = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
+      const dir    = (sig.direction || sig.side || '').toString().toUpperCase();
+      const dirCol = dir === 'LONG' ? 'var(--green)' : dir === 'SHORT' ? 'var(--red)' : 'var(--muted)';
+      const timeStr = fmtTime(sig.published_at || sig.detected_at);
+
+      return '<div style="padding:7px 12px;border-bottom:1px solid rgba(255,255,255,0.04);">' +
+        '<div style="display:grid;grid-template-columns:52px 1fr auto auto auto auto;gap:4px;align-items:center;">' +
+          '<span style="font-size:9px;color:var(--muted);">'                                        + timeStr                   + '</span>' +
+          '<span style="font-size:12px;font-weight:700;">'                                          + (sig.symbol || '--')      + '</span>' +
+          '<span style="font-size:9px;font-weight:700;color:' + dirCol + ';">'                      + dir                       + '</span>' +
+          '<span style="font-size:10px;font-weight:600;">'                                          + fmtLtp(sig.ltp)            + '</span>' +
+          '<span style="font-size:9px;color:' + chgCol + ';">'                                      + chgStr                    + '</span>' +
+          '<button onclick="openPopup(\'' + (sig.symbol || '') + '\',event)" ' +
+            'style="background:none;border:none;cursor:pointer;padding:0;color:var(--accent);font-size:11px;">📈</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    const moreCount = arr.length - visible.length;
+    const moreRow = moreCount > 0
+      ? '<div style="padding:6px 12px;font-size:9px;color:var(--muted);text-align:center;">' +
+          '+ ' + moreCount + ' more — scroll up' +
+        '</div>'
+      : '';
+
+    return '<div style="margin-bottom:6px;border:1px solid var(--border);border-radius:8px;overflow:hidden;">' +
+      '<div style="padding:7px 12px;background:rgba(255,255,255,0.03);display:flex;justify-content:space-between;align-items:center;">' +
+        '<span style="font-size:10px;font-weight:700;letter-spacing:0.06em;">' + icon + ' ' + label.toUpperCase() + '</span>' +
+        '<span style="font-size:9px;color:var(--muted);background:var(--border);border-radius:8px;padding:1px 7px;">' + arr.length + '</span>' +
+      '</div>' +
+      '<div style="max-height:300px;overflow-y:auto;-webkit-overflow-scrolling:touch;">' +
+        rows + moreRow +
+      '</div>' +
     '</div>';
   }).join('');
+}
 
-  el.innerHTML = html;
+window._mobSigFilter = 'ALL';
+function setMobSigFilter(f, btn) {
+  window._mobSigFilter = f;
+  document.querySelectorAll('.tr-sig-filter').forEach(b => {
+    b.style.background   = 'transparent';
+    b.style.color        = 'var(--muted)';
+    b.style.borderColor  = 'var(--border)';
+  });
+  btn.style.background  = 'var(--accent)';
+  btn.style.color       = '#000';
+  btn.style.borderColor = 'var(--accent)';
+  renderMobileSignals();
 }
 
 window.addEventListener('load', function() {
