@@ -4772,10 +4772,10 @@ function renderMobilePositions() {
     '</div>';
     html += open.map(t => {
       const optKey = t.symbol + ':' + (t.atm_strike||t.strike||'') + (t.instrument||'');
-      const tick   = state.optionTicks?.[optKey];
-      const ltp = state.optionTicks?.[optKey]
-  || state.positionLtpCache?.[t.id]
-  || t.entry_price;
+      const isOpt  = (t.instrument === 'CE' || t.instrument === 'PE');
+      const ltp = isOpt
+        ? (state.optionTicks?.[optKey]?.ltp || state.positionLtpCache?.[t.id] || t.entry_price)
+        : (state.ticks?.[t.symbol]?.ltp    || state.positionLtpCache?.[t.id] || t.entry_price);
       const mult   = t.direction === 'LONG' ? 1 : -1;
       const pnl    = (ltp - (t.entry_price||0)) * (t.quantity||0) * mult;
       const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
@@ -4800,6 +4800,8 @@ function renderMobilePositions() {
         '</div>' +
         '<div style="font-size:10px;color:var(--muted);margin-top:2px;">' +
           'SL ₹' + (t.stop_loss||0) + '  TG ₹' + (t.take_profit||0) +
+          (t.lots ? '  •  ' + t.lots + ' lots (' + (t.quantity||'') + ' qty)' : '') +
+          (t.entry_ts ? '  •  ' + new Date(t.entry_ts).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : '') +
         '</div>' +
       '</div>';
     }).join('');
@@ -4826,9 +4828,13 @@ function renderMobilePositions() {
             'onclick="mobileCancelOne(\'' + (o.id||o.order_id) + '\',\'' + (o.symbol||'') + '\')">✕</span>' +
         '</div>' +
         '<div style="font-size:10px;color:orange;margin-top:2px;">Trigger ₹' +
-          (o.trigger_price||o.entry_price||0) + '</div>' +
+          (o.trigger_price||o.entry_price||0) +
+          (o.created_at ? '  •  ' + new Date(o.created_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : '') +
+        '</div>' +
         '<div style="font-size:10px;color:var(--muted);margin-top:1px;">' +
-          'SL ₹' + (o.stop_loss||0) + '  TG ₹' + (o.take_profit||0) +
+          'SL ' + (o.sl_pct||o.stop_loss||0) + (o.sl_pct ? '%' : ' ₹') +
+          '  TG ' + (o.tg_pct||o.take_profit||0) + (o.tg_pct ? '%' : ' ₹') +
+          (o.lots ? '  •  ' + o.lots + ' lots' : '') +
         '</div>' +
       '</div>'
     ).join('');
@@ -4881,7 +4887,9 @@ function renderMobileHistory() {
       '<div style="display:flex;justify-content:space-between;margin-top:2px;">' +
         '<span style="font-size:10px;color:var(--muted);">₹' +
           (t.entry_price||0) + ' → ₹' + (t.exit_price||0) + '</span>' +
-        '<span style="font-size:10px;color:var(--muted);">' + icon + ' ' + reason + '</span>' +
+        '<span style="font-size:10px;color:var(--muted);">' + icon + ' ' + reason +
+          (t.exit_ts ? ' ' + new Date(t.exit_ts).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : '') +
+        '</span>' +
       '</div>' +
     '</div>';
   }).join('');
