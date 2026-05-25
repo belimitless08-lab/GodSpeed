@@ -3022,10 +3022,9 @@ function handleTickUpdate(data) {
 }
 
 /* ── Shared open-position LTP recovery poller (Web + Mobile) ──
-   Purpose:
-   If websocket ticks are missing/stale for an option token,
-   poll backend execution LTP and inject into shared state.optionTicks
-   so BOTH web + mobile UIs recover automatically.
+   Polls /api/trades/{id}/ltp when WebSocket tick is missing or stale (>10s).
+   Injects result into shared state.optionTicks so both web and mobile
+   render loops update automatically without any UI layer changes.
 */
 if (!window._sharedLtpPollerActive) {
   window._sharedLtpPollerActive = true;
@@ -3044,18 +3043,20 @@ if (!window._sharedLtpPollerActive) {
         const strikeVal = t.atm_strike || t.strike;
         if (!strikeVal) continue;
 
+        const tradeId = t.id || t.trade_id;
+        if (!tradeId) continue;
+
         const key = `${t.symbol}:${strikeVal}${t.instrument}`;
 
-        // If websocket tick is already healthy (<10s), skip REST poll.
+        // Skip if WebSocket tick is fresh (<10s)
         const existingTick = state.optionTicks?.[key];
         const tickAgeMs = existingTick?._ts
           ? (Date.now() - existingTick._ts)
           : Infinity;
-
         if (tickAgeMs < 10000) continue;
 
         try {
-          const res = await fetch(`/api/trades/${t.id}/ltp`);
+          const res = await fetch(`/api/trades/${tradeId}/ltp`);
           if (!res.ok) continue;
           const data = await res.json();
           if (!data?.ltp || data.ltp <= 0) continue;

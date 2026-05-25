@@ -428,11 +428,13 @@ async def _accumulate_atm(redis, token: str, ltp: float, volume: int) -> None:
         logger.warning(
             "[atm_delta_spike] sym=%s type=%s "
             "volume=%s last=%s delta=%s "
-            "ltp=%s priming=%s",
+            "ltp=%s priming=%s — REJECTED",
             sym, opt_type,
             volume, last, delta_vol,
             ltp, sym in _ATM_PRIMING,
         )
+        _ATM_LAST_VOL[cache_key] = volume  # advance baseline so next tick is clean
+        return                              # do not accumulate this spike
 
     try:
         await redis.incrbyfloat(
@@ -609,6 +611,7 @@ async def _write_options_tick(redis, contract: Contract, tick: dict) -> None:
         "ts":            ts,
         "updated_at_ts": str(time.time()),
     })
+    await redis.expire(redis_key, 43200)  # 12h — expires well before next session
 
     pub_payload = json.dumps({
         "_source": "options",
