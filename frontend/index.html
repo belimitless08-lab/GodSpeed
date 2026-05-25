@@ -570,7 +570,7 @@
       flex-wrap: nowrap;
     }
     #outlook-grid { grid-template-columns: 1fr !important; }
-    #chart-popup { width: 95vw !important; left: 2.5vw !important; }
+    #chart-popup { width: 95vw !important; max-height: 80vh !important; }
     .signal-row { grid-template-columns: 70px 44px 1fr 50px 60px 24px; }
     #action-bar, #action-bar > div {
       flex-wrap: wrap;
@@ -2882,6 +2882,21 @@ function positionPopup(e) {
   if (y + ph > vh - 8) y = vh - ph - 8;
   if (y < 70) y = 70;
   if (x < 8) x = 8;
+  if (window.innerWidth <= 768) {
+    const popupWidth =
+      Math.min(window.innerWidth * 0.95, 700);
+
+    const popupHeight =
+      Math.min(window.innerHeight * 0.80, 600);
+
+    x = Math.round(
+      (window.innerWidth - popupWidth) / 2
+    );
+
+    y = Math.round(
+      (window.innerHeight - popupHeight) / 2
+    );
+  }
   popup.style.left = x + 'px';
   popup.style.top  = y + 'px';
 }
@@ -4663,58 +4678,87 @@ function renderMobileSignals() {
   if (window.innerWidth > 768) return;
   const el = document.getElementById('tr-signals-list');
   if (!el || !window.signalData) return;
-  const allSigs = Object.values(window.signalData || {})
-    .flatMap(v => Array.isArray(v) ? v : [])
-    .sort((a, b) => (b.ici_score || 0) - (a.ici_score || 0))
-    .slice(0, 10);
-  if (!allSigs.length) {
-    el.innerHTML = '<div class="empty-state">' +
-      '<div class="empty-icon">📡</div>No active signals</div>';
+
+  const groupOrder = [
+    'opening_drive',
+    'range_breakout',
+    'hourly_breakout',
+    'choppiness_break',
+    'supertrend_flip'
+  ];
+
+  const groupMeta = {
+    opening_drive: { icon: '🚀', label: 'Opening Drive' },
+    range_breakout: { icon: '📦', label: 'Range Breakout' },
+    hourly_breakout: { icon: '⏰', label: 'Hourly Breakout' },
+    choppiness_break: { icon: '🌀', label: 'Choppiness Break' },
+    supertrend_flip: { icon: '📈', label: 'Supertrend Flip' }
+  };
+
+  const groups = groupOrder.map(key => ({
+    key,
+    items: Array.isArray(window.signalData[key]) ? window.signalData[key] : []
+  }));
+
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+  if (!total) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div>No active signals</div>';
     return;
   }
-  el.innerHTML = allSigs.map(sig => {
-    const chg    = sig.change_pct || 0;
-    const chgCol = chg >= 0 ? 'var(--green)' : 'var(--red)';
-    const chgStr = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
-    const ltp    = (sig.ltp || 0).toLocaleString('en-IN',
-                   {minimumFractionDigits:2, maximumFractionDigits:2});
 
-    /* Build one-line insight badge from available signal fields */
-    const badges = [];
-    if (sig.rvol && sig.rvol > 1.5)
-      badges.push('RVOL ' + sig.rvol.toFixed(1) + 'x');
-    if (sig.supertrend_dir)
-      badges.push('ST ' + sig.supertrend_dir);
-    if (sig.vwap_position)
-      badges.push('VWAP ' + sig.vwap_position);
-    if (sig.ici_score)
-      badges.push('ICI ' + sig.ici_score);
-    const badgeLine = badges.slice(0, 2).join(' • ');
+  const fmtTime = ts => {
+    if (!ts) return '--';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return '--';
+    return d.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  };
 
-    return `<div style="padding:8px 12px;
-                        border-bottom:1px solid var(--border);">
-      <div style="display:flex;justify-content:space-between;
-                  align-items:center;">
-        <span style="font-weight:700;font-size:12px;">${sig.symbol}</span>
-        <span style="display:flex;align-items:center;gap:6px;">
-          <span style="font-size:11px;font-weight:600;">₹${ltp}</span>
-          <button onclick="openPopup('${sig.symbol}',event)"
-            style="background:none;border:none;cursor:pointer;padding:0;
-                   color:var(--accent);font-size:12px;opacity:0.7;">📈</button>
-        </span>
-      </div>
-      <div style="display:flex;justify-content:space-between;
-                  align-items:center;margin-top:3px;">
-        <span style="font-size:9px;color:var(--muted);">
-          ${badgeLine || (sig.signal_type || '')}
-        </span>
-        <span style="font-size:10px;color:${chgCol};">${chgStr}</span>
-      </div>
-    </div>`;
+  const fmtLtp = v => '₹' + Number(v || 0).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+
+  const html = groups.map(g => {
+    const arr = [...g.items].sort((a, b) => {
+      const ta = new Date(a.published_at || a.detected_at || 0).getTime() || 0;
+      const tb = new Date(b.published_at || b.detected_at || 0).getTime() || 0;
+      return tb - ta;
+    });
+
+    const icon = groupMeta[g.key]?.icon || '📈';
+    const label = groupMeta[g.key]?.label || g.key;
+
+    return '<div style="margin-bottom:8px;">' +
+      '<div style="padding:6px 12px 4px;font-size:10px;letter-spacing:0.08em;color:var(--muted);">' +
+        icon + ' ' + label.toUpperCase() + ' (' + arr.length + ')' +
+      '</div>' +
+      (arr.length ? arr.map(sig => {
+        const chg = parseFloat(sig.change_pct || 0);
+        const chgCol = chg >= 0 ? 'var(--green)' : 'var(--red)';
+        const chgStr = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
+        const dir = (sig.direction || sig.side || '--').toString().toUpperCase();
+        const timeStr = fmtTime(sig.published_at || sig.detected_at);
+
+        return '<div style="padding:8px 12px;border-bottom:1px solid var(--border);">' +
+          '<div style="display:grid;grid-template-columns:64px 1fr auto auto auto auto;gap:6px;align-items:center;">' +
+            '<span style="font-size:10px;color:var(--muted);">' + timeStr + '</span>' +
+            '<span style="font-size:12px;font-weight:700;">' + (sig.symbol || '--') + '</span>' +
+            '<span style="font-size:10px;color:var(--text);">' + dir + '</span>' +
+            '<span style="font-size:11px;font-weight:600;">' + fmtLtp(sig.ltp) + '</span>' +
+            '<span style="font-size:10px;color:' + chgCol + ';">' + chgStr + '</span>' +
+            '<button onclick="openPopup('\'' + (sig.symbol || '') + '\'',event)" style="background:none;border:none;cursor:pointer;padding:0;color:var(--accent);font-size:12px;">📈</button>' +
+          '</div>' +
+        '</div>';
+      }).join('') : '<div style="padding:4px 12px 8px;font-size:10px;color:var(--muted);">No signals</div>') +
+    '</div>';
   }).join('');
+
+  el.innerHTML = html;
 }
-
-
 
 window.addEventListener('load', function() {
   if (window.innerWidth > 768) return;
@@ -4779,8 +4823,19 @@ function renderMobilePositions() {
       const mult   = t.direction === 'LONG' ? 1 : -1;
       const pnl    = (ltp - (t.entry_price||0)) * (t.quantity||0) * mult;
       const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-      const pnlStr = (pnl >= 0 ? '+' : '') + '₹' +
-                     Math.abs(pnl).toLocaleString('en-IN',{maximumFractionDigits:0});
+      const pnlPct = t.entry_price > 0
+        ? ((pnl / (t.entry_price * (t.quantity || 1))) * 100).toFixed(1)
+        : '0.0';
+      const pnlStr =
+        (pnl >= 0 ? '+' : '') +
+        '₹' +
+        Math.abs(pnl).toLocaleString('en-IN', {
+          maximumFractionDigits: 0
+        }) +
+        ' (' +
+        (pnl >= 0 ? '+' : '') +
+        pnlPct +
+        '%)';
       const ltpStr = '₹' + parseFloat(ltp).toLocaleString('en-IN',
                      {minimumFractionDigits:2,maximumFractionDigits:2});
       return '<div style="padding:8px 12px;border-bottom:1px solid var(--border);">' +
@@ -4801,7 +4856,19 @@ function renderMobilePositions() {
         '<div style="font-size:10px;color:var(--muted);margin-top:2px;">' +
           'SL ₹' + (t.stop_loss||0) + '  TG ₹' + (t.take_profit||0) +
           (t.lots ? '  •  ' + t.lots + ' lots (' + (t.quantity||'') + ' qty)' : '') +
-          (t.entry_ts ? '  •  ' + new Date(t.entry_ts).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : '') +
+          (t.entry_ts
+            ? '  •  ' +
+              new Date(t.entry_ts).toLocaleDateString('en-IN', {
+                day:'numeric',
+                month:'short'
+              }) +
+              ' • ' +
+              new Date(t.entry_ts).toLocaleTimeString('en-IN', {
+                hour:'2-digit',
+                minute:'2-digit',
+                hour12:true
+              })
+            : '') +
         '</div>' +
       '</div>';
     }).join('');
@@ -4829,7 +4896,12 @@ function renderMobilePositions() {
         '</div>' +
         '<div style="font-size:10px;color:orange;margin-top:2px;">Trigger ₹' +
           (o.trigger_price||o.entry_price||0) +
-          (o.created_at ? '  •  ' + new Date(o.created_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : '') +
+          (o.created_at
+            ? '  •  ' +
+              new Date(o.created_at).toLocaleDateString('en-IN', { day:'numeric', month:'short' }) +
+              ' • ' +
+              new Date(o.created_at).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', hour12:true })
+            : '') +
         '</div>' +
         '<div style="font-size:10px;color:var(--muted);margin-top:1px;">' +
           'SL ' + (o.sl_pct||o.stop_loss||0) + (o.sl_pct ? '%' : ' ₹') +
@@ -4872,8 +4944,25 @@ function renderMobileHistory() {
   el.innerHTML = trades.slice(0, 20).map(t => {
     const pnl    = parseFloat(t.pnl_abs ?? t.pnl ?? t.realized_pnl ?? 0);
     const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-    const pnlStr = (pnl >= 0 ? '+' : '') + '₹' +
-                   Math.abs(pnl).toLocaleString('en-IN',{maximumFractionDigits:0});
+    const pnlPct =
+      t.pnl_pct != null
+        ? parseFloat(t.pnl_pct).toFixed(1)
+        : null;
+
+    const pnlStr =
+      (pnl >= 0 ? '+' : '') +
+      '₹' +
+      Math.abs(pnl).toLocaleString('en-IN', {
+        maximumFractionDigits: 0
+      }) +
+      (
+        pnlPct != null
+          ? ' (' +
+            (pnl >= 0 ? '+' : '') +
+            pnlPct +
+            '%)'
+          : ''
+      );
     const reason = t.exit_reason || t.reason || '';
     const icon   = reason.includes('PROFIT') ? '✅' :
                    reason.includes('LOSS')   ? '❌' : '⏹';
@@ -4886,9 +4975,17 @@ function renderMobileHistory() {
       '</div>' +
       '<div style="display:flex;justify-content:space-between;margin-top:2px;">' +
         '<span style="font-size:10px;color:var(--muted);">₹' +
-          (t.entry_price||0) + ' → ₹' + (t.exit_price||0) + '</span>' +
+          (t.entry_price||0) + ' → ₹' + (t.exit_price||0) +
+          (t.lots
+            ? ' • ' + t.lots + ' lots (' + (t.quantity || 0) + ' qty)'
+            : ' • Qty ' + (t.quantity || 0)) + '</span>' +
         '<span style="font-size:10px;color:var(--muted);">' + icon + ' ' + reason +
-          (t.exit_ts ? ' ' + new Date(t.exit_ts).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : '') +
+          (t.exit_ts
+            ? ' ' +
+              new Date(t.exit_ts).toLocaleDateString('en-IN', { day:'numeric', month:'short' }) +
+              ' • ' +
+              new Date(t.exit_ts).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', hour12:true })
+            : '') +
         '</span>' +
       '</div>' +
     '</div>';
