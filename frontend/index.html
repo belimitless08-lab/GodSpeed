@@ -4750,7 +4750,7 @@ function renderMobileSignals() {
             '<span style="font-size:10px;color:var(--text);">' + dir + '</span>' +
             '<span style="font-size:11px;font-weight:600;">' + fmtLtp(sig.ltp) + '</span>' +
             '<span style="font-size:10px;color:' + chgCol + ';">' + chgStr + '</span>' +
-            '<button onclick="openPopup('\'' + (sig.symbol || '') + '\'',event)" style="background:none;border:none;cursor:pointer;padding:0;color:var(--accent);font-size:12px;">📈</button>' +
+            '<button onclick="openPopup(\'' + (sig.symbol || '') + '\',event)" style="background:none;border:none;cursor:pointer;padding:0;color:var(--accent);font-size:12px;">📈</button>' +
           '</div>' +
         '</div>';
       }).join('') : '<div style="padding:4px 12px 8px;font-size:10px;color:var(--muted);">No signals</div>') +
