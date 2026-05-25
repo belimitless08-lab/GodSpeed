@@ -3752,9 +3752,8 @@ async function fetchPositions() {
     renderMobilePositions();
     const _trTab = document.getElementById('tr-positions-tab');
     if (_trTab) {
-      const _pCount = (state.pendingOrders?.length || 0);
-      const _total  = trades.length + _pCount;
-      _trTab.textContent = 'POSITIONS' + (_total ? ' (' + _total + ')' : '');
+      const _openCount = trades.length;
+      _trTab.textContent = 'POSITIONS' + (_openCount ? ' (' + _openCount + ')' : '');
     }
 }
 
@@ -3952,8 +3951,7 @@ async function fetchPendingOrders() {
     const _trTab2 = document.getElementById('tr-positions-tab');
     if (_trTab2) {
       const _oCount = (state.openTrades?.length || 0);
-      const _total2 = _oCount + orders.length;
-      _trTab2.textContent = 'POSITIONS' + (_total2 ? ' (' + _total2 + ')' : '');
+      _trTab2.textContent = 'POSITIONS' + (_oCount ? ' (' + _oCount + ')' : '');
     }
     renderPendingOrders(orders);
     document.getElementById('fab-pend-count').textContent = orders.length;
@@ -4634,6 +4632,10 @@ function switchTR(panel, btn) {
   }
   if (panel === 'history') {
     fetchMobileHistory();
+  }
+  if (panel === 'positions') {
+    fetchPositions();
+    fetchPendingOrders();
   }
 }
 
