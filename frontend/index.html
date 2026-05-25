@@ -4582,6 +4582,7 @@ async function fetchOptionsLeaders() {
     const data = await res.json();
     if (data.status !== 'ok') return;
     _optAllData = data.leaders || [];
+  window._optAllData = _optAllData;
     _renderOptLeaders();
   } catch(e) {
     console.warn('Options leaders fetch failed:', e);
@@ -4659,14 +4660,25 @@ function switchTR(panel, btn) {
 
   window._currentTRTab = panel;
   if (panel === 'signals') {
-    renderMobileSignals();
+    const tab = window._currentTRTab;
+  if (tab === 'signals')  renderMobileSignals();
+  if (tab === 'volume')   renderMobileVolumeLeaders();
+  if (tab === 'options')  renderMobileOptionsLeaders();
   }
   if (panel === 'history') {
+    window._mobHistFrom = window._mobHistFrom || new Date().toISOString().slice(0,10);
+    window._mobHistTo   = window._mobHistTo   || new Date().toISOString().slice(0,10);
     fetchMobileHistory();
   }
   if (panel === 'positions') {
     fetchPositions();
     fetchPendingOrders();
+  }
+  if (panel === 'volume') {
+    renderMobileVolumeLeaders();
+  }
+  if (panel === 'options') {
+    renderMobileOptionsLeaders();
   }
 }
 
@@ -4714,10 +4726,20 @@ function renderMobileSignals() {
 
   // Apply direction filter
   if (window._mobSigFilter && window._mobSigFilter !== 'ALL') {
+    const f = window._mobSigFilter;
     groups.forEach(g => {
-      g.items = g.items.filter(s =>
-        (s.direction || s.side || '').toUpperCase() === window._mobSigFilter
-      );
+      g.items = g.items.filter(s => {
+        const dir = (s.direction || s.side || '').toUpperCase();
+        if (f === 'LONG')    return dir === 'LONG';
+        if (f === 'SHORT')   return dir === 'SHORT';
+        if (f === 'BULL')    return dir === 'LONG';
+        if (f === 'BEAR')    return dir === 'SHORT';
+        if (f === 'LTP>PDH') return s.above_pdh   === true || s.ltp_above_pdh === true;
+        if (f === 'LTP<PDL') return s.below_pdl   === true || s.ltp_below_pdl === true;
+        if (f === 'LTP>R1')  return s.above_r1    === true || s.ltp_above_r1  === true;
+        if (f === 'LTP<S1')  return s.below_s1    === true || s.ltp_below_s1  === true;
+        return true;
+      });
     });
   }
 
@@ -4763,8 +4785,7 @@ function renderMobileSignals() {
       '</div>';
     }
 
-    const visible = arr.slice(0, 10);
-    const rows = visible.map(sig => {
+    const rows = arr.map(sig => {
       const chg    = parseFloat(sig.change_pct || 0);
       const chgCol = chg >= 0 ? 'var(--green)' : 'var(--red)';
       const chgStr = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
@@ -4785,20 +4806,13 @@ function renderMobileSignals() {
       '</div>';
     }).join('');
 
-    const moreCount = arr.length - visible.length;
-    const moreRow = moreCount > 0
-      ? '<div style="padding:6px 12px;font-size:9px;color:var(--muted);text-align:center;">' +
-          '+ ' + moreCount + ' more — scroll up' +
-        '</div>'
-      : '';
-
     return '<div style="margin-bottom:6px;border:1px solid var(--border);border-radius:8px;overflow:hidden;">' +
       '<div style="padding:7px 12px;background:rgba(255,255,255,0.03);display:flex;justify-content:space-between;align-items:center;">' +
         '<span style="font-size:10px;font-weight:700;letter-spacing:0.06em;">' + icon + ' ' + label.toUpperCase() + '</span>' +
         '<span style="font-size:9px;color:var(--muted);background:var(--border);border-radius:8px;padding:1px 7px;">' + arr.length + '</span>' +
       '</div>' +
       '<div style="max-height:300px;overflow-y:auto;-webkit-overflow-scrolling:touch;">' +
-        rows + moreRow +
+        rows +
       '</div>' +
     '</div>';
   }).join('');
@@ -4815,7 +4829,10 @@ function setMobSigFilter(f, btn) {
   btn.style.background  = 'var(--accent)';
   btn.style.color       = '#000';
   btn.style.borderColor = 'var(--accent)';
-  renderMobileSignals();
+  const tab = window._currentTRTab;
+  if (tab === 'signals')  renderMobileSignals();
+  if (tab === 'volume')   renderMobileVolumeLeaders();
+  if (tab === 'options')  renderMobileOptionsLeaders();
 }
 
 window.addEventListener('load', function() {
@@ -4974,16 +4991,17 @@ function renderMobilePositions() {
 }
 
 async function fetchMobileHistory() {
+  if (window.innerWidth > 768) return;
+  const today = new Date().toISOString().slice(0,10);
+  if (!window._mobHistFrom) window._mobHistFrom = today;
+  if (!window._mobHistTo)   window._mobHistTo   = today;
   try {
-    const data = await apiFetch('/api/trades/closed?limit=50');
-
-    window._mobileHistoryData = Array.isArray(data)
-      ? data
-      : (data.trades || data.closed || []);
+    const data = await apiFetch('/api/trades/closed?limit=200&date_from=' + window._mobHistFrom + '&date_to=' + window._mobHistTo);
+    window._mobileHistoryData = Array.isArray(data) ? data : (data.trades || data.closed || []);
     renderMobileHistory();
   } catch(e) {
-    document.getElementById('tr-panel-history').innerHTML =
-      '<div style="padding:16px;color:var(--muted)">Failed to load history</div>';
+    const el = document.getElementById('tr-panel-history');
+    if (el) el.innerHTML = '<div style="padding:16px;color:var(--muted);">Failed to load history</div>';
   }
 }
 
@@ -4991,60 +5009,174 @@ function renderMobileHistory() {
   if (window.innerWidth > 768) return;
   const el = document.getElementById('tr-panel-history');
   if (!el) return;
-  const trades = window._mobileHistoryData || [];
-  if (!trades.length) {
-    el.innerHTML = '<div class="empty-state" style="padding:20px;">' +
-      '<div class="empty-icon">📜</div>' +
-      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">' +
-      'No trade history</div></div>';
+
+  const today = new Date().toISOString().slice(0,10);
+  const from  = window._mobHistFrom || today;
+  const to    = window._mobHistTo   || today;
+
+  const allTrades = window._mobileHistoryData || [];
+  const trades = allTrades.filter(t => {
+    const d = (t.exit_ts || '').slice(0,10);
+    return d >= from && d <= to;
+  });
+
+  const totalPnl = trades.reduce((s,t) => s + parseFloat(t.pnl_abs||t.pnl||0), 0);
+  const wins     = trades.filter(t => parseFloat(t.pnl_abs||0) > 0).length;
+  const winRate  = trades.length ? Math.round(wins/trades.length*100) : 0;
+  const pnlCol   = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const pnlSign  = totalPnl >= 0 ? '+' : '';
+
+  const byDate = {};
+  trades.forEach(t => {
+    const d = (t.exit_ts||'').slice(0,10);
+    if (!d) return;
+    if (!byDate[d]) byDate[d] = [];
+    byDate[d].push(t);
+  });
+  const sortedDates = Object.keys(byDate).sort((a,b) => b.localeCompare(a));
+
+  const fmtDate = d => new Date(d).toLocaleDateString('en-IN',{day:'numeric',month:'short'});
+
+  const groupedRows = sortedDates.map(date => {
+    const dayTrades = byDate[date];
+    const dayPnl    = dayTrades.reduce((s,t) => s + parseFloat(t.pnl_abs||t.pnl||0), 0);
+    const dayCol    = dayPnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+    const rows = dayTrades.map(t => {
+      const pnl    = parseFloat(t.pnl_abs ?? t.pnl ?? 0);
+      const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const pnlPct = t.pnl_pct != null ? parseFloat(t.pnl_pct).toFixed(1) : null;
+      const pnlStr = (pnl>=0?'+':'') + '₹' + Math.abs(pnl).toLocaleString('en-IN',{maximumFractionDigits:0}) +
+                     (pnlPct != null ? ' (' + (pnl>=0?'+':'') + pnlPct + '%)' : '');
+      const reason = t.exit_reason || t.reason || '';
+      const icon   = reason.includes('PROFIT') ? '✅' : reason.includes('LOSS') ? '❌' : '⏹';
+      const time   = t.exit_ts ? new Date(t.exit_ts).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true}) : '';
+      const lotsQty = t.lots ? t.lots + ' lots (' + (t.quantity||0) + ' qty)' : 'Qty ' + (t.quantity||0);
+
+      return '<div style="padding:7px 12px;border-bottom:1px solid rgba(255,255,255,0.04);">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+          '<span style="font-size:12px;font-weight:700;">' + t.symbol + ' ' + (t.atm_strike||t.strike||'') + ' ' + (t.instrument||'') + '</span>' +
+          '<span style="font-size:11px;font-weight:700;color:' + pnlCol + ';">' + pnlStr + '</span>' +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;margin-top:2px;">' +
+          '<span style="font-size:10px;color:var(--muted);">₹' + (t.entry_price||0) + ' → ₹' + (t.exit_price||0) + ' • ' + lotsQty + '</span>' +
+          '<span style="font-size:10px;color:var(--muted);">' + icon + ' ' + time + '</span>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    return '<div style="margin-bottom:4px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:rgba(255,255,255,0.04);border-top:1px solid var(--border);">' +
+        '<span style="font-size:10px;font-weight:700;letter-spacing:0.05em;">' + fmtDate(date) + ' <span style="font-size:9px;color:var(--muted);font-weight:400;">(' + dayTrades.length + ' trades)</span></span>' +
+        '<span style="font-size:10px;font-weight:700;color:' + dayCol + ';">' + (dayPnl>=0?'+':'') + '₹' + Math.abs(dayPnl).toLocaleString('en-IN',{maximumFractionDigits:0}) + '</span>' +
+      '</div>' +
+      rows +
+    '</div>';
+  }).join('');
+
+  el.innerHTML =
+    '<div style="position:sticky;top:0;background:var(--bg);z-index:10;border-bottom:1px solid var(--border);">' +
+      '<div style="display:flex;gap:6px;align-items:center;padding:8px 12px;">' +
+        '<span style="font-size:9px;color:var(--muted);font-weight:700;flex-shrink:0;">FROM</span>' +
+        '<input type="date" value="' + from + '" ' +
+          'style="flex:1;background:rgba(255,255,255,0.06);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:10px;padding:3px 6px;outline:none;min-width:0;" ' +
+          'onchange="window._mobHistFrom=this.value;fetchMobileHistory();">' +
+        '<span style="font-size:9px;color:var(--muted);font-weight:700;flex-shrink:0;">TO</span>' +
+        '<input type="date" value="' + to + '" ' +
+          'style="flex:1;background:rgba(255,255,255,0.06);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:10px;padding:3px 6px;outline:none;min-width:0;" ' +
+          'onchange="window._mobHistTo=this.value;fetchMobileHistory();">' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:16px;padding:0 12px 8px;">' +
+        '<span style="font-size:16px;font-weight:700;color:' + pnlCol + ';">' + pnlSign + '₹' + Math.abs(totalPnl).toLocaleString('en-IN',{maximumFractionDigits:0}) + '</span>' +
+        '<span style="font-size:10px;color:var(--muted);">' + trades.length + ' trades</span>' +
+        '<span style="font-size:10px;color:var(--muted);">Win ' + winRate + '%</span>' +
+      '</div>' +
+    '</div>' +
+    (trades.length
+      ? groupedRows
+      : '<div style="padding:20px;text-align:center;font-size:11px;color:var(--muted);">No trades for this period</div>');
+}
+
+function renderMobileVolumeLeaders() {
+  if (window.innerWidth > 768) return;
+  const el = document.getElementById('mob-volume-list');
+  if (!el) return;
+  const f   = window._mobSigFilter || 'ALL';
+  const raw = window._volLeadersData || [];
+  const data = raw.filter(s => {
+    const isBull = s.direction === 'BULL';
+    if (f === 'ALL')     return true;
+    if (f === 'LONG')    return isBull;
+    if (f === 'SHORT')   return !isBull;
+    if (f === 'BULL')    return isBull;
+    if (f === 'BEAR')    return !isBull;
+    if (f === 'LTP>PDH') return s.above_pdh === true;
+    if (f === 'LTP<PDL') return s.below_pdl === true;
+    if (f === 'LTP>R1')  return s.above_r1  === true;
+    if (f === 'LTP<S1')  return s.below_s1  === true;
+    return true;
+  });
+  if (!data.length) {
+    el.innerHTML = '<div style="padding:16px;font-size:11px;color:var(--muted);">No volume data — updates during market hours</div>';
     return;
   }
-  el.innerHTML = trades.slice(0, 20).map(t => {
-    const pnl    = parseFloat(t.pnl_abs ?? t.pnl ?? t.realized_pnl ?? 0);
-    const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-    const pnlPct =
-      t.pnl_pct != null
-        ? parseFloat(t.pnl_pct).toFixed(1)
-        : null;
+  el.innerHTML = data.map((s, i) => {
+    const isBull = s.direction === 'BULL';
+    const dirCol = isBull ? 'var(--green)' : 'var(--red)';
+    const chg    = parseFloat(s.change_pct || 0);
+    const chgCol = chg >= 0 ? 'var(--green)' : 'var(--red)';
+    return '<div style="display:grid;grid-template-columns:24px 1fr auto auto auto;gap:4px;align-items:center;padding:7px 12px;border-bottom:1px solid rgba(255,255,255,0.04);">' +
+      '<span style="font-size:9px;color:var(--muted);">#' + (i+1) + '</span>' +
+      '<span style="font-size:12px;font-weight:700;">' + s.symbol + '</span>' +
+      '<span style="font-size:9px;font-weight:700;color:' + dirCol + ';">' + (isBull ? '▲' : '▼') + '</span>' +
+      '<span style="font-size:10px;font-weight:700;color:var(--gold);">' + parseFloat(s.cum_rvol||0).toFixed(1) + 'x</span>' +
+      '<span style="font-size:10px;color:' + chgCol + ';">' + (chg>=0?'+':'') + chg.toFixed(2) + '%</span>' +
+    '</div>';
+  }).join('');
+}
 
-    const pnlStr =
-      (pnl >= 0 ? '+' : '') +
-      '₹' +
-      Math.abs(pnl).toLocaleString('en-IN', {
-        maximumFractionDigits: 0
-      }) +
-      (
-        pnlPct != null
-          ? ' (' +
-            (pnl >= 0 ? '+' : '') +
-            pnlPct +
-            '%)'
-          : ''
-      );
-    const reason = t.exit_reason || t.reason || '';
-    const icon   = reason.includes('PROFIT') ? '✅' :
-                   reason.includes('LOSS')   ? '❌' : '⏹';
-    return '<div style="padding:8px 12px;border-bottom:1px solid var(--border);">' +
-      '<div style="display:flex;justify-content:space-between;">' +
-        '<span style="font-size:12px;font-weight:700;">' + t.symbol + ' ' +
-          (t.atm_strike||t.strike||'') + ' ' + (t.instrument||'') + '</span>' +
-        '<span style="font-size:11px;font-weight:700;color:' + pnlCol + ';">' +
-          pnlStr + '</span>' +
+function renderMobileOptionsLeaders() {
+  if (window.innerWidth > 768) return;
+  const el = document.getElementById('mob-options-list');
+  if (!el) return;
+  const f   = window._mobSigFilter || 'ALL';
+  const raw = window._optAllData || [];
+  const data = raw.filter(s => {
+    const isBull = s.flow_dir === 'BULL';
+    if (f === 'ALL')     return true;
+    if (f === 'LONG')    return isBull;
+    if (f === 'SHORT')   return !isBull;
+    if (f === 'BULL')    return isBull;
+    if (f === 'BEAR')    return !isBull;
+    if (f === 'LTP>PDH') return s.dom_above_pdh === true;
+    if (f === 'LTP<PDL') return s.dom_below_pdl === true;
+    if (f === 'LTP>R1')  return s.dom_above_r1  === true;
+    if (f === 'LTP<S1')  return s.dom_below_s1  === true;
+    return true;
+  });
+  if (!data.length) {
+    el.innerHTML = '<div style="padding:16px;font-size:11px;color:var(--muted);">No options data</div>';
+    return;
+  }
+  el.innerHTML = data.map((s, i) => {
+    const isBull = s.flow_dir === 'BULL';
+    const dirCol = isBull ? 'var(--green)' : 'var(--red)';
+    const side   = s.dom_side || (isBull ? 'CE' : 'PE');
+    const domLtp = parseFloat(s.dom_ltp || 0);
+    const domChg = parseFloat(s.dom_change_pct || 0);
+    const chgCol = domChg >= 0 ? 'var(--green)' : 'var(--red)';
+    return '<div style="padding:7px 12px;border-bottom:1px solid rgba(255,255,255,0.04);">' +
+      '<div style="display:grid;grid-template-columns:24px 1fr auto auto auto;gap:4px;align-items:center;">' +
+        '<span style="font-size:9px;color:var(--muted);">#' + (i+1) + '</span>' +
+        '<span style="font-size:12px;font-weight:700;">' + s.symbol + '</span>' +
+        '<span style="font-size:9px;font-weight:700;color:' + dirCol + ';">' + (isBull?'▲':'▼') + ' ' + side + '</span>' +
+        '<span style="font-size:10px;font-weight:700;color:var(--accent);">' + parseFloat(s.atm_rvol||0).toFixed(1) + 'x</span>' +
+        '<button onclick="openPopup('' + s.symbol + '',event)" style="background:none;border:none;cursor:pointer;padding:0;color:var(--accent);font-size:10px;">↗</button>' +
       '</div>' +
-      '<div style="display:flex;justify-content:space-between;margin-top:2px;">' +
-        '<span style="font-size:10px;color:var(--muted);">₹' +
-          (t.entry_price||0) + ' → ₹' + (t.exit_price||0) +
-          (t.lots
-            ? ' • ' + t.lots + ' lots (' + (t.quantity || 0) + ' qty)'
-            : ' • Qty ' + (t.quantity || 0)) + '</span>' +
-        '<span style="font-size:10px;color:var(--muted);">' + icon + ' ' + reason +
-          (t.exit_ts
-            ? ' ' +
-              new Date(t.exit_ts).toLocaleDateString('en-IN', { day:'numeric', month:'short' }) +
-              ' • ' +
-              new Date(t.exit_ts).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', hour12:true })
-            : '') +
-        '</span>' +
+      '<div style="display:flex;gap:8px;margin-top:2px;font-size:10px;">' +
+        '<span>₹' + domLtp.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}) + '</span>' +
+        '<span style="color:' + chgCol + ';">' + (domChg>=0?'+':'') + domChg.toFixed(2) + '%</span>' +
+        '<span style="color:var(--muted);font-size:9px;">' + (s.opt_vol_state||'') + '</span>' +
       '</div>' +
     '</div>';
   }).join('');
