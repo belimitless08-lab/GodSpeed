@@ -1407,7 +1407,7 @@ async def get_trade_ltp(trade_id: str):
             symbol=symbol,
             instrument=instrument,
             atm_strike=atm_strike,
-            expiry=expiry,
+            expiry_date=expiry,
         )
     except Exception as exc:
         logger.warning(
