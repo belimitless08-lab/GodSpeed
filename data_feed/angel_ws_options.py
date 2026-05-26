@@ -528,8 +528,19 @@ class _FeedState:
                     continue
 
                 new_tokens.append(token)
+                logger.warning(
+                    "[trade_subscribe_debug] received subscribe token=%s symbol=%s",
+                    token, symbol,
+                )
                 self.active_contracts[token] = Contract(
-                    token=token, symbol=symbol, strike=strike, type=ctype
+                    token=token,
+                    symbol=symbol,
+                    strike=int(strike),
+                    type=ctype,
+                )
+                logger.warning(
+                    "[trade_subscribe_debug] activated token=%s",
+                    token,
                 )
                 self.symbol_tokens.setdefault(symbol, set()).add(token)
 
