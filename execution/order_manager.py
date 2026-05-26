@@ -1578,6 +1578,14 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
     # This prevents duplicate records in trades:history
     if instrument in ("CE", "PE") and trade.get("option_token") and trade.get("atm_strike"):
         try:
+            logger.warning(
+                "[trade_subscribe_debug] fill-path resubscribe "
+                "token=%s symbol=%s instrument=%s",
+                trade.get("option_token"),
+                symbol,
+                instrument,
+            )
+
             await redis.publish("options:subscribe", json.dumps({
                 "symbol": symbol,
                 "contracts": [{
@@ -1586,6 +1594,13 @@ async def place_paper_order_from_trigger(order: dict) -> dict:
                     "type": instrument,
                 }]
             }))
+
+            logger.warning(
+                "[trade_subscribe_debug] fill-path published "
+                "token=%s symbol=%s",
+                trade.get("option_token"),
+                symbol,
+            )
         except Exception as exc:
             logger.warning("[order_manager] Re-subscribe at fill failed: %s", exc)
     await _update_paper_account(margin_used=margin, trade_opened=True)
