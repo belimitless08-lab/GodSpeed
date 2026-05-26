@@ -1356,6 +1356,8 @@ async def place_trigger_order(payload: dict) -> dict:
                 )
 
         # Token lookup — best-effort. Paper trades don't require it.
+        # Prefer server lookup; fall back to token sent by UI if lookup fails.
+        token_source = "server_lookup"
         token = None
         if payload.get("atm_strike") and payload.get("expiry_date"):
             token = await get_option_token(
@@ -1364,7 +1366,18 @@ async def place_trigger_order(payload: dict) -> dict:
                 payload["instrument"],
                 payload["expiry_date"],
             )
+        if not token:
+            token = payload.get("option_token") or None
+            if token:
+                token_source = "ui_fallback"
         payload["option_token"] = token
+        if token:
+            logger.warning(
+                "[order_manager] option_token resolved: %s %s strike=%s "
+                "token=%s source=%s",
+                payload["symbol"], payload["instrument"],
+                payload.get("atm_strike"), token, token_source,
+            )
 
         # Force-subscribe options WS to this strike so SL/TG monitoring uses
         # LIVE_WS ticks instead of REST fallback. Fire-and-forget — REST fallback
