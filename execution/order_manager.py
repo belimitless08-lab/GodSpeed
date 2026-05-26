@@ -710,6 +710,14 @@ async def close_trade(trade_id: str, exit_price: float, reason: str) -> dict:
 
     await redis.srem("paper:trades:open", trade_id)
 
+    _closed_token = trade.get("option_token")
+    if _closed_token:
+        try:
+            await redis.srem("options:trade_tokens", str(_closed_token))
+            await redis.delete(f"options:trade_token_meta:{_closed_token}")
+        except Exception:
+            pass
+
     # ── Update account ───────────────────────────────────────────────────────
     await _update_paper_account(
         margin_released=trade["margin_used"],
@@ -1409,6 +1417,16 @@ async def place_trigger_order(payload: dict) -> dict:
                     payload["symbol"], payload["instrument"],
                     payload["atm_strike"], token,
                 )
+                try:
+                    await redis.sadd("options:trade_tokens", str(token))
+                    await redis.hset(f"options:trade_token_meta:{token}", mapping={
+                        "symbol": payload["symbol"],
+                        "strike": str(int(payload["atm_strike"])),
+                        "type":   payload["instrument"],
+                    })
+                    await redis.expire(f"options:trade_token_meta:{token}", 86400)
+                except Exception:
+                    pass
             except Exception as exc:
                 logger.warning(
                     "[order_manager] Could not publish options:subscribe for %s: %s",
