@@ -729,6 +729,7 @@ async def _tick_receiver(ws, state: _FeedState, redis) -> None:
                 health_window, tick_count, state.active_token_count,
             )
             await _write_health(redis, connected=True, active_tokens=state.active_token_count)
+            await _restore_trade_subscriptions(redis, state)
             health_window  = 0
             last_health_ts = now
 
@@ -876,6 +877,43 @@ async def _command_listener(state: _FeedState) -> None:
 # Core WebSocket session
 # ---------------------------------------------------------------------------
 
+async def _restore_trade_subscriptions(redis, state) -> None:
+    """
+    Recover trade-specific subscriptions that may have been lost due to
+    pub/sub drop or websocket reconnect. Reads from options:trade_tokens
+    written by order_manager. Safe to call repeatedly — skips tokens
+    already in active_contracts.
+    """
+    try:
+        trade_tokens = await redis.smembers("options:trade_tokens")
+        if not trade_tokens:
+            return
+        _restored = 0
+        for _tok in trade_tokens:
+            if _tok in state.active_contracts:
+                continue
+            _meta = await redis.hgetall(f"options:trade_token_meta:{_tok}")
+            if not _meta:
+                await redis.srem("options:trade_tokens", _tok)
+                continue
+            state.active_contracts[_tok] = Contract(
+                token=_tok,
+                symbol=_meta["symbol"],
+                strike=int(_meta["strike"]),
+                type=_meta["type"],
+            )
+            _restored += 1
+        if _restored:
+            logger.info(
+                "[options_ws] Restored %d trade tokens: %s",
+                _restored, list(trade_tokens),
+            )
+    except Exception as _exc:
+        logger.warning(
+            "[options_ws] Trade token restore failed: %s", _exc
+        )
+
+
 async def _run_ws_session(session: dict, state: _FeedState) -> None:
     """
     Run a single WebSocket connection session.
@@ -964,6 +1002,7 @@ async def _run_ws_session(session: dict, state: _FeedState) -> None:
             "[options_ws] ATM priming reset — symbols=%d baselines_cleared",
             len(_syms_reprimed),
         )
+        await _restore_trade_subscriptions(redis, state)
 
         # Subscribe all static ATM tokens (separate from brain subscriptions)
         if _ATM_REGISTRY:
