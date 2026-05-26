@@ -5171,7 +5171,7 @@ function renderMobileOptionsLeaders() {
         '<span style="font-size:12px;font-weight:700;">' + s.symbol + '</span>' +
         '<span style="font-size:9px;font-weight:700;color:' + dirCol + ';">' + (isBull?'▲':'▼') + ' ' + side + '</span>' +
         '<span style="font-size:10px;font-weight:700;color:var(--accent);">' + parseFloat(s.atm_rvol||0).toFixed(1) + 'x</span>' +
-        '<button onclick="openPopup('' + s.symbol + '',event)" style="background:none;border:none;cursor:pointer;padding:0;color:var(--accent);font-size:10px;">↗</button>' +
+        '<button onclick="openPopup(\'' + s.symbol + '\',event)" style="background:none;border:none;cursor:pointer;padding:0;color:var(--accent);font-size:10px;">↗</button>' +
       '</div>' +
       '<div style="display:flex;gap:8px;margin-top:2px;font-size:10px;">' +
         '<span>₹' + domLtp.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}) + '</span>' +
