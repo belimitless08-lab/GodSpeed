@@ -1380,7 +1380,17 @@ async def place_trigger_order(payload: dict) -> dict:
                         "type": payload["instrument"],   # "CE" or "PE"
                     }],
                 })
+                logger.warning(
+                    "[trade_subscribe_debug] publishing token=%s symbol=%s "
+                    "strike=%s instrument=%s",
+                    token, payload["symbol"],
+                    payload["atm_strike"], payload["instrument"],
+                )
                 await redis.publish("options:subscribe", subscribe_payload)
+                logger.warning(
+                    "[trade_subscribe_debug] published token=%s",
+                    token,
+                )
                 logger.info(
                     "[order_manager] Force-subscribed options WS for %s %s%d token=%s",
                     payload["symbol"], payload["instrument"],
