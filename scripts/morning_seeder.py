@@ -1,7 +1,7 @@
 """
 scripts/morning_seeder.py
 =========================
-Market Pulse Pro v2 — Morning Seeder
+GodSpeed — Morning Seeder
 Runs every morning at 08:30 IST (before market open at 09:15).
 
 Two phases:
@@ -1577,7 +1577,7 @@ async def run_seeder(force: bool = False) -> None:
     t_total_start = time.monotonic()
 
     validate()
-    logger.info("=== Market Pulse Pro v2 — Morning Seeder ===")
+    logger.info("=== GodSpeed — Morning Seeder ===")
 
     # Clear previous day's signals — new trading day starts fresh
     try:
